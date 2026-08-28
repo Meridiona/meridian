@@ -86,6 +86,16 @@ use tracing::Instrument;
 /// the next launch reconciles the daemon regardless.
 const QUIT_STOP_BUDGET: Duration = Duration::from_secs(5);
 
+/// How long a quit waits for the telemetry flush before exiting anyway.
+///
+/// Shorter than [`QUIT_STOP_BUDGET`] on purpose: the flush is a local disk
+/// write that normally completes in milliseconds, and the thing it protects is
+/// a diagnostic record, not the user's data. Losing that record is a bad
+/// outcome; a Quit that never completes is a worse one, and `ExitPhase::Stopping`
+/// holds every subsequent `ExitRequested` - so an unbounded wait here leaves
+/// the app with no path out at all.
+pub(crate) const QUIT_FLUSH_BUDGET: Duration = Duration::from_secs(2);
+
 /// Where the app is in its exit sequence.
 ///
 /// The quit path is not atomic - the daemon stop is async and the exit is not -
@@ -942,12 +952,15 @@ mod tests {
         let stop_pos = spawn_body
             .find("stop_for_quit().await")
             .expect("the spawned task must call stop_for_quit");
-        let flush_pos = spawn_body
-            .find("observability::force_flush().await")
-            .expect(
-                "the spawned stop task must flush telemetry before exiting, or \
+        // Matched WITHOUT `.await` attached: the call is wrapped in a
+        // `tokio::time::timeout`, so the await belongs to the timeout rather
+        // than to `force_flush` itself. The over-specific needle failed the
+        // moment that bound was added - the test doing its job, but it was the
+        // needle that needed correcting, not the code.
+        let flush_pos = spawn_body.find("observability::force_flush(").expect(
+            "the spawned stop task must flush telemetry before exiting, or \
                  stop_for_quit's outcome never reaches the spool",
-            );
+        );
         let exit_pos = spawn_body
             .find("handle.exit(")
             .expect("the spawned task must exit the app");
@@ -957,6 +970,18 @@ mod tests {
              handle.exit: before the stop it flushes a verdict that has not \
              been reached yet, and after the exit it does not run at all. \
              Found stop at {stop_pos}, flush at {flush_pos}, exit at {exit_pos}."
+        );
+
+        // And it must be BOUNDED. `force_flush` awaits blocking exporter work
+        // and the spool does synchronous filesystem writes, so an unbounded
+        // await here can hang the quit indefinitely - and `ExitPhase::Stopping`
+        // holds every later `ExitRequested`, leaving the app unquittable with
+        // no way back. That is the failure mode `HeldExitGuard` exists to
+        // prevent, reached again through a different door.
+        assert!(
+            spawn_body[..exit_pos].contains("QUIT_FLUSH_BUDGET"),
+            "the telemetry flush on quit must be bounded by QUIT_FLUSH_BUDGET; \
+             an unbounded await leaves no path out of ExitPhase::Stopping"
         );
     }
 }

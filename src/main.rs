@@ -1120,6 +1120,14 @@ async fn main() -> Result<()> {
             endpoint = %meridian::platform::endpoint_display(),
             "another meridian daemon already owns this data dir — exiting (single-instance guard)"
         );
+        // Flush before returning, matching the repair-marker stand-down above.
+        // Without it this WARN dies in the batch processor: `main` returning
+        // does not flush (`ObservabilityGuard` has no Drop — see its docs), so
+        // the record of a stand-down never reached the spool at all. MEASURED,
+        // not theorised: a second daemon was made to lose the race and
+        // `meridian logs` found zero occurrences of its own WARN.
+        obs_guard.shutdown().await;
+        meridian::telemetry_spool::shipper::drain_once().await;
         return Ok(());
     }
 
@@ -1162,6 +1170,11 @@ async fn main() -> Result<()> {
                 pid = std::process::id() as i64,
                 "another meridian daemon holds the single-instance lock for this data dir — exiting (lock)"
             );
+            // See the probe stand-down above. This one matters most: it is the
+            // ONLY evidence that two daemons raced past the probe, and it was
+            // reaching nothing.
+            obs_guard.shutdown().await;
+            meridian::telemetry_spool::shipper::drain_once().await;
             return Ok(());
         }
         // Could not find out. Proceed UNLOCKED rather than refuse to start:
@@ -1229,17 +1242,28 @@ async fn main() -> Result<()> {
     //     would let a daemon that's about to `exit(1)` on a locked or corrupt
     //     database falsely tell the tray's watchdog it's healthy for the
     //     brief window before that failure surfaces. Safe to bind
-    //     unconditionally here: we hold the single-instance lock taken at
+    //     unconditionally here — but read the next paragraph before relying
+    //     on WHY, because the obvious reason is only true most of the time.
+    //
+    //     ON THE `Acquired` PATH we hold the single-instance lock taken at
     //     4a-quater, so no other daemon process reached this line at all. (The
     //     older justification — "the check above established nothing else is
     //     listening, and we're single-threaded up to the poll loop" — was only
     //     ever about THIS process's threads and said nothing about a second
-    //     process. The lock is what actually makes this claim true.)
+    //     process.)
+    //
+    //     ON THE `Unavailable` PATH WE HOLD NO LOCK. That path exists on
+    //     purpose (a lock we could not attempt must not stop the daemon
+    //     starting), and it reaches this line with exactly the pre-lock
+    //     guarantees: the endpoint probe, which is check-then-act. So the
+    //     lock does NOT make the sequence below unreachable in general — only
+    //     on the path where it was actually acquired.
     //
     //     NOTE: `spawn_health_listener` itself unlinks a stale socket and then
-    //     binds, which is its own check-then-act across processes. The lock
-    //     makes that unreachable for two daemons, but the sequence is left
-    //     untouched here on purpose — #862 owns that boundary.
+    //     binds, which is its own check-then-act across processes. Do not
+    //     delete that stale-socket handling on the strength of the lock: on
+    //     the `Unavailable` path it is still the only thing standing there.
+    //     #862 owns that boundary.
     meridian::platform::spawn_health_listener()?;
     tracing::info!(endpoint = %meridian::platform::endpoint_display(), "daemon health endpoint ready");
 
@@ -1643,9 +1667,14 @@ async fn main() -> Result<()> {
             pid = std::process::id() as i64,
             "WAL checkpoint on shutdown complete"
         ),
-        Err(e) => {
-            tracing::warn!(error = %meridian::errors::chain(&e), "WAL checkpoint on shutdown failed - continuing anyway")
-        }
+        // `pid` here too: the whole reason both outcomes are logged is to
+        // attribute a checkpoint to a generation, and a FAILED checkpoint is
+        // the one most worth attributing.
+        Err(e) => tracing::warn!(
+            pid = std::process::id() as i64,
+            error = %meridian::errors::chain(&e),
+            "WAL checkpoint on shutdown failed - continuing anyway"
+        ),
     }
     meridian.close().await;
 
@@ -1755,6 +1784,44 @@ mod startup_order_tests {
     /// `backend_install.rs` (`a_stuck_bootout_is_reported_at_warn`,
     /// `every_early_return_still_restores_the_daemon`) — this scans the
     /// source for the three call sites and asserts their relative order.
+    /// A stand-down must FLUSH before it returns, or its own WARN is lost.
+    ///
+    /// `main` returning does not flush: `ObservabilityGuard` has no `Drop`
+    /// (its docs say to call `shutdown` explicitly), so a record emitted just
+    /// before `return Ok(())` dies in the batch processor.
+    ///
+    /// This was not theoretical. MEASURED before the fix: a second daemon was
+    /// made to lose the lock race and `meridian logs` found ZERO occurrences of
+    /// the WARN the daemon had just printed. On a release build there is no
+    /// stdout mirror either, so the event was invisible everywhere - and that
+    /// WARN is the only evidence that two daemons raced past the endpoint
+    /// probe, which is the entire reason the lock reports it.
+    #[test]
+    fn every_stand_down_flushes_before_returning() {
+        const SRC: &str = include_str!("main.rs");
+        let prod = SRC
+            .split_once("\n#[cfg(test)]")
+            .map_or(SRC, |(before, _)| before);
+
+        for needle in ["exiting (single-instance guard)", "exiting (lock)"] {
+            let at = prod
+                .find(needle)
+                .unwrap_or_else(|| panic!("the {needle} stand-down must exist in main()"));
+            let after = &prod[at..];
+            let ret = after
+                .find("return Ok(());")
+                .unwrap_or_else(|| panic!("the {needle} stand-down must return"));
+            let between = &after[..ret];
+            assert!(
+                between.contains("obs_guard.shutdown().await;"),
+                "the '{needle}' stand-down must flush telemetry before it \
+                 returns - without it the WARN it just emitted never reaches \
+                 the spool and the stand-down is invisible. Found between the \
+                 log and the return: {between:?}"
+            );
+        }
+    }
+
     #[test]
     fn single_instance_lock_precedes_setup_db_and_bind_follows_it() {
         const SRC: &str = include_str!("main.rs");

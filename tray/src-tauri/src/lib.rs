@@ -1483,7 +1483,31 @@ pub fn run() {
                             // corruption report (quit is when the tray and the
                             // daemon are most likely to overlap on meridian.db),
                             // and it was the one guaranteed never to survive.
-                            meridian::observability::force_flush().await;
+                            //
+                            // BOUNDED, for the same reason `stop_for_quit` is:
+                            // a quit that hangs is worse than a record that is
+                            // lost. `force_flush` awaits blocking exporter work
+                            // and the SpoolClient does synchronous filesystem
+                            // writes, so a wedged spool (full disk, a stalled
+                            // network home dir) would otherwise sit here
+                            // forever - and `ExitPhase::Stopping` holds every
+                            // later `ExitRequested`, so the app would be
+                            // permanently unquittable with no way back. That is
+                            // the exact failure mode `HeldExitGuard` exists to
+                            // prevent; an unbounded await here reintroduced it
+                            // by another door.
+                            if tokio::time::timeout(
+                                daemon_lifecycle::QUIT_FLUSH_BUDGET,
+                                meridian::observability::force_flush(),
+                            )
+                            .await
+                            .is_err()
+                            {
+                                tracing::warn!(
+                                    budget_s = daemon_lifecycle::QUIT_FLUSH_BUDGET.as_secs(),
+                                    "flushing telemetry on quit exceeded its budget - exiting anyway"
+                                );
+                            }
                             // Immediately before the exit, so the re-entrant
                             // `ExitRequested` this triggers is the one and only
                             // one allowed through.
