@@ -54,6 +54,7 @@ pub(super) async fn draft_qualifying_tasks(
     config: &Config,
     day_local: &str,
     span: &tracing::Span,
+    refresh: super::RefreshBoard,
 ) -> SweepCounts {
     // Refresh the board before matching work to tickets. Nothing does this on a
     // timer any more (see `main.rs`'s poll loop), and this is the one consumer
@@ -65,11 +66,23 @@ pub(super) async fn draft_qualifying_tasks(
     // separately, so both sweeps get it from one call site and the two can never
     // disagree about whether a run refreshed first. Gated (a fresh cache is a
     // no-op) and log-and-continue: a failed sync must not cancel drafting.
-    if let Err(e) = crate::intelligence::run_pm_sync(pool, config).await {
-        tracing::warn!(
-            day = day_local, error = %crate::errors::chain(&e),
-            "worklog: pre-draft PM sync failed — matching against the cached board"
-        );
+    match refresh {
+        super::RefreshBoard::Yes => {
+            if let Err(e) = crate::intelligence::run_pm_sync(pool, config).await {
+                tracing::warn!(
+                    day = day_local, error = %crate::errors::chain(&e),
+                    "worklog: pre-draft PM sync failed — matching against the cached board"
+                );
+            }
+        }
+        // Not merely skipped for speed: see `super::RefreshBoard`. A refresh here
+        // can trigger a rotating-OAuth-token exchange, and this caller is
+        // wake-triggered, which is the one condition under which losing that
+        // exchange's response destroys the user's grant.
+        super::RefreshBoard::No => tracing::debug!(
+            day = day_local,
+            "worklog: drafting against the cached board - this pass can be wake-triggered"
+        ),
     }
     let tasks = match meridian_core::day_tasks::get_day_tasks(pool, day_local).await {
         Ok(resp) => resp.tasks,
@@ -265,8 +278,14 @@ mod tests {
         put_draft(&pool, "T1").await;
         put_draft(&pool, "T2").await;
 
-        let counts =
-            draft_qualifying_tasks(&pool, &no_tracker_config(), DAY, &tracing::Span::none()).await;
+        let counts = draft_qualifying_tasks(
+            &pool,
+            &no_tracker_config(),
+            DAY,
+            &tracing::Span::none(),
+            crate::pm_worklog::auto_generate::RefreshBoard::No,
+        )
+        .await;
 
         assert_eq!(
             counts,
@@ -289,8 +308,14 @@ mod tests {
         put_task(&pool, "T1", QUALIFYING_MINUTES - 1).await;
         put_draft(&pool, "T1").await;
 
-        let counts =
-            draft_qualifying_tasks(&pool, &no_tracker_config(), DAY, &tracing::Span::none()).await;
+        let counts = draft_qualifying_tasks(
+            &pool,
+            &no_tracker_config(),
+            DAY,
+            &tracing::Span::none(),
+            crate::pm_worklog::auto_generate::RefreshBoard::No,
+        )
+        .await;
 
         assert_eq!(counts.total, 1);
         assert_eq!(counts.qualifying, 0, "under the threshold, never drafted");
@@ -301,8 +326,14 @@ mod tests {
     #[tokio::test]
     async fn an_empty_day_sweeps_to_zero() {
         let pool = seeded().await;
-        let counts =
-            draft_qualifying_tasks(&pool, &no_tracker_config(), DAY, &tracing::Span::none()).await;
+        let counts = draft_qualifying_tasks(
+            &pool,
+            &no_tracker_config(),
+            DAY,
+            &tracing::Span::none(),
+            crate::pm_worklog::auto_generate::RefreshBoard::No,
+        )
+        .await;
         assert_eq!(counts, SweepCounts::default());
     }
 }

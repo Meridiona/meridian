@@ -98,6 +98,34 @@ mod sweep;
 
 use sweep::draft_qualifying_tasks;
 
+/// Whether a sweep may refresh the PM board before matching work to tickets.
+///
+/// Exists because "refresh the board first" is correct for one caller and
+/// actively unsafe for the other, and the difference is not visible from inside
+/// the sweep.
+///
+/// Refreshing the board can trigger an OAuth access-token refresh, and Atlassian
+/// rotates the refresh token on every use - so a refresh whose response is lost
+/// because the machine suspended mid-request destroys the grant permanently (the
+/// full mechanism is in `meridian_oauth::refresh_journal`). launchd `KeepAlive`
+/// restarts the daemon on every wake, which makes the pipeline's STARTUP pass
+/// wake-triggered by construction: exactly the condition where a suspend can land
+/// mid-request. Its clock-aligned tick is different - it fires at the hour the
+/// user chose for their end-of-day pass, when they are far more likely to be
+/// sitting at the machine.
+///
+/// So the startup pass drafts against the cached board ([`RefreshBoard::No`]) and
+/// the chosen-hour tick refreshes first ([`RefreshBoard::Yes`]). A slightly stale
+/// board costs at worst one mis-bound worklog the user can correct; a destroyed
+/// grant costs a manual re-authentication and every sync until they notice.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RefreshBoard {
+    /// Refresh `pm_tasks` first. For triggers where a user is plausibly present.
+    Yes,
+    /// Draft against whatever is cached. For anything a wake can trigger.
+    No,
+}
+
 /// Fixed qualifying threshold — a day-task needs more than this many tracked
 /// minutes to be auto-drafted. Not user-configurable: only WHEN Meridian checks
 /// (`worklog_auto_generate_time`) is a choice; WHICH tasks qualify is not.
@@ -120,7 +148,12 @@ fn parse_hh_mm(s: &str) -> Option<(u32, u32)> {
 /// time) — see the module docs. Tasks are processed one at a time, in order —
 /// never concurrently.
 #[tracing::instrument(skip(pool, config))]
-pub async fn maybe_auto_generate(pool: &SqlitePool, config: &Config, day_local: &str) {
+pub async fn maybe_auto_generate(
+    pool: &SqlitePool,
+    config: &Config,
+    day_local: &str,
+    refresh: RefreshBoard,
+) {
     let span = tracing::info_span!(
         "worklog.auto_generate.run",
         day = day_local,
@@ -132,10 +165,10 @@ pub async fn maybe_auto_generate(pool: &SqlitePool, config: &Config, day_local: 
         tasks_drafted = Empty,
         tasks_failed = Empty,
     );
-    run(pool, config, day_local).instrument(span).await
+    run(pool, config, day_local, refresh).instrument(span).await
 }
 
-async fn run(pool: &SqlitePool, config: &Config, day_local: &str) {
+async fn run(pool: &SqlitePool, config: &Config, day_local: &str, refresh: RefreshBoard) {
     let current_span = tracing::Span::current();
 
     let settings = meridian_core::settings::load_runtime_settings();
@@ -159,7 +192,7 @@ async fn run(pool: &SqlitePool, config: &Config, day_local: &str) {
     }
     current_span.record("gate", "ran");
 
-    draft_qualifying_tasks(pool, config, day_local, &current_span).await;
+    draft_qualifying_tasks(pool, config, day_local, &current_span, refresh).await;
 }
 
 /// The "Generate now" path — the same day-task draft sweep as [`maybe_auto_generate`],
@@ -184,7 +217,9 @@ pub async fn generate_now(pool: &SqlitePool, config: &Config, day_local: &str) {
     async {
         let current_span = tracing::Span::current();
         current_span.record("gate", "ran");
-        draft_qualifying_tasks(pool, config, day_local, &current_span).await;
+        // On-demand: the user pressed Generate, so they are unambiguously present
+        // and this refresh cannot be a wake-triggered one.
+        draft_qualifying_tasks(pool, config, day_local, &current_span, RefreshBoard::Yes).await;
     }
     .instrument(span)
     .await
@@ -246,6 +281,45 @@ mod tests {
         assert!(
             !code.contains(&gate),
             "the tracker gate is back - it disables auto-generate for every solo user"
+        );
+    }
+
+    /// THE WAKE-TRIGGERED PASS MUST NOT REFRESH THE BOARD.
+    ///
+    /// Source-level, because getting this wrong is silent: the startup pass would
+    /// simply work, refresh the board, and occasionally destroy an Atlassian grant
+    /// when the machine re-suspended mid-token-exchange. launchd `KeepAlive`
+    /// restarts the daemon on every wake, so `run_loop`'s pre-loop
+    /// `end_of_day_pass` IS the wake path - see [`RefreshBoard`].
+    ///
+    /// Pins the pairing rather than the values alone: the startup call must pass
+    /// `No` and the clock-aligned tick must pass `Yes`. A future edit that
+    /// "simplifies" them to one shared argument fails here.
+    #[test]
+    fn the_startup_pass_never_refreshes_and_the_chosen_hour_tick_does() {
+        let src = include_str!("../../worklog_pipeline.rs");
+        let code: String = src
+            .lines()
+            .filter(|l: &&str| !l.trim_start().starts_with("//"))
+            .collect::<Vec<_>>()
+            .join("\n");
+
+        let no_calls = code.matches("RefreshBoard::No").count();
+        let yes_calls = code.matches("RefreshBoard::Yes").count();
+        assert_eq!(
+            no_calls, 1,
+            "exactly one end_of_day_pass call - the wake-triggered startup one - \
+             may pass RefreshBoard::No; found {no_calls}"
+        );
+        assert_eq!(
+            yes_calls, 1,
+            "exactly one end_of_day_pass call - the chosen-hour tick - may pass \
+             RefreshBoard::Yes; found {yes_calls}"
+        );
+        // And no call may omit the decision by defaulting it.
+        assert!(
+            !code.contains("end_of_day_pass(&pool, &full_cfg)."),
+            "every end_of_day_pass call must state its RefreshBoard explicitly"
         );
     }
 }

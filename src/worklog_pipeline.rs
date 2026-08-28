@@ -30,6 +30,7 @@ use sqlx::SqlitePool;
 use tokio::sync::watch;
 use tracing::Instrument;
 
+use crate::pm_worklog::auto_generate::RefreshBoard;
 use crate::pm_worklog::{ledger, PmWorklogConfig};
 
 // `pub(crate)` where the LLM-Lab replay ([`crate::llm_experiment`]) reuses the request
@@ -516,7 +517,14 @@ pub async fn run_loop(pool: SqlitePool, db_path: String, mut shutdown_rx: watch:
         tracing::info!("worklog-pipeline driver stopped");
         return;
     }
-    end_of_day_pass(&pool, &full_cfg).await;
+    // `RefreshBoard::No` on the STARTUP pass, and this is a data-safety choice
+    // rather than an optimisation. launchd `KeepAlive` restarts the daemon on
+    // every wake, so anything the startup pass does is wake-triggered - and a
+    // board refresh can trigger an OAuth token refresh, which is the operation
+    // that permanently destroys an Atlassian grant if the machine re-suspends
+    // mid-request (see `meridian_oauth::refresh_journal`). Drafting against the
+    // board the user's last dashboard visit left behind is the safe trade.
+    end_of_day_pass(&pool, &full_cfg, RefreshBoard::No).await;
 
     loop {
         let dur = next_worklog_wake();
@@ -526,7 +534,12 @@ pub async fn run_loop(pool: SqlitePool, db_path: String, mut shutdown_rx: watch:
                 if catch_up_pass(&pool, &cfg, &db_path, &mut shutdown_rx).await {
                     break;
                 }
-                end_of_day_pass(&pool, &full_cfg).await;
+                // The clock-aligned tick MAY refresh: it fires at the hour the
+                // user themselves chose for their end-of-day pass, so they are
+                // far more likely to be at the machine, and a fresh board is what
+                // stops an hour of work being bound to a ticket that closed
+                // earlier today.
+                end_of_day_pass(&pool, &full_cfg, RefreshBoard::Yes).await;
             }
         }
     }
@@ -542,9 +555,14 @@ pub async fn run_loop(pool: SqlitePool, db_path: String, mut shutdown_rx: watch:
 /// summary first would score a plan whose matches had not landed yet. Both gate
 /// themselves on `worklog_auto_generate_time`, so on every hour but the chosen one
 /// (through midnight, self-healing) this is a pair of cheap no-ops.
-async fn end_of_day_pass(pool: &SqlitePool, full_cfg: &crate::config::Config) {
+async fn end_of_day_pass(
+    pool: &SqlitePool,
+    full_cfg: &crate::config::Config,
+    refresh: RefreshBoard,
+) {
     let day_local = Local::now().date_naive().format("%Y-%m-%d").to_string();
-    crate::pm_worklog::auto_generate::maybe_auto_generate(pool, full_cfg, &day_local).await;
+    crate::pm_worklog::auto_generate::maybe_auto_generate(pool, full_cfg, &day_local, refresh)
+        .await;
     crate::day_summary::auto::maybe_auto_summarise(pool, &day_local).await;
 }
 

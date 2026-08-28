@@ -145,8 +145,15 @@ async fn classify_auth(send: reqwest::Result<reqwest::Response>) -> Check {
 /// failure warns and carries the provider's own message; anything else reports
 /// elapsed time as context only, never as a fault.
 async fn sync_freshness(pool: &SqlitePool) -> Check {
-    match sqlx::query_as::<_, (Option<f64>, Option<String>)>(
-        "SELECT (julianday('now') - julianday(last_synced_at)) * 86400.0, last_error
+    // `last_synced_at` is NOT always a real success timestamp: `stamp_sync_error`
+    // inserts the epoch sentinel when it creates a row for a provider that has
+    // never synced. Reporting an age off that renders as "last synced 29799360m
+    // ago", so the sentinel is detected and reported as never-synced instead of
+    // being arithmetic'd into a nonsense duration.
+    match sqlx::query_as::<_, (Option<f64>, Option<String>, Option<String>)>(
+        "SELECT (julianday('now') - julianday(last_synced_at)) * 86400.0,
+                last_error,
+                last_synced_at
          FROM pm_sync_state WHERE provider = 'jira'",
     )
     .fetch_optional(pool)
@@ -155,19 +162,23 @@ async fn sync_freshness(pool: &SqlitePool) -> Check {
         // A recorded failure is the ONLY thing that warns. `last_error` is set by
         // the provider itself, so the text is the real cause rather than this
         // check's guess at one.
-        Ok(Some((_, Some(err)))) if !err.trim().is_empty() => {
+        Ok(Some((_, Some(err), _))) if !err.trim().is_empty() => {
             Check::warn("ticket sync", "L3", format!("last sync failed: {err}")).with_remedy(
                 "check the auth row above; a sync retries on the next on-demand trigger",
             )
         }
+        // The epoch sentinel means "a row exists but no sync ever succeeded".
+        Ok(Some((_, _, Some(stamp)))) if stamp.starts_with("1970") => {
+            Check::info("ticket sync", "L3", "no successful Jira sync recorded yet")
+        }
         // Elapsed time as context. An old cache is normal when nothing asked for a sync.
-        Ok(Some((Some(age), _))) => Check::ok(
+        Ok(Some((Some(age), _, _))) => Check::ok(
             "ticket sync",
             "L3",
             format!("last synced {:.0}m ago, no errors", age / 60.0),
         ),
         // A row with neither a parseable timestamp nor an error: nothing to report.
-        Ok(Some((None, _))) => {
+        Ok(Some((None, _, _))) => {
             Check::info("ticket sync", "L3", "no successful Jira sync recorded yet")
         }
         Ok(None) => Check::info("ticket sync", "L3", "no Jira sync recorded yet"),
@@ -295,6 +306,31 @@ mod tests {
             check.severity,
             Severity::Info,
             "never-synced must be info, got {check:?}"
+        );
+    }
+
+    /// The epoch sentinel must not be rendered as an age.
+    ///
+    /// `stamp_sync_error` inserts `1970-01-01T00:00:00Z` when it creates a row for
+    /// a provider that never synced. Doing the arithmetic on that produced "last
+    /// synced 29799360m ago" - a real string this would have shown a user.
+    #[tokio::test]
+    async fn the_epoch_sentinel_is_not_reported_as_an_age() {
+        let pool = db().await;
+        sqlx::query(
+            "INSERT INTO pm_sync_state (provider, last_synced_at, last_error)
+             VALUES ('jira', '1970-01-01T00:00:00Z', NULL)",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        let check = sync_freshness(&pool).await;
+        assert_eq!(check.severity, Severity::Info, "got {check:?}");
+        assert!(
+            !check.detail.contains('m'),
+            "the sentinel must not be turned into a minutes figure, got {:?}",
+            check.detail
         );
     }
 }

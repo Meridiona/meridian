@@ -236,28 +236,55 @@ pub async fn login(client_id: &str, client_secret: &str, port: u16) -> Result<St
     Ok(site_url)
 }
 
-/// Load the stored tokens, refreshing the access token if it's within 120 s of
-/// expiry. Persists the rotated refresh token. Returns ready-to-use tokens.
+/// Load the stored tokens, refreshing the access token if it is within 120 s of
+/// expiry. Returns ready-to-use tokens.
 ///
-/// Refreshes are serialised on TWO levels so the rotating refresh token is never
-/// double-spent: a static mutex within this process, and an advisory FILE lock
-/// ([`store::lock_provider`]) across every Meridian process. After taking the file
-/// lock it RE-LOADS and re-checks expiry — so a process that waited on the lock
-/// adopts the peer's freshly-refreshed token instead of POSTing again with the
-/// now-consumed one (the old single-process-mutex behaviour caused that 401 loop).
+/// # Why this is more than "POST if expired"
+///
+/// Atlassian ROTATES the refresh token on every use, so a refresh has a window in
+/// which the old token is already dead server-side and we do not yet know its
+/// replacement. Losing the response in that window destroyed production users'
+/// grants permanently. Three mechanisms close it, and all three are load-bearing:
+///
+/// 1. **Serialisation.** A static mutex within this process and an advisory FILE
+///    lock across every Meridian process ([`store::lock_provider`]), so the token
+///    is never double-spent. After taking the file lock this RE-LOADS and
+///    re-checks expiry, so a process that waited adopts the peer's fresh token
+///    rather than POSTing with the now-consumed one.
+/// 2. **A durable journal** ([`crate::refresh_journal`]) written and `fsync`ed
+///    BEFORE the POST, and cleared only AFTER the new pair is persisted. That is
+///    what makes a lost response recoverable at all: without it there is no way to
+///    tell "never spent" from "spent, answer lost", and those need opposite
+///    handling.
+/// 3. **A wall-clock deadline** on the POST itself (in [`flow`]), because every
+///    `Instant`-based timeout sleeps straight through a system suspend. Abandoning
+///    promptly on wake is what leaves enough of the provider's reuse grace for the
+///    replay in (2) to succeed.
+///
+/// # What a replay does
+///
+/// If a journal entry survives, the previous spend's outcome is unknown. Atlassian
+/// honours the PREVIOUS refresh token for a short grace period after rotation, so
+/// re-presenting it returns the current pair and recovers the grant. That is only
+/// possible while the grace holds, which is why (3) exists.
 pub async fn ensure_fresh() -> Result<OAuthTokens> {
     let _guard = refresh_lock().lock().await; // intra-process serialisation
 
-    // Fast path: a still-fresh token needs neither a refresh nor the file lock.
+    // Fast path: a still-fresh token with no unresolved spend needs neither a
+    // refresh nor the file lock. The journal check is part of the condition, not
+    // an afterthought - a fresh access token can coexist with a spend whose
+    // outcome was lost, and skipping straight past that would leave the stored
+    // refresh token dead and only discover it an hour later, outside the grace.
     let t = store::load("jira")?;
-    if !t.is_expired(now_unix(), 120) {
+    if !t.is_expired(now_unix(), 120) && crate::refresh_journal::load("jira").is_none() {
         return Ok(t);
     }
 
-    // Slow path: enter the cross-process critical section. A peer (a second daemon,
-    // the tray's in-process refresh) may be rotating the SAME refresh token right
-    // now. Best-effort — if the lock can't be taken we log and proceed rather than
-    // turn the lock itself into a new way for Jira auth to fail.
+    // Slow path: enter the cross-process critical section. A peer (a second
+    // daemon, the tray's in-process refresh) may be rotating the SAME refresh
+    // token right now. Best-effort - if the lock cannot be taken we log and
+    // proceed rather than turn the lock itself into a new way for Jira auth to
+    // fail.
     let _flock = match store::lock_provider("jira").await {
         Ok(g) => Some(g),
         Err(e) => {
@@ -273,17 +300,68 @@ pub async fn ensure_fresh() -> Result<OAuthTokens> {
     // adopt their token instead of refreshing again with the dead one. This
     // double-check is what actually breaks the race.
     let mut t = store::load("jira")?;
-    if !t.is_expired(now_unix(), 120) {
+    let pending = reconcile_journal("jira", &t);
+    if pending.is_none() && !t.is_expired(now_unix(), 120) {
         tracing::debug!("jira token already refreshed by another process — adopting it");
         return Ok(t);
     }
 
-    tracing::debug!("jira OAuth access token expired — refreshing");
-    let resp = flow::refresh(&t.client_id, &spec(), &t.refresh_token)
+    // WHICH token to send. A pending spend means the last attempt's outcome is
+    // unknown and the stored token may already be consumed; the journalled one is
+    // the only thing the provider might still honour, so it is re-presented
+    // verbatim. Otherwise this is an ordinary refresh with the stored token.
+    let (refresh_token, client_id, replaying) = match &pending {
+        Some(spend) => {
+            let age = spend.age_secs(now_unix());
+            if spend.within_replay_window(now_unix()) {
+                tracing::warn!(
+                    age_s = age as f64,
+                    "replaying an unresolved Jira refresh inside the provider's reuse grace"
+                );
+            } else {
+                // Attempted anyway: it costs one HTTP call, and the alternative is
+                // a guaranteed re-authentication. Logged as expected-to-fail so it
+                // does not read as a surprise in a support bundle.
+                tracing::warn!(
+                    age_s = age as f64,
+                    window_s = crate::refresh_journal::REPLAY_WINDOW_SECS as f64,
+                    "replaying an unresolved Jira refresh PAST the reuse grace - \
+                     likely to fail; re-authentication may be required"
+                );
+            }
+            (spend.refresh_token.clone(), spend.client_id.clone(), true)
+        }
+        None => {
+            tracing::debug!("jira OAuth access token expired — refreshing");
+            (t.refresh_token.clone(), t.client_id.clone(), false)
+        }
+    };
+
+    // JOURNAL BEFORE SPENDING. If this write fails the refresh is ABANDONED
+    // rather than attempted: proceeding would spend a rotating token with no
+    // record of having done so, which is precisely the unrecoverable state this
+    // whole path exists to prevent. Refusing costs one stale sync cycle; the
+    // access token in hand is still returned by the error path's caller on the
+    // next attempt.
+    if !replaying {
+        let spend = crate::refresh_journal::PendingSpend {
+            refresh_token: refresh_token.clone(),
+            started_at_unix: now_unix(),
+            client_id: client_id.clone(),
+        };
+        crate::refresh_journal::record_spend("jira", &spend).context(
+            "could not journal the Jira refresh before spending it — refusing to spend a \
+             rotating refresh token without a durable record, since a lost response would \
+             then be unrecoverable. Check permissions on ~/.meridian/oauth/.",
+        )?;
+    }
+
+    let resp = flow::refresh(&client_id, &spec(), &refresh_token)
         .await
         .context(
             "refreshing Jira OAuth token — re-run `meridian oauth-login jira` if this persists",
         )?;
+
     t.access_token = resp.access_token;
     if !resp.refresh_token.is_empty() {
         t.refresh_token = resp.refresh_token; // Atlassian rotates the refresh token
@@ -292,23 +370,59 @@ pub async fn ensure_fresh() -> Result<OAuthTokens> {
     if !resp.scope.is_empty() {
         t.scopes = resp.scope;
     }
-    // Save the rotated tokens. If save fails (disk full, permissions), log a
-    // critical error and return the in-memory tokens anyway — the access token
-    // is valid for ~1h so the current request succeeds. On the next expiry the
-    // stored (now-invalid) refresh token will cause a 401 and the user must
-    // re-authenticate. A critical log surfaces this before it happens.
+
+    // PERSIST FIRST, CLEAR SECOND. A crash between the two is harmless:
+    // `reconcile_journal` compares the journalled token against the stored one,
+    // sees they differ, and clears the journal then. The reverse order would lose
+    // the only record of the spend at exactly the wrong moment.
     match store::save(&t) {
-        Ok(()) => {}
+        Ok(()) => {
+            crate::refresh_journal::clear("jira");
+            if replaying {
+                tracing::info!("recovered the Jira grant by replaying an unresolved refresh");
+            }
+        }
         Err(e) => {
+            // The journal is deliberately LEFT IN PLACE. The new pair is only in
+            // memory, so on the next process the stored refresh token is the old
+            // one and the journal is what says "that one may already be spent" -
+            // deleting it here would throw away the recovery path.
             tracing::error!(
                 error = %e,
-                "CRITICAL: failed to persist rotated Jira refresh token — access token \
-                 valid for ~1h but re-authentication required after expiry. Fix \
-                 permissions at ~/.meridian/oauth/ then re-run `meridian oauth-login jira`."
+                "CRITICAL: failed to persist rotated Jira refresh token — the access token \
+                 is valid for ~1h and the refresh journal has been kept so the next attempt \
+                 can recover. Fix permissions at ~/.meridian/oauth/."
             );
         }
     }
     Ok(t)
+}
+
+/// Decide what an existing journal entry means, and return the spend that still
+/// needs resolving (if any).
+///
+/// The decision is made by COMPARING TOKENS rather than trusting a flag, which is
+/// what makes every crash point recoverable:
+///
+/// * journalled == stored -> the save never landed. The outcome is unknown, so
+///   this spend must be replayed.
+/// * journalled != stored -> the save DID land and we died before clearing. The
+///   stored pair is newer and valid; the journal is stale, so clear it.
+fn reconcile_journal(
+    provider: &str,
+    stored: &OAuthTokens,
+) -> Option<crate::refresh_journal::PendingSpend> {
+    let spend = crate::refresh_journal::load(provider)?;
+    if spend.refresh_token == stored.refresh_token {
+        Some(spend)
+    } else {
+        tracing::debug!(
+            provider,
+            "refresh journal predates the stored token pair — the save landed, clearing it"
+        );
+        crate::refresh_journal::clear(provider);
+        None
+    }
 }
 
 /// Resolved per-request auth context. OAuth and basic auth differ in BOTH the API
@@ -370,50 +484,4 @@ impl JiraReqCtx {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    fn oauth_ctx() -> JiraReqCtx {
-        JiraReqCtx::OAuth {
-            token: "tok".into(),
-            cloud_id: "cloud-xyz".into(),
-            site_url: "https://acme.atlassian.net".into(),
-        }
-    }
-
-    fn basic_ctx() -> JiraReqCtx {
-        JiraReqCtx::Basic {
-            base_url: "https://acme.atlassian.net/".into(),
-            email: "a@b.com".into(),
-            api_token: "tok".into(),
-        }
-    }
-
-    #[test]
-    fn oauth_api_url_uses_gateway() {
-        assert_eq!(
-            oauth_ctx().api_url("/rest/api/3/search/jql"),
-            "https://api.atlassian.com/ex/jira/cloud-xyz/rest/api/3/search/jql"
-        );
-    }
-
-    #[test]
-    fn basic_api_url_uses_site_and_trims_slash() {
-        assert_eq!(
-            basic_ctx().api_url("/rest/api/3/search/jql"),
-            "https://acme.atlassian.net/rest/api/3/search/jql"
-        );
-    }
-
-    #[test]
-    fn browse_url_uses_site_in_both_modes() {
-        assert_eq!(
-            oauth_ctx().browse_url("KAN-1"),
-            "https://acme.atlassian.net/browse/KAN-1"
-        );
-        assert_eq!(
-            basic_ctx().browse_url("KAN-1"),
-            "https://acme.atlassian.net/browse/KAN-1"
-        );
-    }
-}
+mod tests;

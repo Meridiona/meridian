@@ -91,167 +91,74 @@ pub async fn stamp_sync_error_with_remedy(
     Ok(())
 }
 
-/// How stale the last SUCCESSFUL sync may get before a run of otherwise-
-/// suppressed transient failures is escalated to a user-facing notice.
+/// How many CONSECUTIVE failed sync attempts a provider gets before its
+/// otherwise-suppressed transient failures escalate to a user-facing notice.
 ///
-/// Comfortably longer than any provider's sync interval, so an ordinary flaky
-/// hour never trips it — but short enough that a persistently blocked provider
-/// surfaces the same working day.
-const TRANSIENT_ESCALATION_HOURS: i64 = 6;
+/// This replaced a "no successful sync in the last 6 hours" rule. That rule was
+/// correct when written: sync ran on a timer every few minutes, so six hours
+/// without a success reliably meant something was broken - its own doc comment
+/// said "comfortably longer than any provider's sync interval".
+///
+/// Sync is on-demand now (see [`crate::intelligence::run_pm_sync`]) and that
+/// premise is gone. A machine that slept all weekend, or a user who has not
+/// opened the dashboard since Friday, has no successful sync for DAYS and nothing
+/// is wrong. Under the old rule the first two failures after any quiet period
+/// escalated, so opening the dashboard on Monday before Wi-Fi associated raised a
+/// red "sync failing" banner on a healthy install - with a body reading "No
+/// successful sync in the last 6 hours" while describing normal use.
+///
+/// Consecutive failures are the honest evidence: a blocked proxy or a dead route
+/// fails EVERY attempt, whereas a wake-time blip fails once or twice then works.
+/// Elapsed quiet carries no signal at all any more.
+const TRANSIENT_ESCALATION_ATTEMPTS: u32 = 4;
 
-/// Record a transient (retryable) sync failure.
+/// Consecutive transient failures per provider, for the CURRENT PROCESS only.
 ///
-/// Normally raises NOTHING — [`http::SyncFault::Retry`] exists precisely so a
-/// network blip stops producing a "check your credentials" banner for
-/// credentials that are fine.
+/// In memory rather than in `pm_sync_state`, deliberately:
 ///
-/// But silence has to be BOUNDED. A provider blocked persistently (corporate
-/// proxy, TLS interception, a firewall rule) is unreachable on every tick
-/// forever, and suppressing that outright would leave the user's board silently
-/// going stale with no signal at all — strictly worse than the misleading banner
-/// this change removes. So the failure escalates to a normal sync notice once
-/// the provider has not synced successfully within
-/// [`TRANSIENT_ESCALATION_HOURS`].
-///
-/// **A provider that has NEVER synced needs its own handling**, because it has
-/// no `pm_sync_state` row at all, so an age test alone would no-op forever on
-/// exactly the installs that most need it — someone who just connected and whose
-/// network blocks the provider outright.
-///
-/// It gets ONE retry rather than escalating on the first failure. Escalating
-/// immediately would reintroduce the very thing this change removes, just with
-/// connectivity wording instead of credentials wording: connect a tracker, have
-/// the first attempt land on an ordinary blip (a DNS hiccup, a proxy handshake,
-/// a laptop still waking up) and a "sync failing" banner appears seconds later.
-/// So the first failure writes the row and stays silent; the next one sees the
-/// row with an epoch `last_synced_at`, which is not recent, and escalates. One
-/// sync interval of grace, and the persistently-blocked case still surfaces.
-///
-/// **This same one-retry grace applies to a provider that has synced
-/// successfully before**, not just a brand-new one - see the `is_sentinel`
-/// branch in [`note_transient_sync_failure`]. Without it, a provider whose
-/// `last_synced_at` goes stale because the DAEMON WAS ASLEEP (laptop closed
-/// overnight, a longer Wi-Fi/VPN drop) rather than because it kept failing
-/// escalates on its very first retry after waking - the exact false-positive
-/// this module exists to remove, just triggered by a gap in *time* instead of
-/// a gap in connectivity. The grace row and this ONE mechanism (the epoch
-/// sentinel) cover both cases identically, so the escalation check cannot tell
-/// them apart and does not need to.
-///
-/// The remedy points at connectivity, NOT credentials: by construction we only
-/// reach here for failures that are not the user's token.
-///
-/// Write the epoch-sentinel grace row for a provider that has never synced.
-///
-/// **Deliberately does NOT write `last_error`** (unlike the escalating write
-/// in [`stamp_sync_error_with_remedy`]): `meridian_core::readers::integrations::sync_errors`
-/// reads `last_error IS NOT NULL` to drive the per-provider "Sync failed"
-/// badge on the Integrations page, independent of whether a system-wide
-/// notice was raised. Setting it here would show that badge during a period
-/// this function is specifically trying to keep quiet - `detail` is still
-/// logged (below) so the attempt is not lost from telemetry, just kept out of
-/// the persisted, user-visible column.
-///
-/// # Why `ON CONFLICT DO NOTHING`
-/// The caller's `has_row` check is a SEPARATE statement from this insert, and
-/// `pm_sync_state.provider` is a PRIMARY KEY - so anything that can run two
-/// sync passes for one provider concurrently can have both observe "no row"
-/// and both insert. That is not hypothetical here: `meridian ticket-update`
-/// opens its OWN pool to the same `meridian.db` and calls
-/// `intelligence::run_pm_force_sync` (`src/main.rs`) while the daemon's poll
-/// loop is running `run_pm_sync` against the same file, so the two racers are
-/// separate PROCESSES and no in-process lock would cover them.
-///
-/// Without the clause the loser gets `UNIQUE constraint failed`, which
-/// [`record_sync_failure`] swallows by design - so the grace row would be
-/// silently lost, the next failure would take the same branch again, and the
-/// escalation clock would never start. That is the exact failure this whole
-/// module exists to prevent, reintroduced by a race.
-///
-/// Doing nothing on conflict is the correct resolution rather than a
-/// compromise: the row the winner wrote carries the same epoch sentinel this
-/// one would have written, so both racers leave the state they intended.
-///
-/// Extracted from [`note_transient_sync_failure`] to give the conflict
-/// behaviour a testable seam - the race itself has no deterministic hook, but
-/// "inserting over an existing row is a no-op, not an error" does.
-async fn insert_grace_row(pool: &SqlitePool, provider: &str, detail: &str) -> Result<()> {
-    tracing::debug!(
-        provider,
-        detail,
-        "grace row: recording the attempt without a user-visible error"
-    );
-    sqlx::query(
-        "INSERT INTO pm_sync_state (provider, last_synced_at, last_error)
-         VALUES (?, '1970-01-01T00:00:00Z', NULL)
-         ON CONFLICT(provider) DO NOTHING",
-    )
-    .bind(provider)
-    .execute(pool)
-    .await
-    .context("recording the first transient failure for a never-synced provider")?;
-    Ok(())
+/// * No migration, and it cannot corrupt a database - the same reasoning that put
+///   the sync dedup lock and the OAuth refresh journal outside `meridian.db`.
+/// * Resetting on restart is the SAFE direction. launchd `KeepAlive` restarts the
+///   daemon on every wake, so a fresh process starts at zero and can never
+///   inherit a stale streak and escalate on its first blip. The cost is that a
+///   persistent block takes a few attempts within one session to surface, which
+///   is the trade we want: quiet by default, loud only on real evidence.
+static TRANSIENT_STREAKS: std::sync::Mutex<Option<std::collections::HashMap<String, u32>>> =
+    std::sync::Mutex::new(None);
+
+/// Increment and return this provider's consecutive-failure count.
+fn bump_transient_streak(provider: &str) -> u32 {
+    let mut guard = TRANSIENT_STREAKS
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let map = guard.get_or_insert_with(std::collections::HashMap::new);
+    let counter = map.entry(provider.to_string()).or_insert(0);
+    *counter = counter.saturating_add(1);
+    *counter
 }
 
-/// Downgrade a STALE-BUT-PREVIOUSLY-SUCCESSFUL provider's `last_synced_at` to
-/// the epoch sentinel, marking its one retry of grace as used - WITHOUT
-/// writing `last_error`, for the same reason [`insert_grace_row`] doesn't (see
-/// its doc comment). Mirrors that function's shape but is an UPDATE, not an
-/// INSERT: the row already exists here, carrying a real (if old) past-success
-/// timestamp that this call intentionally overwrites, so the NEXT failure's
-/// `is_sentinel` check reads it identically to a never-synced provider's grace
-/// row and escalates.
-async fn mark_first_stale_failure(pool: &SqlitePool, provider: &str, detail: &str) -> Result<()> {
-    tracing::debug!(
-        provider,
-        detail,
-        "first transient failure since a genuine past success - staying quiet until the next attempt"
-    );
-    // The WHERE clause re-checks, inside the write, the same three conditions
-    // the caller checked in a SEPARATE statement: still stale, not already the
-    // sentinel, and carrying no error.
-    //
-    // For the same reason `insert_grace_row` needs `ON CONFLICT DO NOTHING`:
-    // `meridian ticket-update` opens its own pool to this file and runs
-    // `run_pm_force_sync` while the daemon's poll loop runs `run_pm_sync`, so
-    // the racers are separate PROCESSES and no in-process lock covers them.
-    // That path was guarded for the INSERT and left open for this UPDATE.
-    //
-    // The damage an unconditional write does is not a lost grace tick (both
-    // racers intend the same sentinel) but the opposite: a sync that SUCCEEDS
-    // between the caller's read and this statement has its fresh
-    // `last_synced_at` stamped back to the epoch. The provider then reads as
-    // never-recently-synced, and the next failure escalates a user-visible
-    // notice for a tracker that is working. A single conditional statement is
-    // atomic in SQLite, so the success either lands before this (and the
-    // `last_synced_at` guard makes this a no-op) or after it (and it wins).
-    let updated = sqlx::query(
-        "UPDATE pm_sync_state SET last_synced_at = '1970-01-01T00:00:00Z'
-         WHERE provider = ?
-           AND last_error IS NULL
-           AND last_synced_at != '1970-01-01T00:00:00Z'
-           AND last_synced_at <= strftime('%Y-%m-%dT%H:%M:%SZ', 'now', ?)",
-    )
-    .bind(provider)
-    .bind(format!("-{TRANSIENT_ESCALATION_HOURS} hours"))
-    .execute(pool)
-    .await
-    .context("recording a resumed provider's first quiet failure since its last success")?
-    .rows_affected();
-
-    if updated == 0 {
-        // Something changed under us between the read and the write. Staying
-        // quiet is still the right answer for THIS attempt - the caller already
-        // decided not to escalate - but say so, because the alternative reading
-        // ("the write silently did nothing") is the bug this guard introduces
-        // if it is ever wrong.
-        tracing::debug!(
-            provider,
-            "grace write skipped - the row stopped being a clean stale transition \
-             (a concurrent sync succeeded, or another pass already recorded it)"
-        );
+/// Reset this provider's consecutive-failure count after a successful sync.
+///
+/// A success is the ONLY thing that clears it, which is what makes the count mean
+/// "failures in a row" rather than "failures ever".
+pub(crate) fn reset_transient_streak(provider: &str) {
+    let mut guard = TRANSIENT_STREAKS
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    if let Some(map) = guard.as_mut() {
+        map.remove(provider);
     }
-    Ok(())
+}
+
+/// Test-only: force a provider's streak so escalation can be exercised without
+/// calling the recorder N times.
+#[cfg(test)]
+pub(crate) fn set_transient_streak_for_test(provider: &str, value: u32) {
+    let mut guard = TRANSIENT_STREAKS
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let map = guard.get_or_insert_with(std::collections::HashMap::new);
+    map.insert(provider.to_string(), value);
 }
 
 /// Returns whether it escalated.
@@ -264,77 +171,37 @@ pub async fn note_transient_sync_failure(
     provider: &str,
     detail: &str,
 ) -> Result<bool> {
-    let threshold = format!("-{TRANSIENT_ESCALATION_HOURS} hours");
-    let (has_row, recently_synced, is_sentinel, has_error): (i64, i64, i64, i64) = sqlx::query_as(
-        "SELECT
-             EXISTS(SELECT 1 FROM pm_sync_state WHERE provider = ?),
-             EXISTS(
-                 SELECT 1 FROM pm_sync_state
-                 WHERE provider = ?
-                   AND last_synced_at > strftime('%Y-%m-%dT%H:%M:%SZ', 'now', ?)
-             ),
-             EXISTS(
-                 SELECT 1 FROM pm_sync_state
-                 WHERE provider = ? AND last_synced_at = '1970-01-01T00:00:00Z'
-             ),
-             EXISTS(
-                 SELECT 1 FROM pm_sync_state WHERE provider = ? AND last_error IS NOT NULL
-             )",
-    )
-    .bind(provider)
-    .bind(provider)
-    .bind(&threshold)
-    .bind(provider)
-    .bind(provider)
-    .fetch_one(pool)
-    .await
-    .context("checking sync recency for transient-failure escalation")?;
+    let streak = bump_transient_streak(provider);
+    let span = tracing::Span::current();
+    span.record("streak", streak);
 
-    if recently_synced != 0 {
-        tracing::Span::current().record("escalated", false);
-        return Ok(false);
-    }
-
-    if has_row == 0 {
-        // First-ever failure on a provider that has never synced. Record the
-        // attempt so the NEXT one escalates, but raise nothing: a tracker
-        // connected seconds ago that hits one blip must not immediately show a
-        // fault. The epoch sentinel is deliberate - it is not a recent sync, so
-        // the next failure takes the escalation branch below.
-        insert_grace_row(pool, provider, detail).await?;
+    if streak < TRANSIENT_ESCALATION_ATTEMPTS {
+        // Silence, which is the normal outcome. `SyncFault::Retry` exists so a
+        // network blip does not produce a banner for credentials that are fine,
+        // and a wake-time blip is the single most common instance of one.
         tracing::debug!(
             provider,
-            "first transient failure on a never-synced provider - staying quiet until the next attempt"
+            streak,
+            needed = TRANSIENT_ESCALATION_ATTEMPTS,
+            "transient sync failure - staying quiet until the streak is real"
         );
-        tracing::Span::current().record("escalated", false);
+        span.record("escalated", false);
         return Ok(false);
     }
 
-    // Not recently synced, and the provider HAS synced before. Give it the
-    // SAME one retry of grace a never-synced provider gets, unless there is
-    // already something to weigh against staying quiet: `is_sentinel` covers
-    // "the grace tick already ran" (this branch set `last_synced_at` to the
-    // sentinel with no `last_error`, and a SECOND consecutive failure now
-    // finds it), and `has_error` covers "a fault is already recorded here"
-    // (a terminal failure elsewhere already wrote `last_error` and raised its
-    // own notice - nothing is gained by staying quiet on top of that). Only a
-    // row that has synced before, has since gone stale, and carries neither
-    // signal - a clean transition into staleness - gets the grace write.
-    if has_error == 0 && is_sentinel == 0 {
-        mark_first_stale_failure(pool, provider, detail).await?;
-        tracing::Span::current().record("escalated", false);
-        return Ok(false);
-    }
-
+    // Silence has to be BOUNDED. A provider blocked persistently (corporate
+    // proxy, TLS interception, a firewall rule) fails every single attempt
+    // forever, and suppressing that outright would leave the board silently going
+    // stale with no signal at all - strictly worse than a misleading banner.
     tracing::warn!(
         provider,
-        hours = TRANSIENT_ESCALATION_HOURS,
-        "provider unreachable with no recent successful sync - escalating to a notice"
+        streak,
+        "provider unreachable on {streak} consecutive attempts - escalating to a notice"
     );
-    // The title already names the provider, so the body only has to say what is
-    // wrong and carry the cause.
-    let msg =
-        format!("No successful sync in the last {TRANSIENT_ESCALATION_HOURS} hours - {detail}");
+    // The message names the evidence, not a duration. The old wording ("No
+    // successful sync in the last 6 hours") described normal on-demand operation
+    // and so read as a false alarm even when the fault was real.
+    let msg = format!("Unreachable on {streak} consecutive sync attempts - {detail}");
     stamp_sync_error_with_remedy(
         pool,
         provider,
@@ -342,7 +209,7 @@ pub async fn note_transient_sync_failure(
         Some("Check your internet connection, VPN, or proxy settings"),
     )
     .await?;
-    tracing::Span::current().record("escalated", true);
+    span.record("escalated", true);
     Ok(true)
 }
 
@@ -446,6 +313,12 @@ pub async fn record_sync_failure(
 
 /// Clear the last error for a provider after a successful sync.
 pub async fn clear_sync_error(pool: &SqlitePool, provider: &str) -> Result<()> {
+    // A success is the ONLY thing that resets the consecutive-failure streak,
+    // which is what makes that count mean "failures in a row" rather than
+    // "failures ever". Reset FIRST: if the DB write below fails, the streak is
+    // still correct (the sync did succeed), whereas a streak left standing after
+    // a success would escalate on the next single blip.
+    reset_transient_streak(provider);
     sqlx::query("UPDATE pm_sync_state SET last_error = NULL WHERE provider = ?")
         .bind(provider)
         .execute(pool)
