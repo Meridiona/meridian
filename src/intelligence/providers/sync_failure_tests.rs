@@ -44,308 +44,197 @@ async fn notice(pool: &SqlitePool, id: &str) -> Option<(String, String, Option<S
         .unwrap()
 }
 
-/// The whole point of suppressing transient failures: an ordinary blip on a
-/// provider that is otherwise working must raise NOTHING. This is the bug
-/// the user reported - a banner telling them to redo working credentials.
-#[tokio::test]
-async fn a_blip_on_a_healthy_provider_stays_silent() {
-    let pool = make_db().await;
-    set_last_sync(&pool, "github", "-5 minutes").await;
+/// Each test gets its own provider name where the streak matters: the streak
+/// lives in a process-global map, and cargo runs these in parallel threads, so
+/// sharing a name would let one test's failures leak into another's count.
+///
+/// Reset explicitly too, because the map outlives any single test.
+fn fresh_streak(provider: &str) {
+    reset_transient_streak(provider);
+}
 
-    let escalated = note_transient_sync_failure(&pool, "github", "dns error")
+/// A single network blip must stay SILENT. This is the whole reason
+/// `SyncFault::Retry` exists - one DNS hiccup must not produce a "check your
+/// credentials" banner for credentials that are fine.
+#[tokio::test]
+async fn a_single_blip_stays_silent() {
+    let pool = make_db().await;
+    fresh_streak("blip_single");
+    set_last_sync(&pool, "blip_single", "-2 minutes").await;
+
+    let escalated = note_transient_sync_failure(&pool, "blip_single", "dns error")
         .await
         .unwrap();
-
-    assert!(!escalated);
+    assert!(!escalated, "one transient failure must not escalate");
     assert!(
-        notice(&pool, "pm.github").await.is_none(),
-        "a network blip must not raise a user-facing fault"
+        notice(&pool, "pm.blip_single").await.is_none(),
+        "one blip must raise no notice"
     );
 }
 
-/// And the counterweight: silence must be BOUNDED. A provider blocked by a
-/// proxy or firewall fails on every tick forever, and going quiet would
-/// leave the board silently stale - worse than the banner we removed.
+/// THE REGRESSION THIS REWRITE EXISTS FOR.
 ///
-/// The FIRST failure after `last_synced_at` goes stale gets one retry of
-/// grace too (same mechanism a never-synced provider gets - see
-/// `a_provider_resuming_after_a_long_gap_gets_one_retry_before_escalating`),
-/// so this simulates genuine persistence with a SECOND consecutive failure,
-/// matching how `a_never_synced_provider_gets_one_retry_before_escalating`
-/// proves the same property for a brand-new connection.
+/// A machine that has not synced for days is NORMAL once sync is on-demand: it
+/// was shut, or nobody opened the dashboard. The old rule ("no successful sync in
+/// the last 6 hours") treated that as evidence of a fault, so the first couple of
+/// failures after any quiet period escalated - meaning a Monday-morning Wi-Fi
+/// blip raised a red banner on a healthy install.
+///
+/// A long quiet period must now carry NO weight at all.
+#[tokio::test]
+async fn a_blip_after_days_of_quiet_stays_silent() {
+    let pool = make_db().await;
+    fresh_streak("blip_quiet");
+    // Three days since the last success - a shut laptop, not a fault.
+    set_last_sync(&pool, "blip_quiet", "-72 hours").await;
+
+    for attempt in 1..=2 {
+        let escalated = note_transient_sync_failure(&pool, "blip_quiet", "dns error")
+            .await
+            .unwrap();
+        assert!(
+            !escalated,
+            "attempt {attempt} after a long quiet period must not escalate - \
+             elapsed quiet is not evidence of a fault under on-demand sync"
+        );
+    }
+    assert!(
+        notice(&pool, "pm.blip_quiet").await.is_none(),
+        "a wake-time blip must raise no notice however long the machine slept"
+    );
+}
+
+/// Silence still has to be BOUNDED. A provider blocked persistently (corporate
+/// proxy, TLS interception, a firewall rule) fails every single attempt, and
+/// suppressing that outright would leave the board silently going stale with no
+/// signal at all - strictly worse than a misleading banner.
 #[tokio::test]
 async fn a_persistently_unreachable_provider_stops_being_silent() {
     let pool = make_db().await;
-    set_last_sync(&pool, "jira", "-7 hours").await;
+    fresh_streak("blocked");
+    set_last_sync(&pool, "blocked", "-2 minutes").await;
 
-    let first = note_transient_sync_failure(&pool, "jira", "connection timed out")
-        .await
-        .unwrap();
-    assert!(
-        !first,
-        "the first failure after going stale must stay silent"
-    );
-
-    let escalated = note_transient_sync_failure(&pool, "jira", "connection timed out")
-        .await
-        .unwrap();
-
-    assert!(escalated);
-    let (title, detail, remedy) = notice(&pool, "pm.jira").await.expect("notice raised");
-    assert_eq!(title, "Jira sync failing");
-    assert!(
-        detail.contains("connection timed out"),
-        "the cause must survive into the notice: {detail}"
-    );
-    let remedy = remedy.expect("remedy set");
-    assert!(
-        remedy.contains("connection") || remedy.contains("proxy"),
-        "an unreachable provider is a connectivity remedy, not a credentials one: {remedy}"
-    );
-    assert!(
-        !remedy.contains("TOKEN"),
-        "must not tell the user to redo credentials that are fine: {remedy}"
-    );
-}
-
-/// The trap this has to survive: transient failures no longer call
-/// `stamp_sync_error`, so a machine that has NEVER reached the provider has
-/// no `pm_sync_state` row at all, and an age test alone would no-op forever
-/// on exactly the installs that need it most - someone who just connected
-/// behind a blocking proxy.
-///
-/// But it must not escalate on failure #1 either, or connecting a tracker
-/// and hitting one DNS hiccup shows a fault seconds later - the same
-/// false-positive banner this change exists to remove, just with
-/// connectivity wording. One retry, then it surfaces.
-#[tokio::test]
-async fn a_never_synced_provider_gets_one_retry_before_escalating() {
-    let pool = make_db().await;
-
-    let first = note_transient_sync_failure(&pool, "github", "dns error")
-        .await
-        .unwrap();
-    assert!(!first, "the first blip after connecting must stay silent");
-    assert!(
-        notice(&pool, "pm.github").await.is_none(),
-        "no banner seconds after connecting a tracker"
-    );
-
-    let second = note_transient_sync_failure(&pool, "github", "dns error")
-        .await
-        .unwrap();
-    assert!(second, "a second failure means it is not just a blip");
-    assert!(notice(&pool, "pm.github").await.is_some());
-}
-
-/// THE REGRESSION THIS MODULE WAS MISSING: a provider that synced
-/// successfully hours ago - laptop asleep overnight, a longer Wi-Fi/VPN drop,
-/// reconnecting after being away - has `last_synced_at` go stale for a reason
-/// that has NOTHING to do with repeated failed attempts. Before this test
-/// existed, the very first retry after such a gap escalated immediately (zero
-/// grace), while a never-synced provider got one retry first. If the network
-/// is actually back up moments later, the next attempt succeeds and clears
-/// the notice within seconds - a flash-then-clear banner that never should
-/// have shown. This provider must get the SAME one-retry grace a never-synced
-/// provider gets, and the grace attempt must not touch `last_error` either
-/// (see `a_racing_grace_row_insert_is_a_no_op_not_an_error` for the same
-/// guarantee on the never-synced path).
-#[tokio::test]
-async fn a_provider_resuming_after_a_long_gap_gets_one_retry_before_escalating() {
-    let pool = make_db().await;
-    set_last_sync(&pool, "jira", "-9 hours").await;
-
-    let first = note_transient_sync_failure(&pool, "jira", "dns error")
-        .await
-        .unwrap();
-    assert!(
-        !first,
-        "the first failure after a long gap must stay silent, same as a never-synced provider"
-    );
-    assert!(
-        notice(&pool, "pm.jira").await.is_none(),
-        "no banner on the very first retry after waking up"
-    );
-    let (last_error,): (Option<String>,) =
-        sqlx::query_as("SELECT last_error FROM pm_sync_state WHERE provider = 'jira'")
-            .fetch_one(&pool)
-            .await
-            .unwrap();
-    assert_eq!(
-        last_error, None,
-        "the grace attempt must not make the Integrations page show \"Sync failed\""
-    );
-
-    let second = note_transient_sync_failure(&pool, "jira", "dns error")
-        .await
-        .unwrap();
-    assert!(
-        second,
-        "a second consecutive failure means it is not just a blip"
-    );
-    assert!(notice(&pool, "pm.jira").await.is_some());
-}
-
-/// Grace is per-gap, not a one-time allowance for the provider's lifetime: a
-/// genuine intervening success must reset it, or a provider that recovers and
-/// later fails again would skip straight to escalation.
-#[tokio::test]
-async fn a_real_success_between_gaps_resets_the_grace() {
-    let pool = make_db().await;
-    set_last_sync(&pool, "jira", "-9 hours").await;
-
-    assert!(
-        !note_transient_sync_failure(&pool, "jira", "dns error")
-            .await
-            .unwrap(),
-        "first failure after the first gap: grace"
-    );
-
-    // A real success lands - e.g. the network came back for a while.
-    set_last_sync(&pool, "jira", "-0 hours").await;
-
-    // Then a second, later gap starts.
-    set_last_sync(&pool, "jira", "-9 hours").await;
-    assert!(
-        !note_transient_sync_failure(&pool, "jira", "dns error")
-            .await
-            .unwrap(),
-        "first failure after the SECOND gap must get grace again, not skip to escalation"
-    );
-}
-
-/// The grace-row insert races a concurrent one across PROCESSES: `meridian
-/// ticket-update` force-syncs through its own pool on the same `meridian.db`
-/// while the daemon polls. Both can observe "no row" and both insert against
-/// the `provider` PRIMARY KEY.
-///
-/// Without `ON CONFLICT DO NOTHING` the loser gets a UNIQUE violation, which
-/// `record_sync_failure` swallows by design - so the grace row vanishes, the
-/// next failure takes the never-synced branch again, and the escalation clock
-/// never starts. A provider blocked forever would then stay silent forever,
-/// which is the failure mode this module exists to prevent.
-///
-/// The race has no deterministic hook, so this pins the property that makes
-/// the race survivable: inserting over an existing row is a no-op, not an
-/// error, and the first writer's row is left intact.
-#[tokio::test]
-async fn a_racing_grace_row_insert_is_a_no_op_not_an_error() {
-    let pool = make_db().await;
-
-    insert_grace_row(&pool, "github", "first writer")
-        .await
-        .unwrap();
-    insert_grace_row(&pool, "github", "second writer")
-        .await
-        .expect("a concurrent grace-row insert must not error");
-
-    let (count,): (i64,) =
-        sqlx::query_as("SELECT COUNT(*) FROM pm_sync_state WHERE provider = 'github'")
-            .fetch_one(&pool)
-            .await
-            .unwrap();
-    assert_eq!(count, 1, "the racing insert must not duplicate the row");
-
-    let (last, detail): (String, Option<String>) = sqlx::query_as(
-        "SELECT last_synced_at, last_error FROM pm_sync_state WHERE provider = 'github'",
-    )
-    .fetch_one(&pool)
-    .await
-    .unwrap();
-    assert!(
-        last.starts_with("1970"),
-        "the sentinel must survive the race, or escalation stalls: {last}"
-    );
-    assert_eq!(
-        detail, None,
-        "a grace row must never carry a user-visible last_error, from either writer"
-    );
-}
-
-/// A provider that HAS synced before must still escalate normally after a
-/// grace row lands - i.e. the conflict-tolerant insert did not change the
-/// contract the escalation clock reads.
-#[tokio::test]
-async fn a_grace_row_from_a_race_still_escalates_on_the_next_failure() {
-    let pool = make_db().await;
-    insert_grace_row(&pool, "github", "first writer")
-        .await
-        .unwrap();
-
-    let escalated = note_transient_sync_failure(&pool, "github", "dns error")
+    for attempt in 1..TRANSIENT_ESCALATION_ATTEMPTS {
+        assert!(
+            !note_transient_sync_failure(&pool, "blocked", "connection timed out")
+                .await
+                .unwrap(),
+            "attempt {attempt} is below the threshold and must stay silent"
+        );
+    }
+    let escalated = note_transient_sync_failure(&pool, "blocked", "connection timed out")
         .await
         .unwrap();
     assert!(
         escalated,
-        "the epoch sentinel is not a recent sync, so the next failure must surface"
+        "the {TRANSIENT_ESCALATION_ATTEMPTS}th consecutive failure must escalate"
     );
-    assert!(notice(&pool, "pm.github").await.is_some());
-}
 
-/// The grace is exactly one retry, not an open-ended reprieve: the row the
-/// first failure writes must carry the epoch sentinel, or it would read as
-/// a recent sync and suppress escalation forever.
-#[tokio::test]
-async fn the_first_failure_row_does_not_look_like_a_sync() {
-    let pool = make_db().await;
-    note_transient_sync_failure(&pool, "github", "dns error")
+    let (_, detail, remedy) = notice(&pool, "pm.blocked")
         .await
-        .unwrap();
-
-    let (last,): (String,) =
-        sqlx::query_as("SELECT last_synced_at FROM pm_sync_state WHERE provider = 'github'")
-            .fetch_one(&pool)
-            .await
-            .unwrap();
+        .expect("a notice must exist once the streak is real");
     assert!(
-        last.starts_with("1970"),
-        "the grace row must not count as a sync: {last}"
+        detail.contains("consecutive"),
+        "the message must name the real evidence (consecutive failures), not a \
+         duration that now describes normal operation - got {detail:?}"
+    );
+    assert!(
+        !detail.contains("6 hours"),
+        "the old duration wording must not come back - got {detail:?}"
+    );
+    assert!(
+        remedy.is_some_and(|r| r.to_lowercase().contains("connection")),
+        "a connectivity fault must point at connectivity"
     );
 }
 
-/// A row left by an earlier TERMINAL failure carries the epoch sentinel
-/// (`stamp_sync_error` inserts `1970-01-01`), which is a row but not a
-/// success. It must not be mistaken for one.
+/// A SUCCESS is the only thing that resets the streak. Without this, failures
+/// accumulate across hours of healthy operation and the Nth blip of the day
+/// escalates for no reason.
 #[tokio::test]
-async fn an_epoch_sentinel_row_is_not_a_recent_success() {
+async fn a_success_resets_the_streak() {
     let pool = make_db().await;
-    stamp_sync_error(&pool, "github", "bad credentials")
-        .await
-        .unwrap();
+    fresh_streak("resets");
+    set_last_sync(&pool, "resets", "-2 minutes").await;
 
-    let escalated = note_transient_sync_failure(&pool, "github", "dns error")
-        .await
-        .unwrap();
+    for _ in 1..TRANSIENT_ESCALATION_ATTEMPTS {
+        assert!(!note_transient_sync_failure(&pool, "resets", "blip")
+            .await
+            .unwrap());
+    }
+    // One good sync in between wipes the slate.
+    clear_sync_error(&pool, "resets").await.unwrap();
 
-    assert!(escalated, "an epoch last_synced_at is not a success");
+    assert!(
+        !note_transient_sync_failure(&pool, "resets", "blip")
+            .await
+            .unwrap(),
+        "after a success the count restarts, so this is failure #1 and stays silent"
+    );
+    assert!(
+        notice(&pool, "pm.resets").await.is_none(),
+        "no notice may survive a successful sync"
+    );
 }
 
-/// The window itself, from both sides.
+/// The streak is per provider. A flaky GitHub must not push Jira toward a notice.
 #[tokio::test]
-async fn the_escalation_window_holds_on_both_sides() {
+async fn streaks_do_not_leak_between_providers() {
     let pool = make_db().await;
+    fresh_streak("leak_a");
+    fresh_streak("leak_b");
 
-    set_last_sync(&pool, "jira", "-1 hours").await;
+    for _ in 1..TRANSIENT_ESCALATION_ATTEMPTS {
+        assert!(!note_transient_sync_failure(&pool, "leak_a", "blip")
+            .await
+            .unwrap());
+    }
     assert!(
-        !note_transient_sync_failure(&pool, "jira", "blip")
+        !note_transient_sync_failure(&pool, "leak_b", "blip")
             .await
             .unwrap(),
-        "inside the window must stay silent"
+        "provider b is on its FIRST failure and must be unaffected by a's streak"
     );
+}
 
-    set_last_sync(&pool, "jira", "-7 hours").await;
+/// A never-synced provider (no `pm_sync_state` row at all) follows the same rule.
+///
+/// It used to need its own branch, because an age test on a missing row no-opped
+/// forever - exactly on the installs that most needed it, someone who just
+/// connected and whose network blocks the provider. Counting attempts removes
+/// that special case entirely, and this pins that it really is gone.
+#[tokio::test]
+async fn a_never_synced_provider_escalates_on_the_same_streak() {
+    let pool = make_db().await;
+    fresh_streak("virgin");
+    // Deliberately NO set_last_sync: there is no row.
+
+    for _ in 1..TRANSIENT_ESCALATION_ATTEMPTS {
+        assert!(!note_transient_sync_failure(&pool, "virgin", "dns error")
+            .await
+            .unwrap());
+    }
     assert!(
-        !note_transient_sync_failure(&pool, "jira", "blip")
+        note_transient_sync_failure(&pool, "virgin", "dns error")
             .await
             .unwrap(),
-        "the first failure outside the window still gets one retry of grace"
+        "a provider that never synced must still escalate on a real streak"
     );
+}
+
+/// The test seam exists and drives escalation, so a future test does not have to
+/// know the threshold's value to exercise the loud path.
+#[tokio::test]
+async fn the_streak_can_be_forced_for_tests() {
+    let pool = make_db().await;
+    set_transient_streak_for_test("forced", TRANSIENT_ESCALATION_ATTEMPTS - 1);
     assert!(
-        note_transient_sync_failure(&pool, "jira", "blip")
+        note_transient_sync_failure(&pool, "forced", "blip")
             .await
             .unwrap(),
-        "the second consecutive failure outside the window must escalate"
+        "one more failure on top of a forced near-threshold streak must escalate"
     );
+    reset_transient_streak("forced");
 }
 
 /// The escalation must self-heal: once the provider is reachable again the
@@ -353,10 +242,10 @@ async fn the_escalation_window_holds_on_both_sides() {
 #[tokio::test]
 async fn a_successful_sync_clears_an_escalated_notice() {
     let pool = make_db().await;
-    // Two failures: the first is the never-synced grace attempt.
-    note_transient_sync_failure(&pool, "github", "dns error")
-        .await
-        .unwrap();
+    // Drive the streak to one below the threshold, so the next failure is the
+    // one that escalates. Forced rather than looped so the test does not have to
+    // restate the threshold's value.
+    set_transient_streak_for_test("github", TRANSIENT_ESCALATION_ATTEMPTS - 1);
     note_transient_sync_failure(&pool, "github", "dns error")
         .await
         .unwrap();
@@ -370,16 +259,16 @@ async fn a_successful_sync_clears_an_escalated_notice() {
     );
 }
 
-/// The coupling that makes escalation reachable at all: recording an error
-/// must NEVER write a fresh `last_synced_at`.
+/// Recording an error must NEVER write a fresh `last_synced_at`.
 ///
-/// Every provider gates its whole fetch on that column being recent, and
-/// [`note_transient_sync_failure`] keys its escalation clock on the SAME
-/// column. So stamping `now` here would do two invisible things at once:
-/// suppress the next tick's retry, and reset the escalation clock on every
-/// failure so the threshold is never reached. The provider would go silent
-/// permanently, which is the exact regression this whole change exists to
-/// prevent. `azure_devops` had precisely this bug in its own `stamp_error`.
+/// Every provider gates its whole fetch on that column being recent, so stamping
+/// `now` while recording a FAILURE would suppress the next attempt's retry - the
+/// provider would go quiet permanently, having convinced itself it had just
+/// succeeded. `azure_devops` had precisely this bug in its own `stamp_error`.
+///
+/// This used to also guard the escalation clock, which keyed on the same column.
+/// That clock is gone (escalation counts consecutive attempts now), but the
+/// retry-suppression half is untouched and is the reason this still matters.
 #[tokio::test]
 async fn recording_an_error_never_looks_like_a_successful_sync() {
     let pool = make_db().await;
@@ -397,15 +286,24 @@ async fn recording_an_error_never_looks_like_a_successful_sync() {
         "an error must not be recorded as a sync: {last}"
     );
 
-    // And on a row that already holds a real (old) success, recording a
-    // failure must leave the clock alone rather than pushing it forward.
+    // And on a row that already holds a real (old) success, recording a failure
+    // must leave that timestamp alone rather than pushing it forward.
     set_last_sync(&pool, "github", "-10 hours").await;
-    stamp_sync_error(&pool, "github", "boom").await.unwrap();
-    assert!(
-        note_transient_sync_failure(&pool, "github", "unreachable")
+    let (before,): (String,) =
+        sqlx::query_as("SELECT last_synced_at FROM pm_sync_state WHERE provider = 'github'")
+            .fetch_one(&pool)
             .await
-            .unwrap(),
-        "recording an error must not reset the escalation clock"
+            .unwrap();
+    stamp_sync_error(&pool, "github", "boom").await.unwrap();
+    let (after,): (String,) =
+        sqlx::query_as("SELECT last_synced_at FROM pm_sync_state WHERE provider = 'github'")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    assert_eq!(
+        before, after,
+        "recording an error must not move last_synced_at - doing so would make the \
+         provider skip its next fetch as though it had just succeeded"
     );
 }
 
@@ -451,12 +349,25 @@ fn status_err(status: u16, body: &str) -> anyhow::Error {
 #[tokio::test]
 async fn a_transient_failure_at_the_catch_all_raises_no_notice() {
     let pool = make_db().await;
-    set_last_sync(&pool, "azure_devops", "-5 minutes").await;
+    // A UNIQUE provider key, not a real provider name. The consecutive-failure
+    // streak lives in a process-global map, and several tests in this file drive
+    // transient failures through `azure_devops`; sharing the key let one test's
+    // failures count toward another's streak under cargo's parallel threads.
+    // Nothing here depends on the name being a real provider - the assertion is
+    // that no notice is raised at all.
+    reset_transient_streak("catchall_transient");
+    set_last_sync(&pool, "catchall_transient", "-5 minutes").await;
 
-    record_sync_failure(&pool, "azure_devops", "wiql", &status_err(503, "down")).await;
+    record_sync_failure(
+        &pool,
+        "catchall_transient",
+        "wiql",
+        &status_err(503, "down"),
+    )
+    .await;
 
     assert!(
-        notice(&pool, "pm.azure_devops").await.is_none(),
+        notice(&pool, "pm.catchall_transient").await.is_none(),
         "a 503 reaching the catch-all must not raise a credentials banner"
     );
 }
@@ -516,14 +427,21 @@ async fn recording_the_same_failure_twice_cannot_degrade_it() {
 #[tokio::test]
 async fn re_reporting_a_transient_failure_still_raises_nothing() {
     let pool = make_db().await;
-    set_last_sync(&pool, "azure_devops", "-5 minutes").await;
+    // A UNIQUE provider key, not a real provider name. The consecutive-failure
+    // streak lives in a process-global map, and several tests in this file drive
+    // transient failures through `azure_devops`; sharing the key let one test's
+    // failures count toward another's streak under cargo's parallel threads.
+    // Nothing here depends on the name being a real provider - the assertion is
+    // that no notice is raised at all.
+    reset_transient_streak("rereport_transient");
+    set_last_sync(&pool, "rereport_transient", "-5 minutes").await;
     let err = status_err(503, "down");
 
-    record_sync_failure(&pool, "azure_devops", "wiql", &err).await;
-    record_sync_failure(&pool, "azure_devops", "refresh", &err).await;
+    record_sync_failure(&pool, "rereport_transient", "wiql", &err).await;
+    record_sync_failure(&pool, "rereport_transient", "refresh", &err).await;
 
     assert!(
-        notice(&pool, "pm.azure_devops").await.is_none(),
+        notice(&pool, "pm.rereport_transient").await.is_none(),
         "a re-reported blip must stay silent"
     );
 }
@@ -596,80 +514,4 @@ async fn every_default_remedy_names_a_place_in_the_app() {
             "{provider} remedy asks for a file edit or a CLI command: {remedy}"
         );
     }
-}
-
-/// The grace write must not clobber a sync that SUCCEEDED under it.
-///
-/// `note_transient_sync_failure` reads the row's state, then writes the epoch
-/// sentinel in a SEPARATE statement. `meridian ticket-update` opens its own
-/// pool to this file and runs `run_pm_force_sync` while the daemon's poll loop
-/// runs `run_pm_sync`, so a success can land between those two - and the write
-/// used to be unconditional, stamping the fresh `last_synced_at` back to the
-/// epoch. The provider then read as never-recently-synced and the NEXT failure
-/// escalated a user-visible notice for a tracker that was working.
-///
-/// Simulating the interleaving directly needs a hook that does not exist, so
-/// this drives the same end state the racer would leave: a row that is fresh
-/// at the moment of the write. The conditional UPDATE must decline it.
-#[tokio::test]
-async fn a_concurrent_successful_sync_is_not_stamped_back_to_the_epoch() {
-    let pool = make_db().await;
-    // The state the winner of the race leaves behind: a genuinely recent sync.
-    set_last_sync(&pool, "jira", "-1 minutes").await;
-
-    mark_first_stale_failure(&pool, "jira", "dns error")
-        .await
-        .unwrap();
-
-    let (last,): (String,) =
-        sqlx::query_as("SELECT last_synced_at FROM pm_sync_state WHERE provider = 'jira'")
-            .fetch_one(&pool)
-            .await
-            .unwrap();
-    assert_ne!(
-        last, "1970-01-01T00:00:00Z",
-        "a successful sync must not be stamped back to the epoch by the grace write"
-    );
-}
-
-/// The grace write still does its job on the case it exists for: a provider
-/// that genuinely went stale, with no error recorded.
-#[tokio::test]
-async fn a_clean_stale_transition_still_gets_its_grace_tick() {
-    let pool = make_db().await;
-    set_last_sync(&pool, "jira", "-7 hours").await;
-
-    mark_first_stale_failure(&pool, "jira", "dns error")
-        .await
-        .unwrap();
-
-    let (last,): (String,) =
-        sqlx::query_as("SELECT last_synced_at FROM pm_sync_state WHERE provider = 'jira'")
-            .fetch_one(&pool)
-            .await
-            .unwrap();
-    assert_eq!(last, "1970-01-01T00:00:00Z");
-}
-
-/// A row that already carries an error is not a clean stale transition, so the
-/// grace write must decline it - the escalation clock is already running.
-#[tokio::test]
-async fn a_row_with_an_error_does_not_get_a_grace_tick() {
-    let pool = make_db().await;
-    set_last_sync(&pool, "jira", "-7 hours").await;
-    sqlx::query("UPDATE pm_sync_state SET last_error = 'boom' WHERE provider = 'jira'")
-        .execute(&pool)
-        .await
-        .unwrap();
-
-    mark_first_stale_failure(&pool, "jira", "dns error")
-        .await
-        .unwrap();
-
-    let (last,): (String,) =
-        sqlx::query_as("SELECT last_synced_at FROM pm_sync_state WHERE provider = 'jira'")
-            .fetch_one(&pool)
-            .await
-            .unwrap();
-    assert_ne!(last, "1970-01-01T00:00:00Z");
 }
