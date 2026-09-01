@@ -11,7 +11,11 @@
 // Escalation, in order:
 //   1. the session's OWN agent CLI, `primary_attempts` times
 //   2. a rate limit → stop immediately, back the source off, retry on a later
-//      tick. A quota refills; it is waited out, never routed around.
+//      tick. A quota refills; it is waited out, never routed around — but only
+//      up to MAX_RATE_LIMITED_ROW_ATTEMPTS (~a day of backoff), because this
+//      branch used to be the one outcome that never recorded an attempt, so a
+//      row misclassified as rate-limited retried forever and the queue never
+//      drained. See that constant.
 //   3. otherwise (crashed / not installed / signed out / unusable output) → the
 //      user's globally chosen AI provider, once (`fallback`). Usually the same
 //      CLI, in which case it is skipped without a call.
@@ -565,6 +569,87 @@ pub(crate) fn cap_transcript(transcript: &str, cap: usize) -> String {
 
 // ──────────────────────── Loop ──────────────────────────────────────────────
 
+/// What one [`drain`] pass actually did, so the loop can pace itself.
+///
+/// Replaces a bare `bool` ("were all rows backed off?") that could not
+/// distinguish the three cases the wait needs to tell apart: real progress, a
+/// quota wall, and *work attempted that failed*. The old signal also
+/// miscounted - it compared `skipped_backoff` against the whole batch, so a
+/// single failing row alongside backed-off ones collapsed the 30-minute
+/// rate-limit wait back to the 5-second sweep.
+#[derive(Debug, Default, PartialEq, Eq, Clone, Copy)]
+struct DrainOutcome {
+    /// Rows fetched for consideration this pass.
+    seen: u32,
+    /// Rows summarised and persisted.
+    summarised: u32,
+    /// Rows not attempted because their source is in rate-limit backoff, plus
+    /// rows whose attempt reported a rate limit.
+    skipped_backoff: u32,
+    /// Rows attempted that failed for a non-rate-limit reason.
+    failed: u32,
+    /// Rows not attempted because they have exhausted an attempt cap.
+    skipped_exhausted: u32,
+}
+
+/// Longest the loop will wait when nothing is succeeding.
+///
+/// Bounds the retry storm without letting a transient outage park the queue
+/// for the full rate-limit backoff: a pass that fails is retried within five
+/// minutes, not five seconds.
+const MAX_IDLE_BACKOFF_SECS: u64 = 300;
+
+/// Seconds to wait before the next pass, given what the last one did.
+///
+/// # The fork storm this bounds
+///
+/// Measured in production over ~46 hours: 18,674 forks, one every ~9 seconds,
+/// continuously, while the queue sat flat at 59-61 rows. The shape is a batch
+/// of `batch_per_tick` (32) rows that each fail FAST - two primary attempts,
+/// so 64 spawns - re-attempted every `sweep_interval_secs` (5 s). Nothing in
+/// the loop distinguished "nothing to do" from "everything I tried failed", so
+/// a failing queue was retried at the same cadence as an idle one forever.
+///
+/// Note this is the opposite of the reported diagnosis. A row that *hangs*
+/// produces FEW forks - it sits in `wait_with_output`, not in `spawn` - so a
+/// high fork rate is positive evidence of fast failures, and pacing them is
+/// the fix rather than a timeout change.
+fn next_wait_secs(out: DrainOutcome, cfg: &SummariserConfig, consecutive_idle: u32) -> u64 {
+    // Progress, or nothing pending: keep the responsive cadence. An empty
+    // queue costs nothing to re-check, and the indexer's notify wakes it
+    // sooner anyway.
+    if out.summarised > 0 || out.seen == 0 {
+        return cfg.sweep_interval_secs;
+    }
+    // Everything that could have been worked on is waiting out a quota, and
+    // nothing failed for another reason. Wait out the backoff properly - this
+    // is the case the old `all_backed_off` flag was trying to express.
+    if out.failed == 0 && out.skipped_backoff > 0 {
+        return cfg.rate_limit_backoff_secs;
+    }
+    // Rows were attempted and none succeeded. Back off exponentially from the
+    // normal sweep so a wedged queue costs a fork every few minutes instead of
+    // 64 every few seconds. Capped, so recovery is still prompt.
+    if out.failed > 0 {
+        let factor = 1u64 << consecutive_idle.min(6);
+        // `.max(sweep_interval_secs)` after the cap, not before: the cap is
+        // there to keep recovery prompt, but with `SUMMARISER_SWEEP_S` set above
+        // MAX_IDLE_BACKOFF_SECS it would invert the whole point of this branch
+        // and make a FAILING queue retry more often than a healthy one. The
+        // default sweep is 5 s so this never binds in practice - it binds
+        // exactly when someone has deliberately slowed the loop down, which is
+        // the moment speeding it up is least wanted.
+        return cfg
+            .sweep_interval_secs
+            .saturating_mul(factor)
+            .min(MAX_IDLE_BACKOFF_SECS)
+            .max(cfg.sweep_interval_secs);
+    }
+    // Everything left is exhausted (dead-lettered or capped) - there is
+    // nothing to retry until new rows seal, and the notify covers that.
+    cfg.sweep_interval_secs
+}
+
 /// The summariser task: drain the queue, then wait for an indexer notify or the
 /// catch-up sweep. Dormant if no coding agent is present. Backs off when the
 /// primary engine is unavailable (a failed row stays pending for a later drain).
@@ -594,22 +679,32 @@ pub async fn run_loop(
     // engine is available again. Keyed on app_name ("Claude Code", "Codex", …).
     // Only rows whose source is in backoff are skipped; other sources continue.
     let mut source_backoff: HashMap<String, std::time::Instant> = HashMap::new();
+    // Separate ledger for consecutive rate-limited reports — see
+    // `MAX_RATE_LIMITED_ROW_ATTEMPTS`.
+    let mut rate_limited_attempts: HashMap<i64, u32> = HashMap::new();
+    // Consecutive passes that attempted work and summarised nothing. Drives
+    // `next_wait_secs`'s exponential backoff so a wedged queue stops re-forking
+    // its whole batch every few seconds.
+    let mut consecutive_idle: u32 = 0;
     loop {
-        let all_backed_off = drain(
+        // `shutdown_rx` is passed IN as well as selected on below: #918 made
+        // `drain` check it between rows, so a shutdown during a long summarise
+        // does not have to wait out the rest of the batch.
+        let out = drain(
             &pool,
             &cfg,
             &mut attempts,
+            &mut rate_limited_attempts,
             &mut source_backoff,
             &shutdown_rx,
         )
         .await;
-        let wait = if all_backed_off {
-            // Nothing could be processed (all pending rows are from backed-off
-            // sources). Wait out the backoff period rather than spinning.
-            cfg.rate_limit_backoff_secs
+        if out.summarised > 0 || out.failed == 0 {
+            consecutive_idle = 0;
         } else {
-            cfg.sweep_interval_secs
-        };
+            consecutive_idle = consecutive_idle.saturating_add(1);
+        }
+        let wait = next_wait_secs(out, &cfg, consecutive_idle);
         tokio::select! {
             _ = shutdown_rx.changed() => break,
             _ = notify.notified() => {}
@@ -633,9 +728,10 @@ pub async fn run_loop(
 const MAX_ROW_ATTEMPTS: u32 = 3;
 
 /// One drain pass: summarise pending rows from a bounded recent window
-/// (yesterday + today), oldest-first. Returns true only when all available
-/// rows belong to rate-limited sources (no progress was possible this pass),
-/// signalling the caller to wait longer rather than spinning.
+/// (yesterday + today), oldest-first. Returns a [`DrainOutcome`] tallying what
+/// happened, which [`next_wait_secs`] turns into the caller's sleep - a pass
+/// that only hit rate limits waits out the backoff, a pass that FAILED backs
+/// off exponentially, and a productive pass keeps the normal cadence.
 ///
 /// Rate-limit backoff is per-source (keyed on `app_name`): if Claude Code is
 /// rate-limited, Codex / Cursor / Copilot rows continue draining via their own
@@ -649,9 +745,10 @@ async fn drain(
     pool: &SqlitePool,
     cfg: &SummariserConfig,
     attempts: &mut HashMap<i64, u32>,
+    rate_limited_attempts: &mut HashMap<i64, u32>,
     source_backoff: &mut HashMap<String, std::time::Instant>,
     shutdown_rx: &watch::Receiver<bool>,
-) -> bool {
+) -> DrainOutcome {
     // Expire stale backoffs before deciding what to skip.
     let now_instant = std::time::Instant::now();
     source_backoff.retain(|_, until| *until > now_instant);
@@ -667,16 +764,18 @@ async fn drain(
         Ok(r) => r,
         Err(e) => {
             tracing::warn!(error = %crate::errors::chain(&e), "summariser: fetch_pending failed");
-            return false;
+            return DrainOutcome::default();
         }
     };
 
     if rows.is_empty() {
-        return false;
+        return DrainOutcome::default();
     }
 
-    let mut summarised = 0u32;
-    let mut skipped_backoff = 0u32;
+    let mut out = DrainOutcome {
+        seen: rows.len() as u32,
+        ..DrainOutcome::default()
+    };
 
     for row in &rows {
         // Each row shells out to the agent's own CLI (`claude -p` / `codex exec`
@@ -691,37 +790,82 @@ async fn drain(
         // cancellation-safe, so bounding exposure to "at most one in-flight
         // row" is the safe stopping point, not "any point at all".
         if *shutdown_rx.borrow() {
+            // `out` carries the tally so far and is returned as-is. The loop
+            // below turns it into a sleep, but it is about to see the same
+            // shutdown on its own `select!` and break, so the value only ever
+            // reaches the log line here.
             tracing::info!(
-                remaining = rows.len() - summarised as usize - skipped_backoff as usize,
+                remaining = rows.len() as u32
+                    - out.summarised
+                    - out.skipped_backoff
+                    - out.failed
+                    - out.skipped_exhausted,
                 "coding-agent summariser: shutdown requested mid-drain — stopping early"
             );
-            return false;
+            return out;
         }
         // Skip rows whose agent source is still in rate-limit backoff.
         if source_backoff.contains_key(&row.agent) {
-            skipped_backoff += 1;
+            out.skipped_backoff += 1;
             continue;
         }
 
         let tries = attempts.get(&row.id).copied().unwrap_or(0);
         if tries >= MAX_ROW_ATTEMPTS {
+            out.skipped_exhausted += 1;
             continue; // dead-lettered this daemon lifetime
+        }
+        if rate_limited_attempts.get(&row.id).copied().unwrap_or(0) >= MAX_RATE_LIMITED_ROW_ATTEMPTS
+        {
+            out.skipped_exhausted += 1;
+            continue; // gave up on this row's endless "rate limited" reports
         }
 
         let outcome = summarise_one(pool, row, cfg, true).await;
         if outcome.written {
-            summarised += 1;
+            out.summarised += 1;
             // Row succeeded and moved past pending_summariser — drop its
             // ledger entry via record_attempt so `attempts` only ever holds
             // currently-pending rows that have failed at least once, not
             // every row that ever failed once over the daemon's lifetime.
             record_attempt(attempts, row.id, true);
+            // Same for the rate-limit ledger: a success means whatever quota
+            // was in the way has refilled, so the row starts clean if it is
+            // ever retried.
+            rate_limited_attempts.remove(&row.id);
         } else if outcome.rate_limited {
             // Apply per-source backoff so other sources can still drain.
             let until =
                 std::time::Instant::now() + Duration::from_secs(cfg.rate_limit_backoff_secs);
             source_backoff.insert(row.agent.clone(), until);
-            skipped_backoff += 1;
+            out.skipped_backoff += 1;
+            // Count it. This branch used to be the ONE outcome that never
+            // touched the ledger, which made `MAX_ROW_ATTEMPTS` inapplicable to
+            // it: a row that classified `RateLimited` on every attempt was
+            // retried forever and could never dead-letter. That is not a
+            // theoretical hole - `RATE_LIMIT_MARKERS` matches bare substrings
+            // like "429" and "quota" anywhere in an engine's output, and this
+            // is a developer tool whose transcripts are full of both, so a row
+            // failing for an unrelated reason can be misfiled as rate-limited
+            // and then never terminate.
+            //
+            // Counted against its OWN, much more generous cap rather than
+            // `MAX_ROW_ATTEMPTS`, because the intent behind this branch is
+            // still right: a quota refills, and it should be waited out rather
+            // than routed around. See `MAX_RATE_LIMITED_ROW_ATTEMPTS`.
+            let tries = record_rate_limited_attempt(rate_limited_attempts, row.id);
+            if tries >= MAX_RATE_LIMITED_ROW_ATTEMPTS {
+                if let Err(e) = db::write_dead_letter(pool, row.id).await {
+                    tracing::error!(row_id = row.id, error = %crate::errors::chain(&e), "failed to dead-letter a persistently rate-limited row");
+                }
+                tracing::warn!(
+                    row_id = row.id,
+                    attempts = tries,
+                    "row has reported rate-limited on every attempt for far longer than a \
+                     quota takes to refill - dead-lettering it rather than retrying forever \
+                     (it may be a misclassified failure)"
+                );
+            }
             tracing::warn!(
                 row_id = outcome.row_id,
                 source = %row.agent,
@@ -730,6 +874,7 @@ async fn drain(
             );
         } else {
             // Transient failure. Leave pending for retry; log so it isn't silent.
+            out.failed += 1;
             let tries = record_attempt(attempts, row.id, false)
                 .expect("record_attempt(.., written=false) always returns Some");
             if tries >= MAX_ROW_ATTEMPTS {
@@ -753,13 +898,11 @@ async fn drain(
         }
     }
 
-    if summarised > 0 {
-        tracing::info!(summarised, "summariser drain");
+    if out.summarised > 0 {
+        tracing::info!(summarised = out.summarised, "summariser drain");
     }
 
-    // Signal global backoff only when ALL rows were skipped due to source
-    // backoffs — nothing useful can be done until at least one source recovers.
-    skipped_backoff > 0 && skipped_backoff == rows.len() as u32 && summarised == 0
+    out
 }
 
 /// Updates the per-row failure ledger (`attempts`, see [`MAX_ROW_ATTEMPTS`])
@@ -774,6 +917,28 @@ async fn drain(
 /// On failure (`written = false`) the row's attempt count is incremented and
 /// the new count returned as `Some(tries)`, for the caller to compare against
 /// [`MAX_ROW_ATTEMPTS`].
+/// How many consecutive `RateLimited` outcomes a single row may report before
+/// it is dead-lettered anyway.
+///
+/// Deliberately far larger than [`MAX_ROW_ATTEMPTS`], and paced by
+/// `rate_limit_backoff_secs` (30 minutes by default) rather than the 5-second
+/// sweep - so this is roughly a day of genuinely waiting out a quota before
+/// giving up. A real usage limit refills long inside that; a row still
+/// reporting "rate limited" a day later is almost certainly a misclassified
+/// failure, and the alternative to giving up is retrying it forever.
+const MAX_RATE_LIMITED_ROW_ATTEMPTS: u32 = 48;
+
+/// Increment and return a row's consecutive rate-limited count.
+///
+/// Kept in a ledger separate from [`record_attempt`]'s so the two caps cannot
+/// interfere: a row that fails twice, then hits a genuine quota, must not
+/// arrive at the rate-limit cap carrying unrelated strikes.
+fn record_rate_limited_attempt(attempts: &mut HashMap<i64, u32>, row_id: i64) -> u32 {
+    let tries = attempts.get(&row_id).copied().unwrap_or(0) + 1;
+    attempts.insert(row_id, tries);
+    tries
+}
+
 fn record_attempt(attempts: &mut HashMap<i64, u32>, row_id: i64, written: bool) -> Option<u32> {
     if written {
         attempts.remove(&row_id);
@@ -973,6 +1138,185 @@ mod tests {
         );
     }
 
+    // ── pacing + the rate-limit cap ─────────────────────────────────────────
+
+    fn cfg_for_pacing() -> SummariserConfig {
+        let mut c = SummariserConfig::from_env();
+        c.sweep_interval_secs = 5;
+        c.rate_limit_backoff_secs = 1800;
+        c
+    }
+
+    /// THE fork storm. Measured in production: 18,674 forks over ~46 hours,
+    /// one every ~9 s, while the queue sat flat. A batch of 32 rows that each
+    /// fail fast costs 64 spawns, and it used to be re-attempted every 5 s
+    /// forever because the loop could not tell "nothing to do" from
+    /// "everything I tried failed".
+    #[test]
+    fn a_failing_pass_backs_off_instead_of_re_forking_every_sweep() {
+        let cfg = cfg_for_pacing();
+        let failing = DrainOutcome {
+            seen: 32,
+            failed: 32,
+            ..DrainOutcome::default()
+        };
+        let mut prev = 0;
+        for idle in 1..=6 {
+            let w = next_wait_secs(failing, &cfg, idle);
+            assert!(
+                w > prev,
+                "wait must grow while nothing succeeds (idle={idle} gave {w}, previous {prev})"
+            );
+            prev = w;
+        }
+        assert!(
+            next_wait_secs(failing, &cfg, 1) > cfg.sweep_interval_secs,
+            "the first failing pass must already back off past the normal sweep"
+        );
+        assert_eq!(
+            next_wait_secs(failing, &cfg, 99),
+            MAX_IDLE_BACKOFF_SECS,
+            "backoff must cap so recovery stays prompt"
+        );
+    }
+
+    /// The cap must never make a FAILING queue retry sooner than a healthy one.
+    ///
+    /// `MAX_IDLE_BACKOFF_SECS` exists to keep recovery prompt, but applied as a
+    /// bare `.min()` it also clamps DOWNWARDS - so with `SUMMARISER_SWEEP_S`
+    /// above 300 a wedged queue would have been retried more often than an idle
+    /// one, exactly inverting this function. The default sweep is 5s so it never
+    /// binds by default; it binds precisely when an operator has deliberately
+    /// slowed the loop, which is when speeding it up is least wanted.
+    #[test]
+    fn a_slow_configured_sweep_is_never_sped_up_by_the_cap() {
+        let mut cfg = cfg_for_pacing();
+        cfg.sweep_interval_secs = MAX_IDLE_BACKOFF_SECS * 2;
+        let failing = DrainOutcome {
+            seen: 4,
+            failed: 4,
+            ..DrainOutcome::default()
+        };
+        for idle in [0u32, 1, 6, 99] {
+            let w = next_wait_secs(failing, &cfg, idle);
+            assert!(
+                w >= cfg.sweep_interval_secs,
+                "a failing pass must never wait LESS than the configured sweep \
+                 (idle={idle} gave {w}, sweep is {})",
+                cfg.sweep_interval_secs
+            );
+        }
+    }
+
+    /// Progress and an empty queue both keep the responsive cadence - backing
+    /// off a working summariser would delay every summary.
+    #[test]
+    fn progress_and_idleness_keep_the_normal_sweep() {
+        let cfg = cfg_for_pacing();
+        let progressing = DrainOutcome {
+            seen: 4,
+            summarised: 4,
+            ..DrainOutcome::default()
+        };
+        assert_eq!(
+            next_wait_secs(progressing, &cfg, 3),
+            cfg.sweep_interval_secs,
+            "a pass that summarised must not inherit an earlier backoff"
+        );
+        assert_eq!(
+            next_wait_secs(DrainOutcome::default(), &cfg, 3),
+            cfg.sweep_interval_secs,
+            "an empty queue is cheap to re-check"
+        );
+    }
+
+    /// A genuine quota wall waits the full backoff rather than spinning.
+    #[test]
+    fn an_entirely_rate_limited_pass_waits_out_the_quota() {
+        let cfg = cfg_for_pacing();
+        let walled = DrainOutcome {
+            seen: 6,
+            skipped_backoff: 6,
+            ..DrainOutcome::default()
+        };
+        assert_eq!(
+            next_wait_secs(walled, &cfg, 0),
+            cfg.rate_limit_backoff_secs,
+            "nothing can proceed until a quota refills - do not spin on it"
+        );
+    }
+
+    /// The old `all_backed_off` flag required `skipped_backoff == rows.len()`,
+    /// so ONE failing row alongside backed-off ones collapsed the 30-minute
+    /// wait back to the 5-second sweep. It must still not spin - but it also
+    /// must not wait out the full quota, because the failing row is real work
+    /// that deserves a retry sooner than that.
+    #[test]
+    fn one_failure_beside_backed_off_rows_neither_spins_nor_stalls() {
+        let cfg = cfg_for_pacing();
+        let mixed = DrainOutcome {
+            seen: 10,
+            skipped_backoff: 9,
+            failed: 1,
+            ..DrainOutcome::default()
+        };
+        let w = next_wait_secs(mixed, &cfg, 1);
+        assert!(
+            w > cfg.sweep_interval_secs,
+            "a mixed pass collapsed back to the bare sweep - this is the spin"
+        );
+        assert!(
+            w < cfg.rate_limit_backoff_secs,
+            "the failing row must be retried well before the quota window elapses"
+        );
+    }
+
+    /// THE immortality bug. The `rate_limited` branch was the one outcome that
+    /// never touched a ledger, so `MAX_ROW_ATTEMPTS` did not apply to it and a
+    /// row misclassified as rate-limited retried forever. `RATE_LIMIT_MARKERS`
+    /// matches bare "429"/"quota" anywhere in an engine's output, and this is a
+    /// developer tool whose transcripts are full of both.
+    #[test]
+    fn a_persistently_rate_limited_row_eventually_terminates() {
+        let mut ledger: HashMap<i64, u32> = HashMap::new();
+        let mut last = 0;
+        for _ in 0..MAX_RATE_LIMITED_ROW_ATTEMPTS {
+            last = record_rate_limited_attempt(&mut ledger, 7);
+        }
+        assert_eq!(
+            last, MAX_RATE_LIMITED_ROW_ATTEMPTS,
+            "consecutive rate-limited reports must be counted, not ignored"
+        );
+    }
+
+    /// The two caps are independent: a row that failed twice and then hits a
+    /// genuine quota must not arrive at the rate-limit cap carrying unrelated
+    /// strikes, and vice versa.
+    #[test]
+    fn the_two_attempt_ledgers_do_not_bleed_into_each_other() {
+        let mut failures: HashMap<i64, u32> = HashMap::new();
+        let mut rate_limits: HashMap<i64, u32> = HashMap::new();
+        record_attempt(&mut failures, 42, false);
+        record_attempt(&mut failures, 42, false);
+        assert_eq!(record_rate_limited_attempt(&mut rate_limits, 42), 1);
+        assert_eq!(failures.get(&42), Some(&2));
+    }
+
+    /// Waiting out a quota must be generous - far longer than the fast-failure
+    /// cap - or a real usage limit would dead-letter a legitimate row.
+    #[test]
+    fn the_rate_limit_cap_is_far_more_patient_than_the_failure_cap() {
+        // Read through locals so this is a value comparison rather than an
+        // assertion on a constant expression (which clippy rejects).
+        let patient: u32 = MAX_RATE_LIMITED_ROW_ATTEMPTS;
+        let strict: u32 = MAX_ROW_ATTEMPTS;
+        assert!(
+            patient > strict.saturating_mul(10),
+            "a refilling quota must be waited out, not treated like a broken row \
+             (rate-limit cap {patient}, failure cap {strict})"
+        );
+    }
+
     /// THE regression this exists for: `drain()` used to process its whole
     /// batch (up to `batch_per_tick`, default 32, each shelling out to the
     /// agent's own CLI) with no shutdown check at all, so a daemon SIGTERM
@@ -1001,13 +1345,26 @@ mod tests {
         sqlx::migrate!("src/migrations").run(&pool).await.unwrap();
         db::ensure_summary_source_column(&pool).await.unwrap();
 
+        // Dated relative to NOW, not to a fixed 2026-05-20. `fetch_pending`
+        // only looks at yesterday+today, so a hardcoded past date meant it
+        // returned NO rows: drain() hit its `rows.is_empty()` early return, the
+        // shutdown branch this test exists for was never reached, and the
+        // "row is untouched" assertion held trivially. The test passed with the
+        // fix deleted. Caught when the DrainOutcome assertion below reported
+        // `seen: 0`.
+        let now = Utc::now();
+        let stamp = |mins: i64| {
+            (now - chrono::Duration::minutes(mins))
+                .format("%Y-%m-%dT%H:%M:%S%.6f+00:00")
+                .to_string()
+        };
         let seg = Segment {
             session_uuid: "u1".into(),
             agent: "claude_code".into(),
             cwd: Some("/repo".into()),
-            segment_started_at: "2026-05-20T08:00:00.000000+00:00".into(),
-            started_at: "2026-05-20T08:00:00.000000+00:00".into(),
-            ended_at: "2026-05-20T08:30:00.000000+00:00".into(),
+            segment_started_at: stamp(90),
+            started_at: stamp(90),
+            ended_at: stamp(60),
             user_turns: 2,
             assistant_turns: 2,
             active_seconds: 300,
@@ -1015,7 +1372,7 @@ mod tests {
             is_last: false,
             title: None,
         };
-        let id = cdb::upsert_segment(&pool, &seg, true, Some("2026-05-20T09:00:00.000000+00:00"))
+        let id = cdb::upsert_segment(&pool, &seg, true, Some(&stamp(30)))
             .await
             .unwrap()
             .unwrap();
@@ -1028,10 +1385,33 @@ mod tests {
         // between two rows of the same batch.
         let (_tx, rx) = watch::channel(true);
 
-        let all_backed_off = drain(&pool, &cfg, &mut attempts, &mut source_backoff, &rx).await;
-        assert!(
-            !all_backed_off,
-            "a shutdown bail-out is not a backoff condition"
+        let mut rate_limited_attempts = HashMap::new();
+        let out = drain(
+            &pool,
+            &cfg,
+            &mut attempts,
+            &mut rate_limited_attempts,
+            &mut source_backoff,
+            &rx,
+        )
+        .await;
+        // The tally must show the bail-out for what it was: nothing attempted.
+        // The original assertion was `!all_backed_off` - "a shutdown bail-out is
+        // not a backoff condition" - and that property is now spelled out per
+        // counter, so a future change that mislabels the bail-out as a backoff
+        // (and so parks the loop for the full rate-limit wait) still fails here.
+        assert_eq!(
+            out,
+            DrainOutcome {
+                seen: 1,
+                ..DrainOutcome::default()
+            },
+            "a shutdown bail-out must count as neither progress, failure, nor backoff"
+        );
+        assert_eq!(
+            next_wait_secs(out, &cfg, 0),
+            cfg.sweep_interval_secs,
+            "and it must not be paced as if the queue were wedged"
         );
 
         let (method,): (String,) =
