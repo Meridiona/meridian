@@ -254,6 +254,42 @@ export default function CustomEndpointSetup({ existing, onBack, onAdd, onPick }:
         their privacy policy applies, not ours.
       </p>
 
+      {/* THE MONEY WARNING. Amber, and above the fields rather than below them, because it
+          is only useful before the key is pasted - a cost disclaimer under the Connect button
+          is read after the decision it was meant to inform.
+          Concrete numbers, not "usage may apply": the request count is derived from
+          `meridian_core::llm_capacity` (CALLS_PER_ACTIVE_HOUR 2 x ASSUMED_ACTIVE_HOURS 8 +
+          DISCRETIONARY_CALLS_PER_DAY 7 = 23, plus PROBE_MAX_REQUESTS 16 worst case at setup),
+          so someone can actually multiply it against their provider's per-token price. A
+          warning nobody can act on is a warning nobody reads.
+          Shown for every custom endpoint, including a local one where it costs nothing: we
+          cannot tell from a URL whether it bills, and the honest framing is conditional
+          ("if this endpoint charges") rather than a guess about which kind they typed. */}
+      <div className="flex flex-col" style={{
+        gap: 7, padding: '13px 14px', borderRadius: 11, maxWidth: 520,
+        background: 'color-mix(in srgb, var(--color-state-pending) 9%, transparent)',
+        border: '1px solid color-mix(in srgb, var(--color-state-pending) 32%, transparent)',
+      }}>
+        <span className="font-mono" style={{
+          fontSize: 9, letterSpacing: '.1em', color: 'var(--color-state-pending)',
+        }}>YOU PAY FOR THIS ENDPOINT</span>
+        <p style={{ fontSize: 11.5, lineHeight: 1.5, color: 'var(--t-muted)' }}>
+          If the endpoint you connect charges for use, every request Meridian makes is billed
+          to your key. A normal working day is around 23 requests, plus up to 16 more the
+          first time you connect, and each one carries an hour of your activity - so what it
+          costs depends on your provider's pricing and how busy your days are.
+        </p>
+        <p style={{ fontSize: 11.5, lineHeight: 1.5, color: 'var(--t-muted)' }}>
+          Meridian does not monitor, cap or refund that spend, and we are not responsible for
+          any charges your key incurs - including charges from someone else using it if the
+          key is exposed. Set your own spend limits and usage alerts in your provider's
+          console, and keep the key safe.
+        </p>
+        <p style={{ fontSize: 11.5, lineHeight: 1.5, color: 'var(--t-muted)' }}>
+          Your key is stored on this device and is sent only to the address you enter above.
+        </p>
+      </div>
+
       <Step n={1} title="Where is it?"
         body="The base URL, including the version segment - Meridian adds /chat/completions itself.">
         <div className="flex flex-col" style={{ gap: 8 }}>

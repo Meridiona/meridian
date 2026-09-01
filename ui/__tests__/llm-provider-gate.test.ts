@@ -180,6 +180,32 @@ describe('the no-subscription presets', () => {
     expect(customSetup).toContain('apiKey: apiKey.trim()')
   })
 
+  it('warns that the user pays for their own endpoint, before the key field', () => {
+    // A liability notice nobody reads protects nobody, so this pins BOTH halves:
+    // that the disclaimer is present, and that it is placed above the fields - a cost
+    // warning below the Connect button is read after the decision it exists to inform.
+    expect(customSetup).toContain('we are not responsible for')
+    expect(customSetup).toContain('YOU PAY FOR THIS ENDPOINT')
+    // Concrete, so someone can multiply it against their provider's price. These numbers
+    // are derived from `meridian_core::llm_capacity` (2 x 8 + 7 = 23, probe 16 worst case);
+    // if those constants move, this copy is stale and must move with them.
+    expect(customSetup).toContain('23 requests')
+    expect(customSetup).toContain('16 more')
+    // Above the fields: the warning must come before step 1 in source order.
+    expect(customSetup.indexOf('YOU PAY FOR THIS ENDPOINT'))
+      .toBeLessThan(customSetup.indexOf('title="Where is it?"'))
+  })
+
+  it('keeps the cost warning free of em-dashes', () => {
+    // User-facing app text takes a plain hyphen only, per the repo hard rule. Checked on the
+    // rendered strings rather than the file, so a comment above may still discuss an em-dash.
+    const warning = customSetup.slice(
+      customSetup.indexOf('YOU PAY FOR THIS ENDPOINT'),
+      customSetup.indexOf('title="Where is it?"'),
+    )
+    expect(warning).not.toMatch(/[\u2014\u2013]/)
+  })
+
   it('tells the user WHICH structured-reply mode an endpoint failed', () => {
     // A local model that answers fine in prose can still sit below the production gate
     // (`SchemaRung::JsonSchema` across all four pipeline schemas). "It did not work" would
