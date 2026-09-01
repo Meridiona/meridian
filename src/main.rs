@@ -1296,10 +1296,26 @@ async fn main() -> Result<()> {
             // locked, corruption — is finally diagnosable in central telemetry
             // instead of crash-looping silently. `shutdown` consumes the guard,
             // but we exit immediately after, so the success path still owns it.
-            tracing::error!(
-                error = %meridian::errors::chain(&e),
-                "daemon startup: failed to open the database — the daemon cannot start (wrong/absent encryption key, a locked file, or corruption)"
-            );
+            //
+            // The "schema ahead of the binary" case is split out because it is
+            // the one failure here where the database is HEALTHY and the general
+            // message actively misleads: it names an encryption key, a lock and
+            // corruption, and the answer is none of those - this build is simply
+            // older than the database. It is also the only one that never clears
+            // on its own, because launchd `KeepAlive` retries a daemon that
+            // cannot possibly succeed. See `db::meridian::schema_ahead_of_binary`
+            // for the 13,306-crash-loop measurement behind both statements.
+            match meridian::db::meridian::schema_ahead_of_binary(&e) {
+                Some(version) => tracing::error!(
+                    error = %meridian::errors::chain(&e),
+                    migration_version = version,
+                    "daemon startup: this daemon is OLDER than meridian.db — the database has migrations this build does not carry, so it cannot start and will keep retrying until the binary is updated. The database itself is fine."
+                ),
+                None => tracing::error!(
+                    error = %meridian::errors::chain(&e),
+                    "daemon startup: failed to open the database — the daemon cannot start (wrong/absent encryption key, a locked file, or corruption)"
+                ),
+            }
             obs_guard.shutdown().await;
             meridian::telemetry_spool::shipper::drain_once().await;
             std::process::exit(1);
