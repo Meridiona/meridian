@@ -15,6 +15,11 @@
 //! the standard OpenAI chat-completions protocol; the deltas from a bare call are the
 //! base URL, `Authorization: Bearer`, and [`crate::llm::schema::strictify`] on the way out.
 //!
+//! # Not every endpoint has a key
+//! A self-hosted server (Ollama, LM Studio, llama.cpp, vLLM) typically has no auth, so an
+//! empty `api_key` is a supported configuration and [`with_auth`] then sends NO
+//! `Authorization` header — which is a different thing on the wire from an empty one.
+//!
 //! # Structured output is measured, never assumed
 //! "OpenAI-compatible" endpoints disagree about schemas — measured 2026-07-17, OpenAI
 //! rejects a schema whose `required` omits an optional key while Gemini's compat endpoint
@@ -140,6 +145,26 @@ async fn read_capped_body(mut resp: reqwest::Response) -> Result<String, LlmErro
     Ok(String::from_utf8_lossy(&buf).into_owned())
 }
 
+/// Attach `Authorization: Bearer <key>` — unless the endpoint is KEYLESS, in which case no
+/// auth header is sent at all.
+///
+/// An empty key is a real configuration, not a mistake: a self-hosted OpenAI-compatible
+/// server (Ollama, LM Studio, llama.cpp, vLLM) usually has no auth, and there is nothing to
+/// send it. The distinction matters on the wire — `.bearer_auth("")` sends a well-formed
+/// header with an empty credential, which is NOT the same as sending none, and some servers
+/// reject the former while accepting the latter. Sending nothing is also the honest
+/// description of what the user configured.
+///
+/// Whether an empty key is ALLOWED is decided at the door, in the tray's
+/// `validate_transport_inputs`; by the time a request is built the answer is already yes.
+fn with_auth(rb: reqwest::RequestBuilder, api_key: &str) -> reqwest::RequestBuilder {
+    if api_key.is_empty() {
+        rb
+    } else {
+        rb.bearer_auth(api_key)
+    }
+}
+
 /// Ask an OpenAI-compatible endpoint what models it serves — `GET <base_url>/models`.
 ///
 /// Takes the base URL and key rather than a [`CustomEndpoint`] because the main caller is the
@@ -177,9 +202,7 @@ pub async fn list_models(
         .build()
         .map_err(|e| LlmError::Failed(format!("custom provider client: {e}")))?;
 
-    let resp = client
-        .get(&url)
-        .bearer_auth(api_key)
+    let resp = with_auth(client.get(&url), api_key)
         .send()
         .await
         // As in `complete`: `e` can carry the URL but never the key (reqwest redacts auth).
@@ -262,9 +285,7 @@ impl LlmBackend for OpenAiCompatBackend {
             .build()
             .map_err(|e| LlmError::Failed(format!("custom provider client: {e}")))?;
 
-        let resp = client
-            .post(&url)
-            .bearer_auth(&ep.api_key)
+        let resp = with_auth(client.post(&url), &ep.api_key)
             .json(&body)
             .send()
             .await
@@ -493,6 +514,43 @@ fn classify_error(
         ));
     }
     LlmError::Failed(format!("custom provider {status}: {head}"))
+}
+
+#[cfg(test)]
+mod auth_header_tests {
+    use super::*;
+
+    /// Build a request the way the real call sites do and report its `Authorization` header.
+    fn auth_of(api_key: &str) -> Option<String> {
+        let client = reqwest::Client::new();
+        let req = with_auth(client.get("http://localhost:11434/v1/models"), api_key)
+            .build()
+            .expect("request builds");
+        req.headers()
+            .get(reqwest::header::AUTHORIZATION)
+            .map(|v| v.to_str().unwrap_or_default().to_string())
+    }
+
+    /// A keyless endpoint must send NO `Authorization` header - not an empty one.
+    ///
+    /// The distinction is invisible in the source (`.bearer_auth("")` reads as "no key") and
+    /// very visible on the wire: it sends `Authorization: Bearer `, a well-formed header with
+    /// an empty credential, which some servers reject outright while accepting a request that
+    /// simply carries no auth. This is the whole reason a local model can be connected, so it
+    /// is pinned at the header rather than trusted to the call sites.
+    #[test]
+    fn a_keyless_endpoint_sends_no_authorization_header() {
+        assert_eq!(auth_of(""), None);
+    }
+
+    /// The other half: a key that IS present must still be sent, unchanged.
+    #[test]
+    fn a_key_is_still_sent_as_a_bearer_token() {
+        assert_eq!(
+            auth_of("sk-test-123"),
+            Some("Bearer sk-test-123".to_string())
+        );
+    }
 }
 
 #[cfg(test)]

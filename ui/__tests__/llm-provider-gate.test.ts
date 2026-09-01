@@ -17,6 +17,7 @@ const uiRoot = import.meta.dir + '/..'
 const gate = readFileSync(`${uiRoot}/components/LlmProviderGate.tsx`, 'utf8')
 const cloudSetup = readFileSync(`${uiRoot}/components/CloudKeySetup.tsx`, 'utf8')
 const picker = readFileSync(`${uiRoot}/components/LlmProviderPicker.tsx`, 'utf8')
+const customSetup = readFileSync(`${uiRoot}/components/CustomEndpointSetup.tsx`, 'utf8')
 
 describe('the subscription gate', () => {
   it('asks about all three subscriptions by name', () => {
@@ -118,20 +119,73 @@ describe('the no-subscription presets', () => {
     expect(presetForVendor('does-not-exist')).toBeUndefined()
   })
 
-  it('is the only way an endpoint gets added', () => {
-    // Gemini / OpenRouter / OpenAI / a free-text endpoint all made the no-subscription path
-    // a configuration exercise for someone who came here to avoid one. Once the preset list
-    // was down to a curated set the add FORM was a questionnaire nobody needed, so it and
-    // its tile went too - this pins that they stay gone.
+  it('is the only way an endpoint gets added ON THE NO-SUBSCRIPTION PATH', () => {
+    // WHAT THIS PINS CHANGED, and the old version would not have noticed.
+    //
+    // It used to scan for three dead identifiers (`AddCustomProvider`, `AddForm`,
+    // `CUSTOM_VENDOR_PRESETS`) to pin that the free-text add form stayed deleted. A form has
+    // since been deliberately restored as `<CustomEndpointSetup>`, for the separate need of
+    // connecting an arbitrary OpenAI-compatible endpoint - and every one of those three
+    // assertions still passed, because none of those words appears in the new file. A test
+    // that cannot fail when the thing it describes is reversed is not protecting anything.
+    //
+    // So it now pins the invariant that actually still holds, which was always the real one:
+    // the GATE - the "I have no subscription" answer - routes to the walkthrough and never to
+    // a form. What made the deleted form wrong was where it stood, not that it existed.
+    const gateBranch = picker.slice(
+      picker.indexOf("gateAnswer === 'free'"),
+      picker.indexOf('const usingHidden'),
+    )
+    expect(gateBranch.length).toBeGreaterThan(0)
+    expect(gateBranch).toContain('<CloudKeySetup')
+    expect(gateBranch).not.toContain('<CustomEndpointSetup')
+
+    // And the form is reachable ONLY behind `!gate`, so a first-run user never meets it.
+    const customTile = picker.slice(
+      picker.indexOf('<CustomEndpointTile'),
+      picker.indexOf('<CustomEndpointTile') + 400,
+    )
+    expect(customTile.length).toBeGreaterThan(0)
+    const beforeTile = picker.slice(0, picker.indexOf('<CustomEndpointTile'))
+    expect(beforeTile.endsWith('{!gate && (\n          ')).toBe(true)
+
+    // The registry write survives on both paths, and neither reimplements it.
     const providers = readFileSync(`${uiRoot}/components/CustomProviders.tsx`, 'utf8')
-    for (const dead of ['AddCustomProvider', 'AddForm', 'CUSTOM_VENDOR_PRESETS']) {
-      expect(providers.includes(dead)).toBe(false)
-      expect(picker.includes(dead)).toBe(false)
-    }
-    // But the registry write itself survives - CloudKeySetup is what calls it now, for
-    // whichever preset it was opened with.
     expect(providers).toContain('add_custom_llm_provider')
     expect(cloudSetup).toContain('onAdd(')
+    expect(customSetup).toContain('onAdd(')
+  })
+
+  it('never asks a self-configured endpoint for a vendor or a rate limit', () => {
+    // The three fields that made the OLD form a questionnaire: an open-ended vendor dropdown
+    // (unanswerable - an OpenAI-compatible URL could be anything), and two hand-typed
+    // rate-limit numbers nobody can know for a server they have never seen. The vendor is a
+    // constant now, and the limits are written as 0/0, which `llm_capacity::assess` reads as
+    // "not known" rather than "unmetered".
+    expect(customSetup).toContain('CUSTOM_ENDPOINT_VENDOR')
+    expect(customSetup).toContain('rpm: 0, rpd: 0')
+    for (const dead of ['CUSTOM_VENDOR_PRESETS', 'customVendorPreset']) {
+      expect(customSetup.includes(dead)).toBe(false)
+    }
+  })
+
+  it('lets a self-configured endpoint have no API key at all', () => {
+    // The single reason a local model (Ollama, LM Studio, llama.cpp, vLLM) can be connected
+    // at all: those servers have no auth, so there is no key to type. Rust permits the blank
+    // one at the door and then sends no Authorization header; the form must say so rather
+    // than leaving the user guessing whether blank is allowed.
+    expect(customSetup).toContain('Leave blank if your server does not need one')
+    // The key must never be a precondition for the model listing either - that call runs
+    // FIRST, so gating it on a key would fail the flow before the add.
+    expect(customSetup).toContain('apiKey: apiKey.trim()')
+  })
+
+  it('tells the user WHICH structured-reply mode an endpoint failed', () => {
+    // A local model that answers fine in prose can still sit below the production gate
+    // (`SchemaRung::JsonSchema` across all four pipeline schemas). "It did not work" would
+    // read as a broken button; naming the measured rung is what makes it actionable.
+    expect(customSetup).toContain('rungLabel(outcome.provider.effective_rung)')
+    expect(customSetup).toContain('production_eligible')
   })
 
   for (const preset of [GROQ, OLLAMA]) {
