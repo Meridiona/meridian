@@ -2182,7 +2182,19 @@ mod corruption_recovery_tests {
 
         // Once the interval has passed it runs again and, on a clean database,
         // recovers. Drives the clock rather than sleeping 15 minutes.
-        last = Some(Instant::now() - CORRUPT_RECHECK_EVERY);
+        //
+        // `checked_sub`, not `-`. `Instant` is measured from an arbitrary epoch
+        // that on Windows is system boot, so on a CI runner whose uptime is
+        // under CORRUPT_RECHECK_EVERY the subtraction underflows and `std`
+        // panics with "overflow when subtracting duration from instant" - which
+        // is exactly how this failed on the Windows job while macOS stayed
+        // green. It returns `Option<Instant>`, which is already this variable's
+        // type: on a long-lived machine that is `Some(an elapsed instant)` and
+        // exercises the elapsed path, and on a just-booted one it is `None`,
+        // meaning "never checked", which must also proceed. Both satisfy the
+        // assertion below, so the test is portable without being weakened into
+        // a no-op on either.
+        last = Instant::now().checked_sub(CORRUPT_RECHECK_EVERY);
         assert_eq!(
             recover_from_corruption(&pool, ":memory:", None, &mut last).await,
             CorruptionRecheck::Recovered
