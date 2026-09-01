@@ -286,7 +286,8 @@ export default function CustomEndpointSetup({ existing, onBack, onAdd, onPick }:
           console, and keep the key safe.
         </p>
         <p style={{ fontSize: 11.5, lineHeight: 1.5, color: 'var(--t-muted)' }}>
-          Your key is stored on this device and is sent only to the address you enter above.
+          Your key is stored on this device and is only ever sent to the base URL you entered
+          above. It is never sent to Meridian, and it is never included in error reports.
         </p>
       </div>
 
