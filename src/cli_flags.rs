@@ -47,10 +47,31 @@
 //! Only `-`-prefixed tokens are inspected, against a flat allowlist per
 //! subcommand. Flag *values* are not modelled: a value that does not itself
 //! start with `-` is simply not a candidate, and none of the flags below takes
-//! a negative number. Modelling value-consumption would buy nothing and would
-//! introduce a way to *wrongly reject* a working invocation — the one failure
-//! mode worse than the bug being fixed, since these commands are load-bearing
-//! for the tray.
+//! a negative number.
+//!
+//! That reasoning was **wrong**, and the fix for it is [`VALUELESS_FLAGS`]. It
+//! covered negative numbers and forgot free text: `--note`, `--title`,
+//! `--description` and `--value` all carry user-written prose, and prose starts
+//! with a hyphen often enough to matter — a bullet, a dash, a diff line.
+//! `meridian plan-task-draft --note "- fixed the bug"` was rejected with
+//! `unrecognised flag "- fixed the bug"` and exit 2, and the tray drives that
+//! command with text the user typed. Wrongly rejecting a working invocation is
+//! the one failure mode worse than the bug this module fixes, and it shipped in
+//! the module that says so.
+//!
+//! Two independent guards now stop it, either of which suffices:
+//!
+//! 1. **Shape** ([`looks_like_a_flag`]): a candidate must be `-h` or `--` plus
+//!    a letter. `"- fixed the bug"`, `"-5"` and a bare `"--"` are not flags.
+//! 2. **Arity**: a recognised flag consumes the next token unless it is in
+//!    [`VALUELESS_FLAGS`] or already carried its value as `--flag=value`.
+//!
+//! The two fail in opposite directions, which is why both are kept. Arity alone
+//! mis-set (a value-taking flag wrongly listed as valueless) reopens the bug for
+//! that flag; shape alone still trips on a value that begins `--word`. Getting
+//! [`VALUELESS_FLAGS`] wrong in the other direction — omitting a boolean — costs
+//! only a *missed* unknown flag, never a wrongly rejected command, which is the
+//! direction to err in.
 //!
 //! # Who calls this
 //! [`enforce`] runs from `main.rs` immediately before the subcommand dispatch
@@ -290,6 +311,43 @@ pub fn spec(name: &str) -> Option<&'static Spec> {
 /// `meridian worklog-post-approved --help --bogus` is asking what the command
 /// does, and answering that is strictly safer than an error that might send
 /// them off to retry it bare — which is the invocation that actually posts.
+/// The registered flags that are a bare switch and consume no following token.
+///
+/// Derived from how each is actually parsed - a presence test
+/// (`args.iter().any(|a| a == "--fix")`) rather than a value read
+/// (`flag_value(args, "--day")`) - not from how the name reads. Anything absent
+/// here is treated as value-taking, which is the safe default: over-consuming
+/// costs at most a *missed* unknown flag, while under-consuming lets a value
+/// beginning with a hyphen be reported as one. See the module header.
+const VALUELESS_FLAGS: &[&str] = &[
+    "--dry-run",
+    "--fix",
+    "--json",
+    "--now",
+    "--porcelain",
+    "--purge",
+    "--remove-data",
+    "--remove-models",
+    "--remove-runtime",
+    "--yes",
+];
+
+/// Whether `token` is shaped like a flag rather than like a value.
+///
+/// `-h` (the only single-letter flag registered anywhere here) or `--` followed
+/// by a letter. Deliberately NOT "starts with `-`", which is what let
+/// `"- fixed the bug"` and `"-5"` be read as flags.
+///
+/// A bare `--` is excluded too: it is the conventional end-of-options marker, is
+/// not registered on any subcommand, and rejecting it would break an invocation
+/// that works today.
+fn looks_like_a_flag(token: &str) -> bool {
+    token == "-h"
+        || token
+            .strip_prefix("--")
+            .is_some_and(|rest| rest.starts_with(|c: char| c.is_ascii_alphabetic()))
+}
+
 pub fn check(argv: &[String]) -> Outcome {
     let Some(sub) = argv.get(1) else {
         return Outcome::NotOurs;
@@ -299,18 +357,34 @@ pub fn check(argv: &[String]) -> Outcome {
     };
 
     let mut unknown: Option<String> = None;
+    // Set after a recognised value-taking flag: the NEXT token is that flag's
+    // value and must not be inspected, however it is spelled. See the module
+    // header - a value beginning with a hyphen was reported as an unknown flag.
+    let mut expect_value = false;
     for raw in argv.iter().skip(2) {
+        if expect_value {
+            expect_value = false;
+            continue;
+        }
         // `--flag=value` is a shape people type even where the parser wants a
         // separate token; validate the name half so it reports the flag rather
-        // than the whole pair.
-        let token = raw.split('=').next().unwrap_or(raw.as_str());
-        if !token.starts_with('-') {
+        // than the whole pair. It also carries its own value, so it must not
+        // additionally consume the token after it.
+        let (token, inline_value) = match raw.split_once('=') {
+            Some((name, _)) => (name, true),
+            None => (raw.as_str(), false),
+        };
+        if !looks_like_a_flag(token) {
             continue; // positional, or a flag's value
         }
         if token == "--help" || token == "-h" {
             return Outcome::Help(spec.usage);
         }
-        if !spec.flags.contains(&token) && unknown.is_none() {
+        if spec.flags.contains(&token) {
+            expect_value = !inline_value && !VALUELESS_FLAGS.contains(&token);
+            continue;
+        }
+        if unknown.is_none() {
             unknown = Some(token.to_string());
         }
     }
@@ -455,6 +529,118 @@ mod tests {
         match check(&argv(&["day-summary", "--nope=1"])) {
             Outcome::Unknown { flag, .. } => assert_eq!(flag, "--nope"),
             other => panic!("expected the flag name alone, got {other:?}"),
+        }
+    }
+
+    /// A value that begins with a hyphen is still a value.
+    ///
+    /// This shipped broken: `--note "- fixed the bug"` was rejected as
+    /// `unrecognised flag "- fixed the bug"` with exit 2. The module header's
+    /// claim that values were safe reasoned only about negative numbers and
+    /// missed free text, which is exactly what `--note`, `--title`,
+    /// `--description` and `--value` carry - and the tray drives
+    /// `plan-task-draft --note` with whatever the user typed.
+    ///
+    /// A guard that wrongly rejects a working command is worse than the missing
+    /// guard it replaced, so these cases are pinned individually rather than as
+    /// one representative.
+    #[test]
+    fn a_value_beginning_with_a_hyphen_is_not_a_flag() {
+        for (label, args) in [
+            (
+                "a bulleted note",
+                vec!["plan-task-draft", "--note", "- fixed the bug"],
+            ),
+            (
+                "an em-dash-ish title",
+                vec!["plan-task-create", "--title", "-- rework"],
+            ),
+            (
+                "a negative-looking value",
+                vec![
+                    "ticket-update",
+                    "--key",
+                    "K",
+                    "--provider",
+                    "jira",
+                    "--field",
+                    "f",
+                    "--value",
+                    "-1",
+                ],
+            ),
+            (
+                "a diff line as a description",
+                vec![
+                    "plan-task-edit",
+                    "--key",
+                    "K",
+                    "--description",
+                    "-x removed",
+                ],
+            ),
+        ] {
+            assert_eq!(
+                check(&argv(&args)),
+                Outcome::Ok,
+                "{label}: a flag's value must never be inspected as a flag"
+            );
+        }
+    }
+
+    /// `--help` inside a VALUE is text, not a request for help.
+    ///
+    /// Without arity this printed usage and exited 0, so a note containing
+    /// `--help` silently drafted nothing.
+    #[test]
+    fn help_inside_a_value_is_text() {
+        assert_eq!(
+            check(&argv(&["plan-task-draft", "--note", "--help me name this"])),
+            Outcome::Ok
+        );
+        // ...but asked for on its own it is still help.
+        assert!(matches!(
+            check(&argv(&["plan-task-draft", "--help"])),
+            Outcome::Help(_)
+        ));
+    }
+
+    /// Consuming a value must not blind the check to a later unknown flag.
+    #[test]
+    fn an_unknown_flag_after_a_value_is_still_caught() {
+        match check(&argv(&["day-summary", "--day", "2026-08-27", "--bogus"])) {
+            Outcome::Unknown { flag, .. } => assert_eq!(flag, "--bogus"),
+            other => panic!("expected --bogus to be caught, got {other:?}"),
+        }
+        // `--flag=value` carries its own value and must NOT eat the next token.
+        match check(&argv(&["day-summary", "--day=2026-08-27", "--bogus"])) {
+            Outcome::Unknown { flag, .. } => assert_eq!(flag, "--bogus"),
+            other => panic!("an inline value must not consume the next token, got {other:?}"),
+        }
+    }
+
+    /// A valueless flag consumes nothing, so what follows is still checked.
+    #[test]
+    fn a_valueless_flag_does_not_swallow_the_next_token() {
+        match check(&argv(&["doctor", "--fix", "--bogus"])) {
+            Outcome::Unknown { flag, .. } => assert_eq!(flag, "--bogus"),
+            other => panic!("--fix takes no value, so --bogus must be caught, got {other:?}"),
+        }
+    }
+
+    /// Every entry in [`VALUELESS_FLAGS`] must be a flag some subcommand
+    /// actually registers.
+    ///
+    /// A typo here is silent in the dangerous direction: the flag is never
+    /// matched, so it is treated as value-taking and swallows the token after
+    /// it, hiding a real unknown flag.
+    #[test]
+    fn every_valueless_flag_is_registered_somewhere() {
+        for f in VALUELESS_FLAGS {
+            assert!(
+                SPECS.iter().any(|s| s.flags.contains(f)),
+                "{f} is in VALUELESS_FLAGS but no subcommand registers it - likely a typo"
+            );
         }
     }
 
