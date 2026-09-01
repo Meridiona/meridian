@@ -117,10 +117,17 @@ export default function CustomEndpointSetup({ existing, onBack, onAdd, onPick }:
       })
       const usable = chatCapableModels(ids)
       setModels(usable)
-      // Only preselect when there is no ambiguity. Picking the first of many would put a
-      // model in the field the user never chose, and a wrong model fails at the first real
-      // hour rather than here.
-      if (usable.length === 1) setModel(usable[0])
+      // Only preselect when there is no ambiguity AND the user has not already typed one.
+      // Picking the first of many would put a model in the field the user never chose, and a
+      // wrong model fails at the first real hour rather than here.
+      //
+      // The `!model.trim()` half is the one that is easy to miss: typing an id is the
+      // DOCUMENTED path for a server with no `/models`, so someone may well type
+      // `qwen2.5-coder:7b`, then press List models just to check the URL answers. Without
+      // this guard that press silently replaces what they typed with whatever single id came
+      // back - and a lone survivor of the non-chat filter is exactly the case where the
+      // replacement would be worst.
+      if (usable.length === 1 && !model.trim()) setModel(usable[0])
       if (usable.length === 0) {
         setListError(
           ids.length > 0
@@ -255,6 +262,11 @@ export default function CustomEndpointSetup({ existing, onBack, onAdd, onPick }:
             value={baseUrl}
             onChange={(v) => {
               setBaseUrl(v)
+              // The LISTING is dropped (it described the old address), but a typed model id is
+              // NOT: correcting a typo in the URL must not wipe the id the user just entered.
+              // The dropdown disappears with the listing, so what remains on screen is the
+              // text field showing exactly what will be submitted - no hidden selection can
+              // survive from the previous address.
               setModels(null)
               setListError(null)
               if (!nameEdited) setName('')
