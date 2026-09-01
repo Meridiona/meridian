@@ -256,6 +256,11 @@ pub const SPECS: &[Spec] = &[
                 [--endpoint URL] [--auth BASE64]",
     },
     Spec {
+        name: "restart",
+        flags: &[],
+        usage: "meridian restart   (restarts the background daemon)",
+    },
+    Spec {
         name: "logs",
         flags: &["--min-severity", "--service", "-n", "-f"],
         usage: "meridian logs [--service NAME] [--min-severity LEVEL] [-n N] [-f]",
