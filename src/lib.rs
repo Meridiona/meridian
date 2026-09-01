@@ -30,6 +30,7 @@ pub mod observability;
 pub mod plan_tasks;
 pub mod platform;
 pub mod pm_worklog;
+pub mod restart;
 pub mod telemetry_spool;
 pub mod uninstall;
 pub mod worklog_pipeline;
