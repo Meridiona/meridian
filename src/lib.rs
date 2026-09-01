@@ -10,6 +10,7 @@
 #[global_allocator]
 static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
 
+pub mod cli_flags;
 pub mod coding_agent_session_ingest;
 pub mod config;
 pub mod daily_plan;
