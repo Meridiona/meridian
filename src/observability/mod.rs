@@ -64,10 +64,10 @@ use opentelemetry::{global, trace::TracerProvider as _, KeyValue};
 use opentelemetry_appender_tracing::layer::OpenTelemetryTracingBridge;
 use opentelemetry_otlp::{Protocol, WithExportConfig, WithHttpConfig};
 use opentelemetry_sdk::{
-    logs::LoggerProvider,
+    logs::{BatchLogProcessor, LoggerProvider},
     propagation::TraceContextPropagator,
     runtime,
-    trace::{RandomIdGenerator, Sampler, Tracer, TracerProvider},
+    trace::{BatchSpanProcessor, RandomIdGenerator, Sampler, Tracer, TracerProvider},
     Resource,
 };
 use std::collections::HashMap;
@@ -484,8 +484,20 @@ fn try_build_otel_providers(
         .build()
         .context("build OTLP span exporter (spool)")?;
 
+    // Batched on the same 30 s cadence as the log pipeline below, for the same
+    // reason and with the same trade. The SDK's trace default is 5 s, which is
+    // less pathological than the logs default of 1 s but still writes ~17k
+    // spool files a day on its own - and once the log pipeline is batched,
+    // traces become the dominant contributor to the file count.
+    let span_batch = opentelemetry_sdk::trace::BatchConfigBuilder::default()
+        .with_scheduled_delay(std::time::Duration::from_secs(30))
+        .with_max_export_batch_size(2048)
+        .build();
+    let span_processor = BatchSpanProcessor::builder(span_exporter, runtime::Tokio)
+        .with_batch_config(span_batch)
+        .build();
     let tracer_provider = TracerProvider::builder()
-        .with_batch_exporter(span_exporter, runtime::Tokio)
+        .with_span_processor(span_processor)
         .with_sampler(Sampler::AlwaysOn)
         .with_id_generator(RandomIdGenerator::default())
         .with_resource(resource.clone())
@@ -506,8 +518,36 @@ fn try_build_otel_providers(
         .build()
         .context("build OTLP log exporter (spool)")?;
 
+    // Batch the LOG pipeline explicitly rather than taking the SDK default.
+    //
+    // Each export batch becomes one file in the spool
+    // (`spool_client::SpoolClient::send`), and opentelemetry_sdk 0.27's default
+    // `scheduled_delay` for logs is **1000 ms** (traces default to 5 s). One
+    // logs file per second, per install, retained for the 7-day window, is what
+    // produces the ~150k-file / ~800 MB `sent/` directory measured on two
+    // machines - and `retention.rs` already documents that steady state at
+    // ~264k files. Retention is working; the write rate is the defect.
+    //
+    // 30 s is chosen against what the files are FOR. Nothing reads the spool in
+    // real time: the shipper drains on its own ~30 s tick, and `meridian logs`
+    // decodes whatever is on disk. The cost is that up to 30 s of records sit in
+    // memory, so a hard kill (SIGKILL, OOM, panic before the flush) loses them -
+    // acceptable, because that is precisely the case the launchd stdout/stderr
+    // files exist to cover, and every ordinary shutdown path calls
+    // `obs_guard.shutdown()`, which force-flushes first.
+    //
+    // `max_export_batch_size` is raised to match: at the default 512 a busy
+    // burst forces extra out-of-band exports, i.e. extra files, defeating the
+    // longer delay.
+    let log_batch = opentelemetry_sdk::logs::BatchConfigBuilder::default()
+        .with_scheduled_delay(std::time::Duration::from_secs(30))
+        .with_max_export_batch_size(2048)
+        .build();
+    let log_processor = BatchLogProcessor::builder(log_exporter, runtime::Tokio)
+        .with_batch_config(log_batch)
+        .build();
     let logger_provider = LoggerProvider::builder()
-        .with_batch_exporter(log_exporter, runtime::Tokio)
+        .with_log_processor(log_processor)
         .with_resource(resource)
         .build();
 

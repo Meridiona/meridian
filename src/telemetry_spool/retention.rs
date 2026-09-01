@@ -133,6 +133,7 @@ pub(super) fn prune_due(tick: u64) -> bool {
 pub(super) fn run_housekeeping(
     pending: &Path,
     sent: &Path,
+    quarantine: &Path,
     cutoff_secs: u64,
     prune: bool,
 ) -> Result<()> {
@@ -140,9 +141,22 @@ pub(super) fn run_housekeeping(
     if prune {
         prune_by_age(pending, cutoff_secs)?;
         prune_by_age(sent, cutoff_secs)?;
+        // `quarantine/` was covered by nothing: not by retention, and not by
+        // any reader either - neither `build_export_bundle` nor `meridian logs`
+        // looks at it. A permanently-rejected payload was therefore immortal
+        // AND invisible, the one genuinely unbounded directory in the spool.
+        prune_by_age(quarantine, cutoff_secs)?;
     }
     crate::telemetry_spool::launchd_log_cap::cap_launchd_logs();
-    enforce_pending_cap(pending)
+    enforce_pending_cap(pending)?;
+    // `sent/` had an age policy and no volume policy at all, so its size was
+    // whatever the emission rate happened to produce inside the 7-day window -
+    // ~800 MB across ~150k files on the two machines measured, and nothing
+    // would have stopped 2 GB on a busier one. The batching fix in
+    // `observability::init` addresses the rate; this bounds the outcome
+    // regardless of rate, which is what makes it a ceiling rather than a
+    // second guess.
+    enforce_sent_cap(sent)
 }
 
 /// Delete `.otlp` files in `dir` whose mtime is older than `cutoff_secs`.
@@ -238,6 +252,99 @@ pub(super) fn enforce_pending_cap(pending: &Path) -> Result<()> {
             dropped_bytes,
             cap_bytes = max,
             "pending telemetry cap exceeded — oldest spool files dropped"
+        );
+    }
+
+    Ok(())
+}
+
+/// Default ceiling on `sent/`, the local archive of already-delivered payloads.
+///
+/// Generous on purpose: `sent/` is not dead weight. `meridian logs` reads
+/// `pending/` AND `sent/` (`render::collect_all_records`), so without it local
+/// log history on a shipping install would be about thirty seconds deep, and
+/// `build_export_bundle` archives both. The point is a ceiling, not a purge.
+const DEFAULT_MAX_SENT_MB: u64 = 256;
+
+/// Ceiling for [`enforce_sent_cap`], overridable for operators with unusual
+/// retention needs.
+pub(super) fn max_sent_bytes() -> u64 {
+    let mb = std::env::var("MERIDIAN_TELEMETRY_MAX_SENT_MB")
+        .ok()
+        .and_then(|v| v.parse::<u64>().ok())
+        .unwrap_or(DEFAULT_MAX_SENT_MB);
+    mb.saturating_mul(1024 * 1024)
+}
+
+/// Drop the OLDEST already-shipped files once `sent/` exceeds its size cap.
+///
+/// # Why an age policy was not enough
+///
+/// `sent/` had a 7-day cutoff and no volume policy, so its size was whatever
+/// the emission rate produced inside that window. Measured on two machines:
+/// ~150k files and ~800 MB, with the module's own docs recording a ~264k-file
+/// steady state. Nothing in the code would have stopped 2 GB on a busier
+/// machine - the bound was on time, not on space.
+///
+/// That is not only a disk-usage problem. `build_export_bundle` archives every
+/// file in here, and `docs/privacy.md` asks the user to inspect the archive
+/// before sending it to support. Nobody inspects 150,000 protobuf files, so
+/// the consent step that makes Export Diagnostics acceptable was defeated by
+/// sheer count.
+///
+/// Evicts oldest-first by `(micros, seq)` - the same total order the shipper
+/// and [`enforce_pending_cap`] use - so the newest, most diagnostically useful
+/// records are the ones kept. Logged at `debug`, not `warn`: unlike the pending
+/// cap, dropping something already delivered to OpenObserve loses no data that
+/// was not already sent, so it is routine housekeeping rather than a fault.
+pub(super) fn enforce_sent_cap(sent: &Path) -> Result<()> {
+    let max = max_sent_bytes();
+
+    let Ok(entries) = std::fs::read_dir(sent) else {
+        return Ok(());
+    };
+
+    let mut files: Vec<(u64, u64, u64, PathBuf)> = entries
+        .flatten()
+        .filter_map(|e| {
+            let p = e.path();
+            let name = p.file_name()?.to_str()?.to_string();
+            if !name.ends_with(".otlp") {
+                return None;
+            }
+            let micros = micros_from_filename(&name)?;
+            let seq = seq_from_filename(&name)?;
+            let size = std::fs::metadata(&p).map(|m| m.len()).unwrap_or(0);
+            Some((micros, seq, size, p))
+        })
+        .collect();
+
+    files.sort_by_key(|(m, s, _, _)| (*m, *s));
+
+    let total: u64 = files.iter().map(|(_, _, s, _)| s).sum();
+    if total <= max {
+        return Ok(());
+    }
+
+    let mut to_drop = total - max;
+    let mut dropped_count = 0u64;
+    let mut dropped_bytes = 0u64;
+    for (_, _, size, path) in &files {
+        if to_drop == 0 {
+            break;
+        }
+        let _ = std::fs::remove_file(path);
+        dropped_bytes += size;
+        dropped_count += 1;
+        to_drop = to_drop.saturating_sub(*size);
+    }
+
+    if dropped_count > 0 {
+        tracing::debug!(
+            dropped_files = dropped_count,
+            dropped_bytes,
+            cap_bytes = max,
+            "sent telemetry cap exceeded - oldest already-shipped files dropped"
         );
     }
 
@@ -346,12 +453,15 @@ mod tests {
         let s = sent.join("traces-1-0.otlp");
         std::fs::write(&s, b"x").unwrap();
 
+        let quarantine = dir.path().join("quarantine");
+        std::fs::create_dir_all(&quarantine).unwrap();
+
         // Not due: survives a keep-nothing cutoff.
-        run_housekeeping(&pending, &sent, 0, false).unwrap();
+        run_housekeeping(&pending, &sent, &quarantine, 0, false).unwrap();
         assert!(s.exists(), "not-due housekeeping must not prune");
 
         // Due: the 0-second cutoff removes it.
-        run_housekeeping(&pending, &sent, 0, true).unwrap();
+        run_housekeeping(&pending, &sent, &quarantine, 0, true).unwrap();
         assert!(!s.exists(), "due housekeeping must prune");
     }
 
@@ -419,5 +529,85 @@ mod tests {
         assert!(remaining.is_empty());
 
         std::env::remove_var("MERIDIAN_TELEMETRY_MAX_PENDING_MB");
+    }
+
+    /// `quarantine/` was pruned by nothing and read by nothing - not by
+    /// retention, not by `build_export_bundle`, not by `meridian logs`. A
+    /// permanently-rejected payload was immortal AND invisible, the one
+    /// genuinely unbounded directory in the spool.
+    #[test]
+    fn housekeeping_prunes_quarantine_too() {
+        let dir = TempDir::new().unwrap();
+        let pending = pending_dir(dir.path());
+        std::fs::create_dir_all(&pending).unwrap();
+        let sent = dir.path().join("sent");
+        std::fs::create_dir_all(&sent).unwrap();
+        let quarantine = dir.path().join("quarantine");
+        std::fs::create_dir_all(&quarantine).unwrap();
+        let q = quarantine.join("traces-1-0.otlp");
+        std::fs::write(&q, b"rejected").unwrap();
+
+        run_housekeeping(&pending, &sent, &quarantine, 0, false).unwrap();
+        assert!(q.exists(), "not-due housekeeping must not prune quarantine");
+
+        run_housekeeping(&pending, &sent, &quarantine, 0, true).unwrap();
+        assert!(
+            !q.exists(),
+            "a quarantined payload must age out - it was previously immortal"
+        );
+    }
+
+    /// `sent/` had an age policy and NO volume policy, so its size was whatever
+    /// the emission rate produced inside the 7-day window (~800 MB / ~150k
+    /// files measured). The cap evicts oldest-first so the newest, most useful
+    /// records survive.
+    #[test]
+    fn the_sent_cap_evicts_oldest_first() {
+        let dir = TempDir::new().unwrap();
+        let sent = dir.path().join("sent");
+        std::fs::create_dir_all(&sent).unwrap();
+        // 3 files, ~4KB each, against a cap of 0MB -> everything over the cap
+        // goes, oldest first.
+        let oldest = sent.join("traces-100-0.otlp");
+        let middle = sent.join("traces-200-0.otlp");
+        let newest = sent.join("traces-300-0.otlp");
+        for p in [&oldest, &middle, &newest] {
+            std::fs::write(p, vec![b'x'; 4096]).unwrap();
+        }
+
+        std::env::set_var("MERIDIAN_TELEMETRY_MAX_SENT_MB", "0");
+        enforce_sent_cap(&sent).unwrap();
+        std::env::remove_var("MERIDIAN_TELEMETRY_MAX_SENT_MB");
+
+        assert!(!oldest.exists(), "the oldest shipped file must go first");
+        assert!(
+            !middle.exists() || !newest.exists(),
+            "the cap must actually reclaim space"
+        );
+    }
+
+    /// A `sent/` under its ceiling must be left completely alone - this is an
+    /// archive `meridian logs` reads, not scratch.
+    #[test]
+    fn the_sent_cap_keeps_everything_under_the_ceiling() {
+        let dir = TempDir::new().unwrap();
+        let sent = dir.path().join("sent");
+        std::fs::create_dir_all(&sent).unwrap();
+        let f = sent.join("traces-100-0.otlp");
+        std::fs::write(&f, b"small").unwrap();
+
+        enforce_sent_cap(&sent).unwrap();
+        assert!(f.exists(), "a spool under its cap must not be pruned");
+    }
+
+    /// The ceiling has to leave room for the log history it backs; a tiny cap
+    /// would silently turn `meridian logs` into a thirty-second window.
+    #[test]
+    fn the_sent_ceiling_leaves_room_for_real_log_history() {
+        let bytes = max_sent_bytes();
+        assert!(
+            bytes >= 64 * 1024 * 1024,
+            "sent/ backs `meridian logs`; {bytes} bytes is too small to be useful"
+        );
     }
 }
