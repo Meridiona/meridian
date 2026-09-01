@@ -1390,6 +1390,15 @@ async fn main() -> Result<()> {
     //     stop the daemon anyway — exiting here would just crash-loop under
     //     launchd's KeepAlive.
     let db_corrupt = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    // Identity of meridian.db as this process opened it. Re-checked only while
+    // latched, to tell "the file was repaired and swapped underneath us" (our
+    // pool is now on a dead inode) apart from "the same file is still damaged".
+    // See `integrity::file_identity` for why the distinction is load-bearing.
+    let db_identity_at_start = meridian::db::integrity::file_identity(&initial_cfg.meridian_db);
+    // When the swap above is detected, the pool must NOT be checkpointed or
+    // closed on the way out - SQLite addresses -wal/-shm by path, so a stale
+    // pool's journal state would land on the NEW file. Set only on that path.
+    let mut db_file_swapped = false;
     {
         let meridian = meridian.clone();
         let db_corrupt = db_corrupt.clone();
@@ -1578,6 +1587,11 @@ async fn main() -> Result<()> {
     // Track the last-applied log level so we can detect changes and hot-reload
     // the EnvFilter without restarting the daemon.
     let mut last_log_level = initial_cfg.runtime.log_level.clone();
+    // Paces the latched-state re-check. `None` = never checked, so the first
+    // latched tick re-checks immediately rather than waiting out a full
+    // interval - a daemon that latches during startup (the reported case) then
+    // recovers as soon as the rebuild it raced finishes.
+    let mut last_corrupt_check: Option<std::time::Instant> = None;
 
     loop {
         // Determine the sleep duration from the current settings.json before sleeping.
@@ -1612,10 +1626,30 @@ async fn main() -> Result<()> {
                 *etl_tick_span.lock().unwrap_or_else(|e| e.into_inner()) = Some(poll_tick.clone());
                 let _guard = poll_tick.enter();
                 tracing::debug!("starting ETL tick");
-                // Latched, never re-tried — see DB_CORRUPT_NOTICE. Everything
-                // else in the tick (PM sync, notifications, plan nudge) reads
-                // tables corruption may not have touched, so the daemon stays
-                // useful instead of exiting.
+                // Latched on corruption — but NOT forever. Everything else in
+                // the tick (PM sync, notifications, plan nudge) reads tables
+                // corruption may not have touched, so the daemon stays useful
+                // instead of exiting; the ETL itself waits for the database to
+                // be provably healthy again. See `recover_from_corruption`.
+                if db_corrupt.load(std::sync::atomic::Ordering::Relaxed) {
+                    match recover_from_corruption(
+                        &meridian,
+                        &initial_cfg.meridian_db,
+                        db_identity_at_start,
+                        &mut last_corrupt_check,
+                    )
+                    .await
+                    {
+                        CorruptionRecheck::Waiting => {}
+                        CorruptionRecheck::Recovered => {
+                            db_corrupt.store(false, std::sync::atomic::Ordering::Relaxed);
+                        }
+                        CorruptionRecheck::FileSwapped => {
+                            db_file_swapped = true;
+                            break;
+                        }
+                    }
+                }
                 if !db_corrupt.load(std::sync::atomic::Ordering::Relaxed) {
                     if etl_tick(&meridian).await {
                         db_corrupt.store(true, std::sync::atomic::Ordering::Relaxed);
@@ -1816,21 +1850,37 @@ async fn main() -> Result<()> {
     // the entire question when a `meridian.db` is later found malformed. A
     // corruption investigation on 2026-08-25 stalled on exactly this ambiguity
     // and had to withdraw its conclusion. Now silence here means killed.
-    match meridian::db::meridian::checkpoint_wal(&meridian).await {
-        Ok(()) => tracing::info!(
+    //
+    // Skipped ENTIRELY when the database file was replaced underneath us. The
+    // pool's connections are on the old, unlinked inode, but SQLite addresses
+    // the `-wal` and `-shm` sidecars BY PATH - so checkpointing or closing here
+    // would write this process's stale journal state against the NEW file. That
+    // is not a lesser version of the corruption this checkpoint prevents, it is
+    // precisely the v1.80.0 mechanism. Leaking the pool on the way out of a
+    // process that is exiting anyway costs nothing by comparison.
+    if db_file_swapped {
+        tracing::error!(
             pid = std::process::id() as i64,
-            "WAL checkpoint on shutdown complete"
-        ),
-        // `pid` here too: the whole reason both outcomes are logged is to
-        // attribute a checkpoint to a generation, and a FAILED checkpoint is
-        // the one most worth attributing.
-        Err(e) => tracing::warn!(
-            pid = std::process::id() as i64,
-            error = %meridian::errors::chain(&e),
-            "WAL checkpoint on shutdown failed - continuing anyway"
-        ),
+            "exiting without a WAL checkpoint: meridian.db was replaced underneath this \
+             process, so this pool's journal state must not be written back"
+        );
+    } else {
+        match meridian::db::meridian::checkpoint_wal(&meridian).await {
+            Ok(()) => tracing::info!(
+                pid = std::process::id() as i64,
+                "WAL checkpoint on shutdown complete"
+            ),
+            // `pid` here too: the whole reason both outcomes are logged is to
+            // attribute a checkpoint to a generation, and a FAILED checkpoint is
+            // the one most worth attributing.
+            Err(e) => tracing::warn!(
+                pid = std::process::id() as i64,
+                error = %meridian::errors::chain(&e),
+                "WAL checkpoint on shutdown failed - continuing anyway"
+            ),
+        }
+        meridian.close().await;
     }
-    meridian.close().await;
 
     // Flush OTel exporters FIRST, while the runtime is alive — this writes the
     // daemon's final shutdown spans/logs into the spool's pending/ dir...
@@ -1843,6 +1893,140 @@ async fn main() -> Result<()> {
     let _ = shipper_shutdown_tx.send(true);
 
     Ok(())
+}
+
+/// How long a latched daemon waits between re-checks of whether the database
+/// has become healthy underneath it.
+///
+/// Far slower than the ~60 s poll tick on purpose. The original latch existed
+/// because "retrying only re-reads damaged pages", and that reasoning is sound
+/// for the ETL itself - `quick_check` reads every page in the file, which is
+/// multi-second on a multi-GB database. Fifteen minutes keeps that cost
+/// negligible while bounding an outage at minutes instead of "until a human
+/// notices and restarts the daemon", which in the reported incident was 44.7
+/// hours.
+const CORRUPT_RECHECK_EVERY: std::time::Duration = std::time::Duration::from_secs(900);
+
+/// What a latched daemon should do after re-examining its database.
+#[derive(Debug, PartialEq, Eq, Clone, Copy)]
+enum CorruptionRecheck {
+    /// Still damaged, or not yet due for a re-check. Stay latched.
+    Waiting,
+    /// The database is provably sound again - resume the ETL.
+    Recovered,
+    /// The file was replaced underneath this process (a repair rebuilt and
+    /// renamed it). The pool is on a dead inode; the daemon must exit WITHOUT
+    /// touching the database so launchd restarts it against the new file.
+    FileSwapped,
+}
+
+/// Re-examine a database the ETL has latched on, and say whether to resume.
+///
+/// # The bug this closes
+///
+/// `db_corrupt` used to be a one-way flag: set on the first corruption signal
+/// and never cleared for the life of the process. That silently disabled the
+/// ETL, the task-linker wakeups and capture retention, and emitted nothing
+/// after the single error that tripped it. The justification - that the
+/// condition "cannot clear without an operator" - is false in practice, and
+/// production disproved it on 2026-08-25: a daemon latched at startup against
+/// a file that was still being rebuilt, the rebuild finished ~45 minutes
+/// later, and the daemon then sat idle against a perfectly healthy database
+/// for 44.7 hours until someone restarted it by hand. The very first ETL pass
+/// after that restart succeeded, catching up 12,642 frames.
+///
+/// It was also unobservable from outside: `db::repair::rebuild` clears the
+/// `db.corrupt` notice from the file it rebuilds, so the banner - the only
+/// user-visible signal - disappears while a still-running daemon stays
+/// latched. The dashboard reported a healthy system with a dead ETL.
+///
+/// # Why the file-identity check comes first
+///
+/// A repair rebuilds into a new file and renames it into place, so the
+/// recovered database is a DIFFERENT inode. Re-running `quick_check` through
+/// the existing pool would keep examining the old, unlinked one and could
+/// never observe the fix. Worse, that pool must not be checkpointed or closed
+/// (see [`meridian::db::integrity::file_identity`]). So identity is checked
+/// before health, and a swap short-circuits to [`CorruptionRecheck::FileSwapped`].
+///
+/// # Safety of resuming
+///
+/// `quick_check` returning clean is not a promise the database is perfect - it
+/// skips the index-vs-table checks `integrity_check` performs. It does not
+/// need to be a promise: if damage remains, the next ETL pass hits it and
+/// `etl_tick` latches again, costing one pass. The failure is self-correcting
+/// in the safe direction, which is what makes resuming reasonable at all.
+async fn recover_from_corruption(
+    pool: &sqlx::SqlitePool,
+    db_path: &str,
+    identity_at_start: Option<(u64, u64)>,
+    last_check: &mut Option<std::time::Instant>,
+) -> CorruptionRecheck {
+    let now = std::time::Instant::now();
+    if let Some(prev) = *last_check {
+        if now.duration_since(prev) < CORRUPT_RECHECK_EVERY {
+            return CorruptionRecheck::Waiting;
+        }
+    }
+    *last_check = Some(now);
+
+    // Only meaningful when both readings exist: `file_identity` is `None` on
+    // non-unix and on a stat failure, and "could not tell" must never be read
+    // as "it changed" - that would exit the daemon on a transient stat error.
+    let identity_now = meridian::db::integrity::file_identity(db_path);
+    if let (Some(before), Some(after)) = (identity_at_start, identity_now) {
+        if before != after {
+            tracing::error!(
+                db_path,
+                "meridian.db was replaced underneath this process (a repair rebuilt it) - \
+                 this pool is on the old, unlinked file and must not write to it. Exiting \
+                 without checkpointing so the service manager restarts against the new file."
+            );
+            return CorruptionRecheck::FileSwapped;
+        }
+    }
+
+    match meridian::db::integrity::quick_check(pool, 20).await {
+        Ok(problems) if problems.is_empty() => {
+            tracing::info!(
+                "meridian.db passes its integrity check again - resuming the ETL (it was \
+                 stopped when corruption was detected)"
+            );
+            // The daemon raised this notice, so the daemon clears it. Without
+            // this the banner outlives the fault it reports.
+            if let Err(e) =
+                meridian::notices::clear_typed(pool, DB_CORRUPT_NOTICE, DB_CORRUPT_NOTICE).await
+            {
+                tracing::warn!(
+                    error = %meridian::errors::chain(&e),
+                    "could not clear the db.corrupt notice after recovery"
+                );
+            }
+            CorruptionRecheck::Recovered
+        }
+        Ok(problems) => {
+            // WARN every recheck interval, not once. The original latch went
+            // silent after a single error, which is why 44.7 hours of total
+            // ETL outage left nothing in `meridian logs` to find.
+            tracing::warn!(
+                problem_count = problems.len(),
+                first = %problems.first().map(String::as_str).unwrap_or_default(),
+                recheck_s = CORRUPT_RECHECK_EVERY.as_secs(),
+                "ETL is still stopped: meridian.db remains damaged. Run 'meridian db repair' \
+                 with Meridian quit."
+            );
+            CorruptionRecheck::Waiting
+        }
+        Err(e) => {
+            // The check failing is not evidence either way, so stay latched -
+            // but say so, for the same reason as above.
+            tracing::warn!(
+                error = %meridian::errors::chain(&e),
+                "ETL is still stopped: the integrity re-check could not run"
+            );
+            CorruptionRecheck::Waiting
+        }
+    }
 }
 
 /// Runs one ETL pass and maps the outcome onto the notice bus.
@@ -1914,6 +2098,178 @@ async fn etl_tick(meridian: &meridian::db::SqlitePool) -> bool {
 /// The id itself lives in the lib ([`meridian::notices::DB_CORRUPT`]) because
 /// `db::repair` must clear the very same id from a rebuilt database.
 const DB_CORRUPT_NOTICE: &str = meridian::notices::DB_CORRUPT;
+
+#[cfg(test)]
+mod corruption_recovery_tests {
+    use super::{recover_from_corruption, CorruptionRecheck, CORRUPT_RECHECK_EVERY};
+    use sqlx::sqlite::SqliteConnectOptions;
+    use sqlx::SqlitePool;
+    use std::str::FromStr;
+    use std::time::Instant;
+
+    async fn fresh_db() -> SqlitePool {
+        let opts = SqliteConnectOptions::from_str("sqlite::memory:")
+            .unwrap()
+            .create_if_missing(true);
+        let pool = SqlitePool::connect_with(opts).await.unwrap();
+        sqlx::migrate!("src/migrations").run(&pool).await.unwrap();
+        pool
+    }
+
+    /// THE regression. The latch had no way out: `db_corrupt` was stored `true`
+    /// in three places and `false` in none, so a database that became healthy
+    /// underneath a running daemon left the ETL stopped for the life of the
+    /// process - 44.7 hours in the reported incident, ended only by a manual
+    /// restart whose very first pass succeeded.
+    #[tokio::test]
+    async fn a_healthy_database_resumes_the_etl() {
+        let pool = fresh_db().await;
+        let mut last = None;
+        assert_eq!(
+            recover_from_corruption(&pool, ":memory:", None, &mut last).await,
+            CorruptionRecheck::Recovered,
+            "a database that passes its integrity check must un-latch the ETL"
+        );
+    }
+
+    /// Recovery must also retract the banner the daemon itself raised,
+    /// otherwise the notice outlives the fault it reports.
+    #[tokio::test]
+    async fn recovery_clears_the_notice_the_daemon_raised() {
+        let pool = fresh_db().await;
+        meridian::notices::raise_typed(
+            &pool,
+            meridian::notices::Notice {
+                id: meridian::notices::DB_CORRUPT,
+                severity: "error",
+                title: "Meridian's database is damaged",
+                detail: "test",
+                remedy: None,
+                event_key: meridian::notices::DB_CORRUPT,
+                deep_link: None,
+            },
+        )
+        .await
+        .unwrap();
+
+        let mut last = None;
+        assert_eq!(
+            recover_from_corruption(&pool, ":memory:", None, &mut last).await,
+            CorruptionRecheck::Recovered
+        );
+
+        let notices = meridian_core::notices::read_notices(&pool).await;
+        assert!(
+            !notices
+                .iter()
+                .any(|n| n.notice_id == meridian::notices::DB_CORRUPT),
+            "the db.corrupt banner must not survive the recovery that fixes it"
+        );
+    }
+
+    /// The re-check reads every page of the database, so it must not run on
+    /// every ~60 s poll tick. The first latched tick checks immediately
+    /// (`last` is `None`); the next one waits out the interval.
+    #[tokio::test]
+    async fn the_recheck_is_throttled() {
+        let pool = fresh_db().await;
+        let mut last = Some(Instant::now());
+        assert_eq!(
+            recover_from_corruption(&pool, ":memory:", None, &mut last).await,
+            CorruptionRecheck::Waiting,
+            "a re-check ran before its interval elapsed - this reads every page in the file"
+        );
+
+        // Once the interval has passed it runs again and, on a clean database,
+        // recovers. Drives the clock rather than sleeping 15 minutes.
+        //
+        // `checked_sub`, not `-`. `Instant` is measured from an arbitrary epoch
+        // that on Windows is system boot, so on a CI runner whose uptime is
+        // under CORRUPT_RECHECK_EVERY the subtraction underflows and `std`
+        // panics with "overflow when subtracting duration from instant" - which
+        // is exactly how this failed on the Windows job while macOS stayed
+        // green. It returns `Option<Instant>`, which is already this variable's
+        // type: on a long-lived machine that is `Some(an elapsed instant)` and
+        // exercises the elapsed path, and on a just-booted one it is `None`,
+        // meaning "never checked", which must also proceed. Both satisfy the
+        // assertion below, so the test is portable without being weakened into
+        // a no-op on either.
+        last = Instant::now().checked_sub(CORRUPT_RECHECK_EVERY);
+        assert_eq!(
+            recover_from_corruption(&pool, ":memory:", None, &mut last).await,
+            CorruptionRecheck::Recovered
+        );
+    }
+
+    /// A repair rebuilds into a NEW file and renames it into place, so the pool
+    /// is left on the old, unlinked inode. Re-checking through it could never
+    /// see the fix, and - the dangerous half - checkpointing or closing it
+    /// writes stale journal state against the NEW file's `-wal`/`-shm`, which
+    /// is the v1.80.0 corruption mechanism exactly.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_replaced_file_is_detected_rather_than_re_checked() {
+        let pool = fresh_db().await;
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("meridian.db");
+        std::fs::write(&path, b"first").unwrap();
+        let before = meridian::db::integrity::file_identity(path.to_str().unwrap());
+        assert!(before.is_some(), "identity must be readable on unix");
+
+        // Replace it the way a repair does: a different file renamed into place.
+        let replacement = dir.path().join("rebuilt");
+        std::fs::write(&replacement, b"second").unwrap();
+        std::fs::rename(&replacement, &path).unwrap();
+
+        let mut last = None;
+        assert_eq!(
+            recover_from_corruption(&pool, path.to_str().unwrap(), before, &mut last).await,
+            CorruptionRecheck::FileSwapped,
+            "a swapped database must be detected, not re-checked through the dead pool"
+        );
+    }
+
+    /// The same file must NOT read as swapped, or a healthy latched daemon
+    /// would exit every re-check interval.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn an_unchanged_file_is_not_mistaken_for_a_swap() {
+        let pool = fresh_db().await;
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("meridian.db");
+        std::fs::write(&path, b"same").unwrap();
+        let ident = meridian::db::integrity::file_identity(path.to_str().unwrap());
+
+        let mut last = None;
+        assert_ne!(
+            recover_from_corruption(&pool, path.to_str().unwrap(), ident, &mut last).await,
+            CorruptionRecheck::FileSwapped,
+            "an unchanged file read as swapped - the daemon would exit on every re-check"
+        );
+    }
+
+    /// "Could not tell" must never be read as "it changed". `file_identity`
+    /// returns `None` on a stat failure and on non-unix; treating that as a
+    /// swap would exit the daemon on a transient error, or on every re-check
+    /// on Windows.
+    #[tokio::test]
+    async fn an_unreadable_identity_never_reads_as_swapped() {
+        let pool = fresh_db().await;
+        let mut last = None;
+        let outcome = recover_from_corruption(
+            &pool,
+            "/nonexistent/path/that/cannot/be/stated.db",
+            Some((1, 2)),
+            &mut last,
+        )
+        .await;
+        assert_ne!(
+            outcome,
+            CorruptionRecheck::FileSwapped,
+            "an unreadable identity must not be treated as evidence of a swap"
+        );
+    }
+}
 
 #[cfg(test)]
 mod startup_order_tests {

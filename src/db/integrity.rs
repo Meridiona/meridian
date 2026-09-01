@@ -353,6 +353,47 @@ async fn scan_one(pool: &SqlitePool, table: &str) -> Result<()> {
     Ok(())
 }
 
+/// Identity of the file currently at `path` - `(device, inode)` on unix, `None`
+/// elsewhere or when it cannot be stated.
+///
+/// # Why a process needs this
+///
+/// `db::repair` rebuilds into a NEW file and renames it over `meridian.db`. A
+/// daemon holding a pool open across that swap keeps its connections on the
+/// OLD, now-unlinked inode: its reads see the damaged file forever and its
+/// writes land somewhere no reader will ever look. Re-running an integrity
+/// check through that pool therefore cannot ever observe the repair - it is
+/// checking the wrong file. Comparing this value against the one captured at
+/// startup is the only way the daemon can notice.
+///
+/// Worse than useless-but-harmless: SQLite addresses the `-wal` and `-shm`
+/// sidecars **by path, not by inode**, so a stale pool that checkpoints or
+/// closes writes its journal state against the NEW file's sidecars. That is
+/// the exact mechanism behind this repo's v1.80.0 macOS corruption. A daemon
+/// that detects a swap must exit WITHOUT checkpointing or closing.
+///
+/// Unix-only by design rather than by omission: the swap this detects requires
+/// renaming over a file another process holds open, which Windows refuses
+/// outright (os error 32). There is nothing to detect there.
+///
+/// # Who calls this
+/// `main.rs` captures it at startup and re-checks it while the ETL is latched
+/// on [`is_corrupt_error`], the one state in which the file is likely to be
+/// replaced underneath a running daemon.
+pub fn file_identity(path: &str) -> Option<(u64, u64)> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        let md = std::fs::metadata(path).ok()?;
+        Some((md.dev(), md.ino()))
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = path;
+        None
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
