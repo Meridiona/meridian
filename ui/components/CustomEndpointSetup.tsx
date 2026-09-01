@@ -280,7 +280,7 @@ export default function CustomEndpointSetup({ existing, onBack, onAdd, onPick }:
             hint="Leave blank if your server does not need one - most local models do not."
             value={apiKey}
             onChange={setApiKey}
-            placeholder="Optional"
+            placeholder="Paste your API key"
             disabled={busy}
             password
             mono
