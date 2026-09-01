@@ -298,8 +298,32 @@ pub(super) fn max_sent_bytes() -> u64 {
 /// cap, dropping something already delivered to OpenObserve loses no data that
 /// was not already sent, so it is routine housekeeping rather than a fault.
 pub(super) fn enforce_sent_cap(sent: &Path) -> Result<()> {
-    let max = max_sent_bytes();
+    enforce_sent_cap_to(sent, max_sent_bytes())
+}
 
+/// [`enforce_sent_cap`] against an explicit ceiling.
+///
+/// Split out so tests can choose a cap **without touching the environment**.
+/// `std::env::set_var` is process-global and Rust runs a test binary's tests on
+/// parallel threads in ONE process, so a test that set
+/// `MERIDIAN_TELEMETRY_MAX_SENT_MB` was silently reaching into every sibling
+/// running at the same time. That is not theoretical: it turned the Windows CI
+/// job red while macOS stayed green, because `max_sent_bytes` read the `0` a
+/// concurrent test had set and the ceiling assertion saw 0 bytes. The race ran
+/// in the other direction too - a sibling asserting that an under-cap `sent/`
+/// is left alone could observe the same `0` and watch its file be deleted.
+///
+/// Parameterising is the fix rather than serialising with a mutex: nothing here
+/// needs to be global, and a lock would leave the next test that reaches for an
+/// env var to rediscover this.
+///
+/// This is a recurrence, not a novelty - [`crate::test_env`] exists because
+/// `MERIDIAN_SETTINGS_PATH` produced the same failure, and its header is worth
+/// reading for how quiet these are (the collision needs tests from two modules
+/// in one run, so a filtered run reports green). Prefer this shape where the
+/// value can simply be passed in; reach for that crate-level lock only when the
+/// code under test genuinely has to read the process environment.
+fn enforce_sent_cap_to(sent: &Path, max: u64) -> Result<()> {
     let Ok(entries) = std::fs::read_dir(sent) else {
         return Ok(());
     };
@@ -575,9 +599,11 @@ mod tests {
             std::fs::write(p, vec![b'x'; 4096]).unwrap();
         }
 
-        std::env::set_var("MERIDIAN_TELEMETRY_MAX_SENT_MB", "0");
-        enforce_sent_cap(&sent).unwrap();
-        std::env::remove_var("MERIDIAN_TELEMETRY_MAX_SENT_MB");
+        // The cap is passed in, NOT set via `MERIDIAN_TELEMETRY_MAX_SENT_MB`.
+        // That env var is process-global and these tests run on parallel
+        // threads in one process, so setting it here was corrupting siblings -
+        // see `enforce_sent_cap_to`'s doc for the CI failure it caused.
+        enforce_sent_cap_to(&sent, 0).unwrap();
 
         assert!(!oldest.exists(), "the oldest shipped file must go first");
         assert!(
@@ -596,18 +622,39 @@ mod tests {
         let f = sent.join("traces-100-0.otlp");
         std::fs::write(&f, b"small").unwrap();
 
-        enforce_sent_cap(&sent).unwrap();
+        // Explicit cap for the same reason as the sibling above: reading the
+        // env here would let a concurrent test's `set_var` delete this file.
+        enforce_sent_cap_to(&sent, DEFAULT_MAX_SENT_MB * 1024 * 1024).unwrap();
         assert!(f.exists(), "a spool under its cap must not be pruned");
     }
 
     /// The ceiling has to leave room for the log history it backs; a tiny cap
     /// would silently turn `meridian logs` into a thirty-second window.
+    ///
+    /// Asserts on the shipped DEFAULT, not on `max_sent_bytes()`. The property
+    /// is "the value we ship is generous enough", and reading the env made this
+    /// assert on the machine's environment instead - which is how it failed on
+    /// Windows CI, having picked up the `0` a concurrent test had exported.
     #[test]
     fn the_sent_ceiling_leaves_room_for_real_log_history() {
-        let bytes = max_sent_bytes();
+        let bytes = DEFAULT_MAX_SENT_MB * 1024 * 1024;
         assert!(
             bytes >= 64 * 1024 * 1024,
             "sent/ backs `meridian logs`; {bytes} bytes is too small to be useful"
         );
+    }
+
+    /// The override is still wired up - parameterising the tests must not mean
+    /// nothing exercises the env path at all.
+    ///
+    /// Reads without writing, so it is safe beside every parallel sibling: with
+    /// the variable unset (the normal case, including CI) it must resolve to the
+    /// shipped default.
+    #[test]
+    fn the_default_ceiling_applies_when_the_override_is_unset() {
+        if std::env::var_os("MERIDIAN_TELEMETRY_MAX_SENT_MB").is_some() {
+            return; // an operator's own override; nothing to assert about ours
+        }
+        assert_eq!(max_sent_bytes(), DEFAULT_MAX_SENT_MB * 1024 * 1024);
     }
 }
