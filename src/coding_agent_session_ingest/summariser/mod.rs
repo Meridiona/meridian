@@ -595,7 +595,14 @@ pub async fn run_loop(
     // Only rows whose source is in backoff are skipped; other sources continue.
     let mut source_backoff: HashMap<String, std::time::Instant> = HashMap::new();
     loop {
-        let all_backed_off = drain(&pool, &cfg, &mut attempts, &mut source_backoff).await;
+        let all_backed_off = drain(
+            &pool,
+            &cfg,
+            &mut attempts,
+            &mut source_backoff,
+            &shutdown_rx,
+        )
+        .await;
         let wait = if all_backed_off {
             // Nothing could be processed (all pending rows are from backed-off
             // sources). Wait out the backoff period rather than spinning.
@@ -643,6 +650,7 @@ async fn drain(
     cfg: &SummariserConfig,
     attempts: &mut HashMap<i64, u32>,
     source_backoff: &mut HashMap<String, std::time::Instant>,
+    shutdown_rx: &watch::Receiver<bool>,
 ) -> bool {
     // Expire stale backoffs before deciding what to skip.
     let now_instant = std::time::Instant::now();
@@ -671,6 +679,24 @@ async fn drain(
     let mut skipped_backoff = 0u32;
 
     for row in &rows {
+        // Each row shells out to the agent's own CLI (`claude -p` / `codex exec`
+        // / …), which can run for tens of seconds to a couple of minutes — and
+        // this loop runs up to `batch_per_tick` (default 32) of them
+        // sequentially. Without this check, a daemon shutdown mid-batch would
+        // not be observed until the whole batch drained (worst case, tens of
+        // minutes), holding `meridian.db` open long past the tray installer's
+        // 10s `wait_for_db_unheld` budget (`backend_install.rs`) and risking
+        // exactly the double-writer corruption that guard exists to prevent.
+        // Checked between rows, not mid-subprocess-call: the subprocess isn't
+        // cancellation-safe, so bounding exposure to "at most one in-flight
+        // row" is the safe stopping point, not "any point at all".
+        if *shutdown_rx.borrow() {
+            tracing::info!(
+                remaining = rows.len() - summarised as usize - skipped_backoff as usize,
+                "coding-agent summariser: shutdown requested mid-drain — stopping early"
+            );
+            return false;
+        }
         // Skip rows whose agent source is still in rate-limit backoff.
         if source_backoff.contains_key(&row.agent) {
             skipped_backoff += 1;
@@ -944,6 +970,81 @@ mod tests {
             attempts.get(&2),
             Some(&1),
             "row 2's independent failure count must be untouched"
+        );
+    }
+
+    /// THE regression this exists for: `drain()` used to process its whole
+    /// batch (up to `batch_per_tick`, default 32, each shelling out to the
+    /// agent's own CLI) with no shutdown check at all, so a daemon SIGTERM
+    /// mid-batch went unnoticed until every row finished — worst case, tens
+    /// of minutes with `meridian.db` still open. That blew straight through
+    /// the tray installer's 10s `wait_for_db_unheld` budget
+    /// (`backend_install.rs`), which is the guard standing between an update
+    /// and the exact double-writer corruption documented in this repo's
+    /// history.
+    ///
+    /// Pre-signals shutdown BEFORE calling `drain()` (rather than racing a
+    /// real subprocess mid-row, which isn't cancellation-safe) and asserts
+    /// the pending row is untouched — proving the loop bailed before ever
+    /// calling `summarise_one`, not merely that it returned some value.
+    #[tokio::test]
+    async fn drain_stops_before_touching_any_row_once_shutdown_is_signalled() {
+        use crate::coding_agent_session_ingest::db as cdb;
+        use crate::coding_agent_session_ingest::segment::Segment;
+        use sqlx::sqlite::SqliteConnectOptions;
+        use std::str::FromStr;
+
+        let opts = SqliteConnectOptions::from_str("sqlite::memory:")
+            .unwrap()
+            .create_if_missing(true);
+        let pool = SqlitePool::connect_with(opts).await.unwrap();
+        sqlx::migrate!("src/migrations").run(&pool).await.unwrap();
+        db::ensure_summary_source_column(&pool).await.unwrap();
+
+        let seg = Segment {
+            session_uuid: "u1".into(),
+            agent: "claude_code".into(),
+            cwd: Some("/repo".into()),
+            segment_started_at: "2026-05-20T08:00:00.000000+00:00".into(),
+            started_at: "2026-05-20T08:00:00.000000+00:00".into(),
+            ended_at: "2026-05-20T08:30:00.000000+00:00".into(),
+            user_turns: 2,
+            assistant_turns: 2,
+            active_seconds: 300,
+            transcript: "x".repeat(900),
+            is_last: false,
+            title: None,
+        };
+        let id = cdb::upsert_segment(&pool, &seg, true, Some("2026-05-20T09:00:00.000000+00:00"))
+            .await
+            .unwrap()
+            .unwrap();
+
+        let cfg = SummariserConfig::from_env();
+        let mut attempts = HashMap::new();
+        let mut source_backoff = HashMap::new();
+        // Already true when drain() starts — the same state the loop sees
+        // when a SIGTERM lands between two drain() calls, or (with this fix)
+        // between two rows of the same batch.
+        let (_tx, rx) = watch::channel(true);
+
+        let all_backed_off = drain(&pool, &cfg, &mut attempts, &mut source_backoff, &rx).await;
+        assert!(
+            !all_backed_off,
+            "a shutdown bail-out is not a backoff condition"
+        );
+
+        let (method,): (String,) =
+            sqlx::query_as("SELECT task_method FROM app_sessions WHERE id = ?")
+                .bind(id)
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        assert_eq!(
+            method,
+            db::TASK_METHOD_PENDING,
+            "the row must be untouched — drain() must bail before calling \
+             summarise_one, not merely stop looping afterward"
         );
     }
 }
