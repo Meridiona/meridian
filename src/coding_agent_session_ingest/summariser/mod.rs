@@ -632,10 +632,18 @@ fn next_wait_secs(out: DrainOutcome, cfg: &SummariserConfig, consecutive_idle: u
     // 64 every few seconds. Capped, so recovery is still prompt.
     if out.failed > 0 {
         let factor = 1u64 << consecutive_idle.min(6);
+        // `.max(sweep_interval_secs)` after the cap, not before: the cap is
+        // there to keep recovery prompt, but with `SUMMARISER_SWEEP_S` set above
+        // MAX_IDLE_BACKOFF_SECS it would invert the whole point of this branch
+        // and make a FAILING queue retry more often than a healthy one. The
+        // default sweep is 5 s so this never binds in practice - it binds
+        // exactly when someone has deliberately slowed the loop down, which is
+        // the moment speeding it up is least wanted.
         return cfg
             .sweep_interval_secs
             .saturating_mul(factor)
-            .min(MAX_IDLE_BACKOFF_SECS);
+            .min(MAX_IDLE_BACKOFF_SECS)
+            .max(cfg.sweep_interval_secs);
     }
     // Everything left is exhausted (dead-lettered or capped) - there is
     // nothing to retry until new rows seal, and the notify covers that.
@@ -679,12 +687,16 @@ pub async fn run_loop(
     // its whole batch every few seconds.
     let mut consecutive_idle: u32 = 0;
     loop {
+        // `shutdown_rx` is passed IN as well as selected on below: #918 made
+        // `drain` check it between rows, so a shutdown during a long summarise
+        // does not have to wait out the rest of the batch.
         let out = drain(
             &pool,
             &cfg,
             &mut attempts,
             &mut rate_limited_attempts,
             &mut source_backoff,
+            &shutdown_rx,
         )
         .await;
         if out.summarised > 0 || out.failed == 0 {
@@ -716,9 +728,10 @@ pub async fn run_loop(
 const MAX_ROW_ATTEMPTS: u32 = 3;
 
 /// One drain pass: summarise pending rows from a bounded recent window
-/// (yesterday + today), oldest-first. Returns true only when all available
-/// rows belong to rate-limited sources (no progress was possible this pass),
-/// signalling the caller to wait longer rather than spinning.
+/// (yesterday + today), oldest-first. Returns a [`DrainOutcome`] tallying what
+/// happened, which [`next_wait_secs`] turns into the caller's sleep - a pass
+/// that only hit rate limits waits out the backoff, a pass that FAILED backs
+/// off exponentially, and a productive pass keeps the normal cadence.
 ///
 /// Rate-limit backoff is per-source (keyed on `app_name`): if Claude Code is
 /// rate-limited, Codex / Cursor / Copilot rows continue draining via their own
@@ -734,6 +747,7 @@ async fn drain(
     attempts: &mut HashMap<i64, u32>,
     rate_limited_attempts: &mut HashMap<i64, u32>,
     source_backoff: &mut HashMap<String, std::time::Instant>,
+    shutdown_rx: &watch::Receiver<bool>,
 ) -> DrainOutcome {
     // Expire stale backoffs before deciding what to skip.
     let now_instant = std::time::Instant::now();
@@ -764,6 +778,32 @@ async fn drain(
     };
 
     for row in &rows {
+        // Each row shells out to the agent's own CLI (`claude -p` / `codex exec`
+        // / …), which can run for tens of seconds to a couple of minutes — and
+        // this loop runs up to `batch_per_tick` (default 32) of them
+        // sequentially. Without this check, a daemon shutdown mid-batch would
+        // not be observed until the whole batch drained (worst case, tens of
+        // minutes), holding `meridian.db` open long past the tray installer's
+        // 10s `wait_for_db_unheld` budget (`backend_install.rs`) and risking
+        // exactly the double-writer corruption that guard exists to prevent.
+        // Checked between rows, not mid-subprocess-call: the subprocess isn't
+        // cancellation-safe, so bounding exposure to "at most one in-flight
+        // row" is the safe stopping point, not "any point at all".
+        if *shutdown_rx.borrow() {
+            // `out` carries the tally so far and is returned as-is. The loop
+            // below turns it into a sleep, but it is about to see the same
+            // shutdown on its own `select!` and break, so the value only ever
+            // reaches the log line here.
+            tracing::info!(
+                remaining = rows.len() as u32
+                    - out.summarised
+                    - out.skipped_backoff
+                    - out.failed
+                    - out.skipped_exhausted,
+                "coding-agent summariser: shutdown requested mid-drain — stopping early"
+            );
+            return out;
+        }
         // Skip rows whose agent source is still in rate-limit backoff.
         if source_backoff.contains_key(&row.agent) {
             out.skipped_backoff += 1;
@@ -1140,6 +1180,34 @@ mod tests {
         );
     }
 
+    /// The cap must never make a FAILING queue retry sooner than a healthy one.
+    ///
+    /// `MAX_IDLE_BACKOFF_SECS` exists to keep recovery prompt, but applied as a
+    /// bare `.min()` it also clamps DOWNWARDS - so with `SUMMARISER_SWEEP_S`
+    /// above 300 a wedged queue would have been retried more often than an idle
+    /// one, exactly inverting this function. The default sweep is 5s so it never
+    /// binds by default; it binds precisely when an operator has deliberately
+    /// slowed the loop, which is when speeding it up is least wanted.
+    #[test]
+    fn a_slow_configured_sweep_is_never_sped_up_by_the_cap() {
+        let mut cfg = cfg_for_pacing();
+        cfg.sweep_interval_secs = MAX_IDLE_BACKOFF_SECS * 2;
+        let failing = DrainOutcome {
+            seen: 4,
+            failed: 4,
+            ..DrainOutcome::default()
+        };
+        for idle in [0u32, 1, 6, 99] {
+            let w = next_wait_secs(failing, &cfg, idle);
+            assert!(
+                w >= cfg.sweep_interval_secs,
+                "a failing pass must never wait LESS than the configured sweep \
+                 (idle={idle} gave {w}, sweep is {})",
+                cfg.sweep_interval_secs
+            );
+        }
+    }
+
     /// Progress and an empty queue both keep the responsive cadence - backing
     /// off a working summariser would delay every summary.
     #[test]
@@ -1246,6 +1314,117 @@ mod tests {
             patient > strict.saturating_mul(10),
             "a refilling quota must be waited out, not treated like a broken row \
              (rate-limit cap {patient}, failure cap {strict})"
+        );
+    }
+
+    /// THE regression this exists for: `drain()` used to process its whole
+    /// batch (up to `batch_per_tick`, default 32, each shelling out to the
+    /// agent's own CLI) with no shutdown check at all, so a daemon SIGTERM
+    /// mid-batch went unnoticed until every row finished — worst case, tens
+    /// of minutes with `meridian.db` still open. That blew straight through
+    /// the tray installer's 10s `wait_for_db_unheld` budget
+    /// (`backend_install.rs`), which is the guard standing between an update
+    /// and the exact double-writer corruption documented in this repo's
+    /// history.
+    ///
+    /// Pre-signals shutdown BEFORE calling `drain()` (rather than racing a
+    /// real subprocess mid-row, which isn't cancellation-safe) and asserts
+    /// the pending row is untouched — proving the loop bailed before ever
+    /// calling `summarise_one`, not merely that it returned some value.
+    #[tokio::test]
+    async fn drain_stops_before_touching_any_row_once_shutdown_is_signalled() {
+        use crate::coding_agent_session_ingest::db as cdb;
+        use crate::coding_agent_session_ingest::segment::Segment;
+        use sqlx::sqlite::SqliteConnectOptions;
+        use std::str::FromStr;
+
+        let opts = SqliteConnectOptions::from_str("sqlite::memory:")
+            .unwrap()
+            .create_if_missing(true);
+        let pool = SqlitePool::connect_with(opts).await.unwrap();
+        sqlx::migrate!("src/migrations").run(&pool).await.unwrap();
+        db::ensure_summary_source_column(&pool).await.unwrap();
+
+        // Dated relative to NOW, not to a fixed 2026-05-20. `fetch_pending`
+        // only looks at yesterday+today, so a hardcoded past date meant it
+        // returned NO rows: drain() hit its `rows.is_empty()` early return, the
+        // shutdown branch this test exists for was never reached, and the
+        // "row is untouched" assertion held trivially. The test passed with the
+        // fix deleted. Caught when the DrainOutcome assertion below reported
+        // `seen: 0`.
+        let now = Utc::now();
+        let stamp = |mins: i64| {
+            (now - chrono::Duration::minutes(mins))
+                .format("%Y-%m-%dT%H:%M:%S%.6f+00:00")
+                .to_string()
+        };
+        let seg = Segment {
+            session_uuid: "u1".into(),
+            agent: "claude_code".into(),
+            cwd: Some("/repo".into()),
+            segment_started_at: stamp(90),
+            started_at: stamp(90),
+            ended_at: stamp(60),
+            user_turns: 2,
+            assistant_turns: 2,
+            active_seconds: 300,
+            transcript: "x".repeat(900),
+            is_last: false,
+            title: None,
+        };
+        let id = cdb::upsert_segment(&pool, &seg, true, Some(&stamp(30)))
+            .await
+            .unwrap()
+            .unwrap();
+
+        let cfg = SummariserConfig::from_env();
+        let mut attempts = HashMap::new();
+        let mut source_backoff = HashMap::new();
+        // Already true when drain() starts — the same state the loop sees
+        // when a SIGTERM lands between two drain() calls, or (with this fix)
+        // between two rows of the same batch.
+        let (_tx, rx) = watch::channel(true);
+
+        let mut rate_limited_attempts = HashMap::new();
+        let out = drain(
+            &pool,
+            &cfg,
+            &mut attempts,
+            &mut rate_limited_attempts,
+            &mut source_backoff,
+            &rx,
+        )
+        .await;
+        // The tally must show the bail-out for what it was: nothing attempted.
+        // The original assertion was `!all_backed_off` - "a shutdown bail-out is
+        // not a backoff condition" - and that property is now spelled out per
+        // counter, so a future change that mislabels the bail-out as a backoff
+        // (and so parks the loop for the full rate-limit wait) still fails here.
+        assert_eq!(
+            out,
+            DrainOutcome {
+                seen: 1,
+                ..DrainOutcome::default()
+            },
+            "a shutdown bail-out must count as neither progress, failure, nor backoff"
+        );
+        assert_eq!(
+            next_wait_secs(out, &cfg, 0),
+            cfg.sweep_interval_secs,
+            "and it must not be paced as if the queue were wedged"
+        );
+
+        let (method,): (String,) =
+            sqlx::query_as("SELECT task_method FROM app_sessions WHERE id = ?")
+                .bind(id)
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        assert_eq!(
+            method,
+            db::TASK_METHOD_PENDING,
+            "the row must be untouched — drain() must bail before calling \
+             summarise_one, not merely stop looping afterward"
         );
     }
 }

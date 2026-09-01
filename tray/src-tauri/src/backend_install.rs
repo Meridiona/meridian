@@ -485,7 +485,31 @@ pub(crate) async fn ensure_daemon_running(home: &Path) {
 }
 
 /// `Meridian.app/Contents/Resources/backend/` when it exists, else `None`.
+///
+/// Gated on `!cfg!(debug_assertions)` as well as the directory check — a
+/// `tauri dev` / `cargo run` build's `resource_dir()` resolves under
+/// `target/debug/`, and if ANYTHING ever leaves a `backend/` subdirectory
+/// there (a stray artifact from an earlier debug-profile `tauri build`, a
+/// manual test, whatever), `dir.is_dir()` alone can't tell that apart from a
+/// real packaged install. That false positive is not cosmetic:
+/// [`ensure_backend_installed`] would then call [`install`], which on macOS
+/// runs [`stop_daemon_for_migration`] against `meridian.db` — booting out a
+/// launchd agent that was never registered for this run (a no-op) and then
+/// polling `lsof` for up to 10s, which always times out because the actual
+/// holder is the sibling `cargo run` daemon `bootout` can't touch, not the
+/// launchd job it targets. That raises `tray.backend_install_failed`
+/// ("meridian.db is still held open 10s after stopping the daemon") on every
+/// dev-tray launch, with a timestamp that tracks each restart — measured
+/// verbatim on 2026-08-31, traced to exactly one stray directory left over
+/// from an Aug 16 debug build. `debug_assertions` is a compile-time constant
+/// for the running binary's own profile, so this can never be fooled by
+/// what's left lying around on disk the way the directory check alone was.
+/// Matches the same convention already used for the encryption-migration
+/// gate in `lib.rs`'s setup hook.
 fn bundled_backend_dir(app: &tauri::AppHandle) -> Option<PathBuf> {
+    if cfg!(debug_assertions) {
+        return None;
+    }
     let dir = app.path().resource_dir().ok()?.join("backend");
     dir.is_dir().then_some(dir)
 }
