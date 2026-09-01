@@ -1040,6 +1040,30 @@ async fn main() -> Result<()> {
     // bash `meridian logs` (which tailed launchd-redirected stdout/stderr
     // text) now that the OTel spool is the sole log/trace sink — see
     // observability.rs's module doc. No daemon init needed.
+    // `meridian restart` - restart the managed daemon. This subcommand did not
+    //     exist while FIVE places in this same binary told users to run it,
+    //     including the Jira/Trello OAuth handlers' success output and
+    //     `doctor`'s etl-freshness remedy. It works on a source install only
+    //     because that path symlinks `meridian` at `scripts/meridian-cli.sh`,
+    //     whose bash `cmd_restart` has always existed; a DMG install runs this
+    //     binary directly and got `unknown subcommand "restart"`.
+    if std::env::args().nth(1).as_deref() == Some("restart") {
+        let outcome = meridian::restart::run();
+        let text = meridian::restart::describe(&outcome);
+        match outcome {
+            meridian::restart::Outcome::Restarted => {
+                println!("{text}");
+                return Ok(());
+            }
+            // Exit non-zero so a script (or the tray) can tell "restarted" from
+            // "there was nothing to restart" without parsing the message.
+            _ => {
+                eprintln!("{text}");
+                std::process::exit(1);
+            }
+        }
+    }
+
     if std::env::args().nth(1).as_deref() == Some("logs") {
         let args: Vec<String> = std::env::args().collect();
         meridian::telemetry_spool::render::run(&args).await;
