@@ -270,12 +270,64 @@ pub(crate) async fn stop_daemon_for_migration(db_path: &Path) -> Result<(), Stri
     }
 }
 
+/// Stop the daemon so [`stage_binary`] can overwrite `~/.meridian/bin/meridian`.
+///
+/// # Why this is NOT [`stop_daemon_for_migration`]
+///
+/// It used to be — `install` called that function directly, reusing the
+/// encryption migration's stop rather than writing a second one. The two
+/// operations guard genuinely different things, and sharing one guard gave
+/// staging a precondition it has no way to satisfy:
+///
+/// - **The migration swaps `meridian.db` itself.** Any process holding that
+///   file is a hazard, because the sidecars are addressed by path and a second
+///   writer ends up sharing one journal. "Nothing at all holds the database" is
+///   the correct precondition, and [`wait_for_db_unheld`] is how it is proved.
+/// - **Staging overwrites `~/.meridian/bin/meridian`.** It does not touch the
+///   database. The only file whose holders matter is the *binary*.
+///
+/// Inheriting the database precondition meant any unrelated reader blocked a
+/// daemon UPDATE — and it blocked it in the one way that cannot recover, because
+/// staging is exactly what would have replaced a broken daemon. Measured on a
+/// dev machine 2026-09-01: a stale v1.86.0 daemon crash-looped 13,306 times over
+/// eight days (`failed to run migrations` against a schema three migrations
+/// ahead of it), while every launch's attempt to stage a current binary over it
+/// was declined because the tray's own pool and an MCP server held the database.
+/// The interlock was preventing the repair for the fault it was reporting. A
+/// user running the Meridian MCP server reaches the same state with no dev build
+/// involved: their daemon silently stops updating, permanently.
+///
+/// # What still guards the second-daemon hazard
+///
+/// The comment that justified the database check in `install` was about
+/// [`register_service`] bootstrapping a new daemon beside a live one. That was
+/// written on 2026-08-25, when the daemon's only defence was a check-then-act
+/// endpoint probe. The **atomic single-instance lock** landed the next day
+/// (`meridian::platform::acquire_single_instance_lock`, taken immediately before
+/// `setup_db`), so a second daemon now stands down before it opens the database
+/// at all, however the two are interleaved. The probe additionally catches a
+/// long-running daemon from a build predating the lock. Neither depends on this
+/// function, so narrowing it here gives up nothing.
+#[cfg(target_os = "macos")]
+pub(crate) async fn stop_daemon_for_staging(daemon_bin: &Path) -> Result<(), String> {
+    bootout_agent_and_wait(DAEMON_LABEL).await?;
+    // A bootout only removes the LAUNCHD-managed daemon, and killing a process
+    // does not release its executable mapping instantly. Overwriting a binary
+    // another process is still executing leaves that process running the old
+    // unlinked inode on macOS - silently, unlike Windows' os error 32 - so prove
+    // the file is unmapped rather than inferring it from the bootout returning.
+    wait_for_path_unheld(daemon_bin, "the daemon binary").await
+}
+
 /// Poll until nothing but this process holds `db_path` open (≤10 s), so the
 /// caller can swap the file knowing there is no second writer.
 ///
 /// Deliberately keyed on **the database file**, not on a daemon binary path:
-/// the hazard is "some process has this file open", and a check that enumerates
-/// known daemon locations misses every writer that isn't at one of them.
+/// for the encryption migration the hazard is "some process has this file open",
+/// and a check that enumerates known daemon locations misses every writer that
+/// isn't at one of them. Staging has the opposite requirement and uses
+/// [`stop_daemon_for_staging`] — see there for why the two must not share a
+/// guard.
 ///
 /// A spawn failure of `lsof` is treated as **still held**, not as clear. Being
 /// unable to prove the file is free is not evidence that it is, and the cost of
@@ -284,10 +336,25 @@ pub(crate) async fn stop_daemon_for_migration(db_path: &Path) -> Result<(), Stri
 /// proceeding corrupts the user's data irrecoverably.
 #[cfg(target_os = "macos")]
 async fn wait_for_db_unheld(db_path: &Path) -> Result<(), String> {
+    wait_for_path_unheld(db_path, "meridian.db").await
+}
+
+/// Poll until nothing but this process holds `path` open (≤10 s).
+///
+/// The shared body of [`wait_for_db_unheld`] and [`stop_daemon_for_staging`].
+/// `subject` names the file in the returned error because that string reaches
+/// the user as the detail of the "Meridian couldn't finish installing" notice,
+/// and "meridian.db is still held open" sent an installation failure chasing a
+/// database problem for weeks.
+///
+/// A spawn failure of `lsof` is an `Err`, never an empty holder list — see
+/// [`wait_for_db_unheld`] for the asymmetry that rule protects.
+#[cfg(target_os = "macos")]
+async fn wait_for_path_unheld(path: &Path, subject: &str) -> Result<(), String> {
     for _ in 0..10 {
         let out = tokio::process::Command::new("lsof")
             .arg("-t")
-            .arg(db_path)
+            .arg(path)
             .output()
             .await
             .map_err(|e| format!("run lsof: {e}"))?;
@@ -297,10 +364,16 @@ async fn wait_for_db_unheld(db_path: &Path) -> Result<(), String> {
         if holders.is_empty() {
             return Ok(());
         }
-        tracing::debug!(holders = ?holders, "backend_install: waiting for db writers to exit");
+        tracing::debug!(
+            holders = ?holders,
+            path = %path.display(),
+            "backend_install: waiting for holders to exit"
+        );
         tokio::time::sleep(std::time::Duration::from_secs(1)).await;
     }
-    Err("meridian.db is still held open 10s after stopping the daemon".to_string())
+    Err(format!(
+        "{subject} is still held open 10s after stopping the daemon"
+    ))
 }
 
 /// The pids in `lsof -t` output, excluding our own — i.e. the processes that
@@ -493,15 +566,16 @@ pub(crate) async fn ensure_daemon_running(home: &Path) {
 /// manual test, whatever), `dir.is_dir()` alone can't tell that apart from a
 /// real packaged install. That false positive is not cosmetic:
 /// [`ensure_backend_installed`] would then call [`install`], which on macOS
-/// runs [`stop_daemon_for_migration`] against `meridian.db` — booting out a
-/// launchd agent that was never registered for this run (a no-op) and then
-/// polling `lsof` for up to 10s, which always times out because the actual
-/// holder is the sibling `cargo run` daemon `bootout` can't touch, not the
-/// launchd job it targets. That raises `tray.backend_install_failed`
-/// ("meridian.db is still held open 10s after stopping the daemon") on every
-/// dev-tray launch, with a timestamp that tracks each restart — measured
-/// verbatim on 2026-08-31, traced to exactly one stray directory left over
-/// from an Aug 16 debug build. `debug_assertions` is a compile-time constant
+/// boots out a launchd agent that was never registered for this run (a no-op)
+/// and then polls `lsof` for up to 10s. That raises
+/// `tray.backend_install_failed` on every dev-tray launch, with a timestamp
+/// that tracks each restart — measured verbatim on 2026-08-31, traced to
+/// exactly one stray directory left over from an Aug 16 debug build. (At the
+/// time the poll was [`stop_daemon_for_migration`]'s, waiting on `meridian.db`
+/// and so timing out against the sibling `cargo run` daemon's pool; it is
+/// [`stop_daemon_for_staging`]'s now, waiting only on the staged binary. This
+/// gate is still required — the bootout alone is wrong to perform from a dev
+/// build.) `debug_assertions` is a compile-time constant
 /// for the running binary's own profile, so this can never be fooled by
 /// what's left lying around on disk the way the directory check alone was.
 /// Matches the same convention already used for the encryption-migration
@@ -596,18 +670,22 @@ async fn install(backend: &Path, home: &Path) -> Result<(), String> {
     // NINE MILLISECONDS before anything asked it to stop, and the stop that did
     // arrive came from `register_agent`'s bootout, after the fact.
     //
-    // Reuses the migration path's stop rather than a second implementation:
-    // bootout the launchd job, then prove via `lsof` that NOTHING holds the
-    // database - a dev `cargo run`, a directly-spawned binary and an orphan
-    // from an overlapping install have all been seen here, and a bootout
-    // removes none of them.
+    // Scoped to the DAEMON BINARY, matching Windows. This used to call
+    // `stop_daemon_for_migration` and therefore required that NOTHING held
+    // meridian.db - a precondition staging cannot satisfy and does not need,
+    // because staging overwrites `~/.meridian/bin/meridian` and never touches
+    // the database. Any unrelated reader (the tray's own pool, an MCP server, a
+    // dev build) blocked every daemon update, permanently and unrecoverably.
+    // `stop_daemon_for_staging`'s doc has the measurement and why the atomic
+    // single-instance lock, not this call, is what now guards the second-daemon
+    // hazard described above.
     //
     // Failing here declines the STAGING, exactly as Windows does: the update
     // does not apply, the existing daemon keeps running, and the next launch
     // retries. That is the right asymmetry - a deferred update costs a version,
     // proceeding costs the user's database.
     #[cfg(target_os = "macos")]
-    stop_daemon_for_migration(std::path::Path::new(&crate::install::meridian_db_path())).await?;
+    stop_daemon_for_staging(&daemon_bin).await?;
 
     stage_binary(&backend.join(DAEMON_FILE), &daemon_bin).await?;
 
@@ -1533,7 +1611,7 @@ mod tests {
 
         for (label, needle) in [
             ("windows", "stop_running_daemon_before_stage("),
-            ("macos", "stop_daemon_for_migration("),
+            ("macos", "stop_daemon_for_staging("),
         ] {
             let stop = body.find(needle).unwrap_or_else(|| {
                 panic!(
@@ -1548,6 +1626,98 @@ mod tests {
                  first is what makes the window silent. stop at {stop}, stage at {stage}"
             );
         }
+    }
+
+    /// Staging must wait on the **daemon binary**, never on `meridian.db`.
+    ///
+    /// The two are one keystroke apart (`stop_daemon_for_staging` vs
+    /// `stop_daemon_for_migration`) and both compile, so nothing but this scan
+    /// catches a revert. What it costs is not a style point:
+    /// `stop_daemon_for_migration` requires that NOTHING holds the database,
+    /// which staging can neither satisfy nor needs to — it overwrites
+    /// `~/.meridian/bin/meridian` and never opens the database. Wiring it back
+    /// means any unrelated reader (the tray's own pool, an MCP server, a dev
+    /// build) blocks every daemon UPDATE, and blocks it unrecoverably, because
+    /// staging is the mechanism that would have replaced a broken daemon.
+    /// Measured 2026-09-01: 13,306 crash-loops of a stale v1.86.0 daemon over
+    /// eight days, none of which could be repaired for exactly this reason.
+    ///
+    /// The migration keeps the database-wide wait, and that is correct — it
+    /// swaps the file itself. This asserts only that STAGING does not.
+    #[test]
+    fn staging_waits_on_the_daemon_binary_not_on_the_database() {
+        const SRC: &str = include_str!("backend_install.rs");
+        let prod = SRC
+            .split_once("\n#[cfg(test)]")
+            .map_or(SRC, |(before, _)| before);
+        let body = prod
+            .split_once("async fn install(backend: &Path, home: &Path)")
+            .expect("install() must exist")
+            .1;
+        let end = ["\npub ", "\npub(crate) ", "\nasync fn", "\nfn "]
+            .iter()
+            .filter_map(|m| body.find(m))
+            .min()
+            .unwrap_or(body.len());
+        let body = &body[..end];
+
+        assert!(
+            !body.contains("stop_daemon_for_migration("),
+            "install() must not call stop_daemon_for_migration - that waits for \
+             meridian.db to be unheld, a precondition staging cannot satisfy. Use \
+             stop_daemon_for_staging, which waits on the binary it is about to \
+             overwrite. See that function's doc for the 13,306-crash-loop measurement."
+        );
+        assert!(
+            !body.contains("meridian_db_path("),
+            "install() must not resolve the database path at all - staging does not \
+             touch meridian.db, and reintroducing the path is the first half of \
+             reintroducing the wait"
+        );
+    }
+
+    /// The two stops must stay distinct functions guarding distinct files.
+    ///
+    /// Collapsing them back into one is the shape of the original bug, and it
+    /// would not fail `staging_waits_on_the_daemon_binary_not_on_the_database`
+    /// if the survivor kept the staging name while regaining the database wait.
+    #[test]
+    fn the_migration_stop_still_guards_the_database_and_staging_does_not() {
+        const SRC: &str = include_str!("backend_install.rs");
+        let prod = SRC
+            .split_once("\n#[cfg(test)]")
+            .map_or(SRC, |(before, _)| before);
+
+        let fn_body = |sig: &str| -> String {
+            let after = prod
+                .split_once(sig)
+                .unwrap_or_else(|| panic!("{sig} must exist"))
+                .1;
+            let end = ["\npub ", "\npub(crate) ", "\nasync fn", "\nfn ", "\n///"]
+                .iter()
+                .filter_map(|m| after.find(m))
+                .min()
+                .unwrap_or(after.len());
+            after[..end].to_string()
+        };
+
+        let migration = fn_body("async fn stop_daemon_for_migration(db_path: &Path)");
+        assert!(
+            migration.contains("wait_for_db_unheld("),
+            "stop_daemon_for_migration must keep the database-wide wait - it swaps \
+             meridian.db itself, so any holder is a corruption hazard"
+        );
+
+        let staging = fn_body("async fn stop_daemon_for_staging(daemon_bin: &Path)");
+        assert!(
+            staging.contains("wait_for_path_unheld(daemon_bin"),
+            "stop_daemon_for_staging must wait on the binary it overwrites"
+        );
+        assert!(
+            !staging.contains("wait_for_db_unheld("),
+            "stop_daemon_for_staging must NOT wait on the database - that is the \
+             precondition it exists to stop requiring"
+        );
     }
 
     /// The branch that bootstraps a launchd agent whose `bootout` never cleared
