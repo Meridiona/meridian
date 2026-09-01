@@ -1469,6 +1469,12 @@ async fn main() -> Result<()> {
     }
 
     let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
+    // Every task below holds its own clone of the `meridian` pool and must be
+    // known to have actually stopped touching it before shutdown checkpoints
+    // and closes that pool — see the bounded join at the "9. Shutdown" step,
+    // and its doc comment for why a fire-and-forget `tokio::spawn` here isn't
+    // enough on its own.
+    let mut background_tasks: Vec<(&'static str, tokio::task::JoinHandle<()>)> = Vec::new();
 
     // 8a-bis. Coding-agent tasks (both gated — dormant if neither agent is
     //         present). The indexer turns Claude Code / Codex JSONLs into
@@ -1481,18 +1487,26 @@ async fn main() -> Result<()> {
         let pool_idx = meridian.clone();
         let notify_idx = ca_notify.clone();
         let rx_idx = shutdown_rx.clone();
-        tokio::spawn(async move {
-            meridian::coding_agent_session_ingest::indexer::run_loop(pool_idx, notify_idx, rx_idx)
+        background_tasks.push((
+            "coding_agent_indexer",
+            tokio::spawn(async move {
+                meridian::coding_agent_session_ingest::indexer::run_loop(
+                    pool_idx, notify_idx, rx_idx,
+                )
                 .await;
-        });
+            }),
+        ));
         let pool_sum = meridian.clone();
         let rx_sum = shutdown_rx.clone();
-        tokio::spawn(async move {
-            meridian::coding_agent_session_ingest::summariser::run_loop(
-                pool_sum, ca_notify, rx_sum,
-            )
-            .await;
-        });
+        background_tasks.push((
+            "coding_agent_summariser",
+            tokio::spawn(async move {
+                meridian::coding_agent_session_ingest::summariser::run_loop(
+                    pool_sum, ca_notify, rx_sum,
+                )
+                .await;
+            }),
+        ));
     }
 
     // 7d. PM-worklog driver: hour-level pipeline — clock-aligned (HH:03 local), runs
@@ -1502,9 +1516,12 @@ async fn main() -> Result<()> {
         let pool_pm = meridian.clone();
         let db_path_pm = initial_cfg.meridian_db.clone();
         let rx_pm = shutdown_rx.clone();
-        tokio::spawn(async move {
-            meridian::worklog_pipeline::run_loop(pool_pm, db_path_pm, rx_pm).await;
-        });
+        background_tasks.push((
+            "worklog_pipeline",
+            tokio::spawn(async move {
+                meridian::worklog_pipeline::run_loop(pool_pm, db_path_pm, rx_pm).await;
+            }),
+        ));
     }
 
     // 7e. PM-worklog approved-poster: the ~60s sweep that posts worklogs the user
@@ -1514,9 +1531,12 @@ async fn main() -> Result<()> {
     {
         let pool_post = meridian.clone();
         let rx_post = shutdown_rx.clone();
-        tokio::spawn(async move {
-            meridian::pm_worklog::run_post_loop(pool_post, rx_post).await;
-        });
+        background_tasks.push((
+            "pm_worklog_post",
+            tokio::spawn(async move {
+                meridian::pm_worklog::run_post_loop(pool_post, rx_post).await;
+            }),
+        ));
     }
 
     // 7f. Telemetry spool shipper: drains ~/.meridian/telemetry/pending/ to
@@ -1751,6 +1771,60 @@ async fn main() -> Result<()> {
 
     // 9. Shutdown
     tracing::info!(pid = std::process::id() as i64, "shutting down");
+
+    // Wait for every background task to actually stop touching `meridian`
+    // before checkpointing/closing it, instead of just firing the shutdown
+    // signal and hoping. Each task above holds its own clone of this same
+    // pool, and closing it while one is still mid-query races the exact
+    // "held open after stopping the daemon" failure `wait_for_db_unheld`
+    // (`backend_install.rs`) exists to catch during an app update: on macOS
+    // the rename underneath a live writer SUCCEEDS, so two writers end up
+    // sharing one WAL — the root cause of the `code: 11` corruption in this
+    // repo's history. Bounded rather than unconditional: a task that is
+    // stuck on an external subprocess (the coding-agent summariser's `claude
+    // -p` / `codex exec`) must not hang the daemon's own shutdown forever.
+    // The bound is loud on expiry so a future recurrence shows up in
+    // `meridian logs` instead of silently racing the checkpoint below — see
+    // the module doc on `poll::permissions` for why a silent failure mode
+    // here previously cost days to diagnose.
+    const BACKGROUND_TASK_SHUTDOWN_BUDGET: std::time::Duration = std::time::Duration::from_secs(5);
+    // Joined CONCURRENTLY, not one after another: these tasks are already
+    // running in parallel, so waiting on them sequentially would let 4 tasks
+    // each burn their own 5s budget and add up to 20s to every shutdown - on
+    // a machine slow enough to need the full budget even once, that's also
+    // long enough to blow past `bootout_agent_and_wait`'s own 15s wait for
+    // the launchd label to clear (`backend_install.rs`), turning a slow but
+    // healthy shutdown into a failed update. `join_all` bounds the total added
+    // latency to one budget's worth, matching how long the slowest task
+    // actually needed.
+    let results = futures::future::join_all(background_tasks.into_iter().map(
+        |(name, handle)| async move {
+            (
+                name,
+                tokio::time::timeout(BACKGROUND_TASK_SHUTDOWN_BUDGET, handle).await,
+            )
+        },
+    ))
+    .await;
+    for (name, outcome) in results {
+        match outcome {
+            Ok(Ok(())) => tracing::debug!(task = name, "background task stopped for shutdown"),
+            Ok(Err(e)) => tracing::warn!(
+                task = name,
+                error = %e, // not-anyhow: tokio::task::JoinError, no chain to walk
+                "background task panicked during shutdown"
+            ),
+            Err(_) => tracing::error!(
+                task = name,
+                budget_s = BACKGROUND_TASK_SHUTDOWN_BUDGET.as_secs(),
+                "background task did not stop within the shutdown budget — \
+                 it may still be holding the database open (e.g. mid an \
+                 external subprocess call); proceeding with checkpoint/close \
+                 anyway rather than hanging shutdown indefinitely"
+            ),
+        }
+    }
+
     meridian::platform::release_endpoint();
     // See `db::meridian::checkpoint_wal`'s doc for why this runs before every
     // close, not just a plain shutdown. Best-effort: a failed checkpoint must
