@@ -60,6 +60,19 @@ async fn main() -> Result<()> {
         let _ = dotenvy::from_path(home.join(".meridian").join(".env"));
     }
 
+    // 1a-bis. Reject unrecognised flags BEFORE any subcommand can act on them.
+    //
+    //     Every block below parses argv by searching for tokens it knows, so an
+    //     unknown flag used to contribute nothing and leave the command running
+    //     its DEFAULTS. `meridian coding-agent-summarise --help` therefore
+    //     summarised and persisted real rows (reported from production
+    //     2026-08-27), and `meridian worklog-post-approved --help` would have
+    //     posted approved worklogs to a customer's real tracker. This runs
+    //     ahead of the whole chain, so no side effect is reachable through a
+    //     typo. See `meridian::cli_flags` for the table and the test that keeps
+    //     new subcommands from slipping past it.
+    meridian::cli_flags::enforce();
+
     // 1b. Subcommand dispatch. `meridian coding-agent-hook` is the Claude Code
     //     SessionEnd hook entry point: one-shot, reads a JSON payload on stdin,
     //     seals that session, exits 0. It must stay light (no daemon init, no
