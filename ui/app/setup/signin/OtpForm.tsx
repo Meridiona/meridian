@@ -1,17 +1,19 @@
 //ambient dev tool that watches what you do and updates your PM tickets automatically, boosting developer productivity
 'use client'
 
-// Email + code form — the actual sign-in/up custom flow. Uses @clerk/react's
-// "Future" resource API (signIn.emailCode.*, signUp.verifications.*,
-// .finalize() to activate the session) — the older prepareFirstFactor/
-// attemptFirstFactor + setActive() API this version of @clerk/react
-// replaced. Errors come back as `{ error }`, not thrown.
+// Email + code form — sends/verifies a one-time code via the OTP Worker
+// (tray/src-tauri/src/commands/otp.rs: request_account_otp / confirm_account_otp).
+// Replaces EmailCodeForm.tsx (the old @clerk/react-backed form): no client auth
+// library, no session object, no async plugin-init step — every call here is a
+// plain Tauri `invoke`, so unlike the form it replaces this needs no surrounding
+// gate/boundary to bootstrap against (see RequireEmailCapture.tsx, which is
+// simpler than the ClerkGate it replaces for the same reason).
 
 import { useEffect, useRef, useState } from 'react'
 import type { CSSProperties } from 'react'
-import { useSignIn, useSignUp } from '@clerk/react'
+import { invoke } from '@/lib/bridge'
+import { classifySendError, classifyVerifyError } from '@/lib/otp-errors'
 import { Btn, PermIcon, Spinner } from '../atoms'
-import { clerkErrorCode, clerkErrorMessage } from './errors'
 
 /** A bespoke input for this form rather than the shared `<TextInput>` (used
  *  elsewhere for compact settings rows, 12px/5px padding) - an auth form is
@@ -50,16 +52,24 @@ function AuthInput(props: {
 }
 
 /** Standard OTP-industry resend cooldown (Google/GitHub/Stripe et al. all
- *  gate resend at ~30s) — stops a mis-tap or impatience from spamming Clerk's
- *  email-send endpoint (and racking up its per-instance email quota) for no
- *  benefit, since a code already in flight is usually still on its way. */
+ *  gate resend at ~30s) — stops a mis-tap or impatience from spamming the
+ *  Worker's send endpoint (and racking up its per-email/per-IP KV rate-limit
+ *  caps) for no benefit, since a code already in flight is usually still on
+ *  its way. */
 const RESEND_COOLDOWN_S = 30
 
-export function EmailCodeForm() {
-  const { signIn } = useSignIn()
-  const { signUp } = useSignUp()
+export function OtpForm({ onSignedIn, onDevBypass }: {
+  onSignedIn: (email: string) => void
+  /** Fired the first time a send/verify attempt reports the Worker isn't
+   *  configured (`OTP_API_URL` unset/blank) — the fresh-clone dev case. Only
+   *  meaningful to the wizard step (`steps.tsx`'s `EMAIL_STEP.canNext`), which
+   *  uses it to stop blocking Next even though no email was ever captured.
+   *  Omitted by `AccountAuthControl.tsx`'s "Change email" use, since a signed-in
+   *  user reaching "not configured" there is a genuine misconfiguration with
+   *  nothing to unblock. */
+  onDevBypass?: () => void
+}) {
   const [phase, setPhase] = useState<'email' | 'code'>('email')
-  const [mode, setMode] = useState<'signIn' | 'signUp' | null>(null)
   const [email, setEmail] = useState('')
   const [code, setCode] = useState('')
   const [busy, setBusy] = useState(false)
@@ -86,10 +96,7 @@ export function EmailCodeForm() {
   // A ref, not just the `busy` state, guards against double-submit: a fast
   // double-click/tap can fire a second `onClick` before React has re-rendered
   // the button's `disabled` prop from the first click's `setBusy(true)` —
-  // state updates are async, ref writes aren't. Without this a rapid double
-  // click sends the same code to Clerk twice; the first call actually
-  // succeeds, the second correctly bounces off as "already verified", and
-  // that error used to surface even though sign-in had already worked.
+  // state updates are async, ref writes aren't.
   const submitting = useRef(false)
 
   const submitEmail = async () => {
@@ -97,30 +104,13 @@ export function EmailCodeForm() {
     submitting.current = true
     setBusy(true); setErr('')
     try {
-      const created = await signIn.create({ identifier: email })
-      // No matching account — fall back to sign-up so one form handles both
-      // first-time and returning users.
-      if (clerkErrorCode(created.error) === 'form_identifier_not_found' || signIn.isTransferable) {
-        const su = await signUp.create({ emailAddress: email })
-        if (su.error) { setErr(clerkErrorMessage(su.error, 'Could not send a code - try again.')); return }
-        const sent = await signUp.verifications.sendEmailCode()
-        if (sent.error) { setErr(clerkErrorMessage(sent.error, 'Could not send a code - try again.')); return }
-        setMode('signUp'); setPhase('code'); setResendReadyAt(Date.now() + RESEND_COOLDOWN_S * 1000)
-        return
-      }
-      if (created.error) { setErr(clerkErrorMessage(created.error, 'Could not send a code - try again.')); return }
-      const sent = await signIn.emailCode.sendCode()
-      if (sent.error) { setErr(clerkErrorMessage(sent.error, 'Could not send a code - try again.')); return }
-      setMode('signIn'); setPhase('code'); setResendReadyAt(Date.now() + RESEND_COOLDOWN_S * 1000)
+      await invoke('request_account_otp', { email })
+      setPhase('code')
+      setResendReadyAt(Date.now() + RESEND_COOLDOWN_S * 1000)
     } catch (e) {
-      // Clerk's Future API returns { error } rather than throwing, but a
-      // transport-level failure still rejects. Catch it here so it surfaces to
-      // the user instead of bubbling as an unhandled rejection (the
-      // ClerkErrorBoundary only covers render/use() failures, not these
-      // async handlers).
-      // eslint-disable-next-line no-console -- only diagnostic for this failure
-      console.error('sign-in: submitEmail threw', e)
-      setErr('Something went wrong - check your connection and try again.')
+      const { message, isDevBypass } = classifySendError(e)
+      setErr(message)
+      if (isDevBypass) onDevBypass?.()
     } finally {
       submitting.current = false
       setBusy(false)
@@ -128,87 +118,52 @@ export function EmailCodeForm() {
   }
 
   const submitCode = async () => {
-    if (submitting.current || !mode) return
+    if (submitting.current) return
     submitting.current = true
     setBusy(true); setErr('')
     try {
-      const resource = mode === 'signIn' ? signIn : signUp
-      const verified = mode === 'signIn'
-        ? await signIn.emailCode.verifyCode({ code })
-        : await signUp.verifications.verifyEmailCode({ code })
-      if (verified.error) {
-        // A prior submit of this exact code already completed sign-in (see
-        // `submitting` above, or a second device/window racing the same
-        // code) — there's nothing left to do; the session shows up via
-        // useUser() a moment later. Anything else is a real failure — logged
-        // to the console since Clerk's specific reason (wrong digits,
-        // expired code, too many attempts) is more useful for debugging than
-        // the generic fallback shown in the UI.
-        if (clerkErrorCode(verified.error) !== 'verification_already_verified') {
-          // eslint-disable-next-line no-console -- only diagnostic surfaced anywhere for this failure
-          console.error('sign-in: code verification failed', verified.error)
-          setErr(clerkErrorMessage(verified.error, "That code didn't work - check it and try again."))
-        }
+      const verified = await invoke<boolean>('confirm_account_otp', { email, code })
+      if (verified) {
+        // Best-effort, like every other `save_account_email` call site
+        // (e.g. `page.tsx`'s `onSignedIn`) — a failed write here still lets
+        // the user through; the wizard/dashboard's own `onSignedIn` may retry
+        // the save independently.
+        await invoke('save_account_email', { email }).catch(() => {})
+        onSignedIn(email)
         return
       }
-      if (resource.status !== 'complete') {
-        // `missing_requirements` means the code was right but Clerk wants
-        // more fields (password, name, …) than this passwordless/email-only
-        // form ever collects — a Clerk dashboard config gap (an auth
-        // requirement enabled that we don't ask for), not a code bug. Log
-        // exactly which fields so it's fixable without guessing.
-        const missing = 'missingFields' in resource ? resource.missingFields : undefined
-        // eslint-disable-next-line no-console -- see above
-        console.error('sign-in: verification resolved without completing', { status: resource.status, missing })
-        setErr(
-          resource.status === 'missing_requirements'
-            ? "Your code verified, but sign-in isn't fully configured for email-only access yet - see the console for details."
-            : "That code didn't work - check it and try again.",
-        )
-        return
-      }
-      const finalized = await resource.finalize()
-      if (finalized.error) setErr(clerkErrorMessage(finalized.error, 'Could not complete sign-in - try again.'))
+      // A wrong-but-well-formed code is `Ok(false)`, not a rejection — the
+      // retryable, expected outcome copy lives here rather than in
+      // `classifyVerifyError`.
+      setErr("That code didn't work - check it and try again.")
     } catch (e) {
-      // A transport-level rejection (see submitEmail's note) — surface it
-      // rather than letting it escape as an unhandled rejection.
-      // eslint-disable-next-line no-console -- see above
-      console.error('sign-in: submitCode threw', e)
-      setErr('Something went wrong - check your connection and try again.')
+      const { message, isDevBypass } = classifyVerifyError(e)
+      setErr(message)
+      if (isDevBypass) onDevBypass?.()
     } finally {
       submitting.current = false
       setBusy(false)
     }
   }
 
-  /** Re-sends a fresh code to the same address/resource — separate from
-   *  "Use a different email" (which resets back to the email step) so a
-   *  simply-expired or already-used code doesn't force re-typing the email.
-   *  Gated by `resendCooldownS` (the button itself stays disabled until it
-   *  hits zero), but re-checked here too since disabled state lags a render
-   *  behind the ticking clock. */
+  /** Re-sends a fresh code to the same address — separate from "Use a
+   *  different email" (which resets back to the email step) so a simply
+   *  expired or already-used code doesn't force re-typing the email. Gated by
+   *  `resendCooldownS` (the button itself stays disabled until it hits zero),
+   *  but re-checked here too since disabled state lags a render behind the
+   *  ticking clock. */
   const resendCode = async () => {
-    if (submitting.current || !mode || resendCooldownS > 0) return
+    if (submitting.current || resendCooldownS > 0) return
     submitting.current = true
     setBusy(true); setErr('')
     try {
-      const resent = mode === 'signIn'
-        ? await signIn.emailCode.sendCode()
-        : await signUp.verifications.sendEmailCode()
-      if (resent.error) {
-        // eslint-disable-next-line no-console -- see submitCode's note above
-        console.error('sign-in: resend failed', resent.error)
-        setErr(clerkErrorMessage(resent.error, 'Could not resend the code - try again.'))
-        return
-      }
+      await invoke('request_account_otp', { email })
       setCode('')
       setResendReadyAt(Date.now() + RESEND_COOLDOWN_S * 1000)
     } catch (e) {
-      // A transport-level rejection (see submitEmail's note) — surface it
-      // rather than letting it escape as an unhandled rejection.
-      // eslint-disable-next-line no-console -- see above
-      console.error('sign-in: resendCode threw', e)
-      setErr('Could not resend the code - check your connection and try again.')
+      const { message, isDevBypass } = classifySendError(e)
+      setErr(message)
+      if (isDevBypass) onDevBypass?.()
     } finally {
       submitting.current = false
       setBusy(false)

@@ -12,7 +12,9 @@ import { readFileSync } from 'fs'
 // where a step whose entire content is one satisfied toggle has nothing to ask —
 // and the assertions below pin that condition rather than the branch. This test
 // is a string-source guard (the same pattern as the Settings → Notifications
-// guard) because steps.tsx pulls in the whole React/Clerk import graph.
+// guard) because steps.tsx pulls in the whole wizard's component/import graph
+// (LlmProviderPicker, IntegrationConnect, the OTP form, …), too heavy to mount
+// in this test suite's no-DOM bun test runner.
 //
 // The assertions are ANCHORED to the specific declaration they guard — an
 // earlier version scanned the whole file with `[\s\S]*` and matched the macOS

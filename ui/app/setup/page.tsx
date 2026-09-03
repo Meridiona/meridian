@@ -18,7 +18,6 @@ import type { IntegrationsResponse } from '@/lib/api-types'
 import type { RuntimeSettings } from '@/lib/settings'
 import { DEFAULT_LLM_PROVIDER, providerChoiceFields, type LlmProviderId } from '@/lib/llm-providers'
 import { useLlmProviderDetection } from '@/components/LlmProviderPicker'
-import { useSignInRequired } from '@/lib/signin-required'
 import { Btn, DISPLAY, Kicker } from './atoms'
 
 /** Where the wizard stores how far the user got, so quitting mid-setup resumes
@@ -146,15 +145,16 @@ export default function SetupWizard() {
   // (get_integrations) so the rail status + completion summary stay accurate.
   const [integrations, setIntegrations] = useState<IntegrationsResponse | null>(null)
 
-  // Step 3 — sign in (Clerk email one-time-code — see ./signin.tsx). The
-  // widget owns its own form/busy/error state; this just holds the result.
+  // Step 3 — email capture (one-time OTP — see ./signin.tsx). The form owns its
+  // own busy/error state; this just holds the result.
   const [signedInEmail, setSignedInEmail] = useState<string | null>(null)
 
-  // Whether sign-in is required at all — false ONLY in a debug build with no
-  // Clerk publishable key configured, the fresh-clone contributor case. See
-  // `@/lib/signin-required`; the wizard step treats `null` as "required" so a
-  // slow answer never opens the step early.
-  const signInRequired = useSignInRequired()
+  // Whether the OTP Worker reported "not configured" — discovered reactively
+  // from a failed send/verify attempt (see `Wiz.otpNotConfigured`'s doc in
+  // steps.tsx), the fresh-clone contributor case with no `OTP_API_URL` set.
+  // Starts false and never resets once true.
+  const [otpNotConfigured, setOtpNotConfigured] = useState(false)
+  const onDevBypass = useCallback(() => setOtpNotConfigured(true), [])
 
   // Step 4 — intelligence. The provider the whole prose pipeline obeys. Persisted to
   // settings.json immediately on pick (not batched to Finish): if the user quits the
@@ -285,10 +285,11 @@ export default function SetupWizard() {
     } catch (e) { setErr(String(e)) }
   }, [])
 
-  // Persists the Clerk-verified email so the Rust side knows who's signed in
-  // even after this webview session ends (see commands::save_account_email).
-  // Best-effort: a failed write here never blocks the wizard — the widget
-  // already has a live Clerk session and lets the user through regardless.
+  // Persists the verified email so the Rust side knows who's signed in even
+  // after this webview session ends (see commands::save_account_email).
+  // Best-effort: a failed write here never blocks the wizard — `OtpForm`
+  // already made its own (also best-effort) call and lets the user through
+  // regardless.
   const onSignedIn = useCallback((email: string) => {
     setSignedInEmail(email)
     invoke('save_account_email', { email }).catch(() => {})
@@ -298,7 +299,7 @@ export default function SetupWizard() {
     platform,
     perms, openPane, grantScreen, grantNotifications,
     integrations, refetchIntegrations,
-    signedInEmail, onSignedIn, signInRequired,
+    signedInEmail, onSignedIn, otpNotConfigured, onDevBypass,
     provider, providerCustomId, setProvider, providers, scanningProviders,
     testingProviderIds, installingProviderIds, signingProviderIds,
     testProvider, installProvider, signInProvider, rescanProviders,
@@ -359,8 +360,8 @@ export default function SetupWizard() {
   // So on these steps the card is `height: auto`, measures its OWN rendered
   // height (`cardRef` + ResizeObserver below), and the window follows it - the
   // content is never the thing that has to fit, so there is nothing to scroll.
-  const autoSized = !welcome && (meta?.id === 'signin' || meta?.id === 'permissions')
-  const isSignin = !welcome && meta?.id === 'signin'
+  const autoSized = !welcome && (meta?.id === 'email' || meta?.id === 'permissions')
+  const isEmailStep = !welcome && meta?.id === 'email'
   const cardRef = useRef<HTMLDivElement>(null)
   const [measuredHeight, setMeasuredHeight] = useState<number | null>(null)
   // Re-runs on every step change so a stale measurement from the previous
@@ -445,12 +446,12 @@ export default function SetupWizard() {
           />
         ) : (
           <div className="flex flex-col" style={{ height: '100%' }}>
-            <div style={{ padding: '26px 32px 14px', textAlign: isSignin ? 'center' : 'left' }}>
+            <div style={{ padding: '26px 32px 14px', textAlign: isEmailStep ? 'center' : 'left' }}>
               <Kicker style={{ marginBottom: 9 }}>{meta.kicker}</Kicker>
               <h1 style={{ ...DISPLAY, fontSize: 23, lineHeight: 1.1, color: 'var(--t-title)' }}>{meta.title}</h1>
               <p style={{
                 fontSize: 12.5, lineHeight: 1.5, color: 'var(--t-muted)', marginTop: 8,
-                maxWidth: isSignin ? 340 : 620, marginLeft: isSignin ? 'auto' : undefined, marginRight: isSignin ? 'auto' : undefined,
+                maxWidth: isEmailStep ? 340 : 620, marginLeft: isEmailStep ? 'auto' : undefined, marginRight: isEmailStep ? 'auto' : undefined,
                 textWrap: 'pretty',
               }}>{meta.subtitle}</p>
             </div>

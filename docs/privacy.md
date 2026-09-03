@@ -238,7 +238,7 @@ There is no on-device generative model. The only model that runs fully locally i
 
 ## Accounts
 
-Signing in is optional and is currently used to gate the invite-only alpha. Your email address is held by our authentication provider (Clerk); during the alpha window it is also attached directly to your error and crash reports so support can identify which tester and machine an issue came from — see the alpha note under [How reports are identified](#how-reports-are-identified) for the full detail and its end date.
+Signing in is required to use Meridian - it is a one-time step, not an account with a password: you verify a code sent to your email, delivered via AWS SES and checked through a Cloudflare Worker we operate. There is no invite-only alpha it gates. During the alpha window described below, your email is also attached directly to your error and crash reports so support can identify which tester and machine an issue came from — see the alpha note under [How reports are identified](#how-reports-are-identified) for the full detail and its end date.
 
 ---
 
@@ -248,7 +248,7 @@ Signing in is optional and is currently used to gate the invite-only alpha. Your
 - **Delete** — `meridian uninstall` removes Meridian's local data and services. Deleting `~/.meridian/` by hand does the same for data alone.
 - **Portability** — export your activity data and switch tools; there is no lock-in.
 - **Opt out of error reporting or product analytics** — each has its own switch at Settings → Capture & Privacy, and they can be turned off independently. Staying signed out disables product analytics entirely regardless of the switch.
-- **No behavioural tracking** — Meridian does not follow you across websites, does not record sessions, and never sells your data or shares it for advertising. It does reach the service providers named throughout this document to do the job each is described for - PostHog for product analytics, Sentry for crash reports, Clerk for sign-in - and nowhere else. The only usage data collected is the three events described under [Product analytics](#product-analytics).
+- **No behavioural tracking** — Meridian does not follow you across websites, does not record sessions, and never sells your data or shares it for advertising. It does reach the service providers named throughout this document to do the job each is described for - PostHog for product analytics, Sentry for crash reports, AWS SES and a Cloudflare Worker we operate for sign-in - and nowhere else. The only usage data collected is the three events described under [Product analytics](#product-analytics).
 
 ---
 

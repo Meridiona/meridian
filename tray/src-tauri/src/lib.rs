@@ -303,34 +303,6 @@ pub fn run() {
     if let Some(client) = &sentry_client {
         builder = builder.plugin(tauri_plugin_sentry::init(client));
     }
-    // Clerk email sign-in on the setup wizard (see commands::account and
-    // ui/app/setup/signin.tsx). `ClerkPluginBuilder::build()` HARD-FAILS
-    // `.setup()` (killing the whole tray, not just sign-in) when the
-    // publishable key is empty or malformed — so, like the notifications
-    // plugin below, this only registers when a real key is configured. A
-    // source build with no `MERIDIAN_CLERK_PUBLISHABLE_KEY` baked in and no
-    // `CLERK_PUBLISHABLE_KEY` env override degrades to no Clerk plugin at
-    // all; `signin.tsx`'s `SignInGate` catches `initClerk()` failing to find
-    // the plugin and shows a message instead of hanging. `tauri_plugin_http`
-    // is the transport the Clerk plugin patches `fetch` through;
-    // `tauri_plugin_store` gives it persistent session storage so a relaunch
-    // doesn't force re-login.
-    let clerk_key = commands::account::clerk_publishable_key();
-    if !clerk_key.is_empty() {
-        builder = builder
-            .plugin(tauri_plugin_http::init())
-            .plugin(tauri_plugin_store::Builder::new().build())
-            .plugin(
-                tauri_plugin_clerk::ClerkPluginBuilder::new()
-                    .publishable_key(clerk_key)
-                    .with_tauri_store()
-                    .build(),
-            );
-    } else {
-        tracing::info!(
-            "no Clerk publishable key configured — Clerk plugin not registered, setup wizard sign-in unavailable"
-        );
-    }
     // Interactive notifications (UNUserNotificationCenter via the community
     // notifications plugin). Its init HARD-FAILS outside a `.app` bundle, which
     // would crash `tauri dev` / `cargo run` — so it's registered only when
@@ -1399,7 +1371,8 @@ pub fn run() {
             commands::get_platform,
             commands::save_account_email,
             commands::get_account_email,
-            commands::sign_in_required,
+            commands::request_account_otp,
+            commands::confirm_account_otp,
             commands::clear_account_email,
             commands::check_accessibility,
             commands::check_screen_recording,
