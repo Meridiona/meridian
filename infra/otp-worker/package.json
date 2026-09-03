@@ -1,0 +1,28 @@
+{
+  "name": "otp-worker",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Cloudflare Worker: one-time email+OTP send/verify, backing Meridian's account-email capture step. Not published to npm.",
+  "main": "src/index.ts",
+  "scripts": {
+    "dev": "wrangler dev",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "deploy": "wrangler deploy",
+    "deploy:staging": "wrangler deploy --env staging",
+    "types": "wrangler types"
+  },
+  "dependencies": {
+    "aws4fetch": "1.0.20"
+  },
+  "devDependencies": {
+    "@cloudflare/vitest-plugin": "1.1.2",
+    "@types/node": "22.20.1",
+    "typescript": "5.9.3",
+    "vitest": "4.1.11",
+    "wrangler": "4.127.1"
+  },
+  "engines": {
+    "node": ">=22.0.0"
+  }
+}

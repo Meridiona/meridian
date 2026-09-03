@@ -1,0 +1,80 @@
+{
+  "$schema": "./node_modules/wrangler/config-schema.json",
+  // First live Cloudflare Worker in this repo (infra/hf-proxy, the prior one,
+  // was deleted after shipping unauthenticated with no rate limit and taking
+  // the whole Cloudflare account down — see README.md "Why this design"
+  // before changing anything auth- or rate-limit-related here).
+  "name": "meridian-otp-worker",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-08-25",
+  "compatibility_flags": ["nodejs_compat"],
+  "observability": {
+    "enabled": true,
+    "head_sampling_rate": 1
+  },
+
+  // ── KV namespace ──────────────────────────────────────────────────────────
+  // A human must run `wrangler kv namespace create OTP_KV` (and again with
+  // `--env staging`) and paste the returned ids below before this can be
+  // deployed for real. See README.md "Manual steps before first deploy".
+  "kv_namespaces": [
+    {
+      "binding": "OTP_KV",
+      "id": "REPLACE_ME_KV_NAMESPACE_ID_PRODUCTION"
+    }
+  ],
+
+  // ── Non-secret tunables ───────────────────────────────────────────────────
+  // Real credentials (OTP_CLIENT_TOKEN, OTP_CODE_PEPPER, AWS_*, CI_TEST_TOKEN)
+  // are `wrangler secret put` ONLY — never here. See README.md's secrets table.
+  "vars": {
+    // Distinguishes prod from staging inside the Worker without relying on an
+    // unset-vs-set secret (the staging-only code-echo path checks this
+    // explicitly: `env.ENVIRONMENT !== "staging"` short-circuits it even if a
+    // CI_TEST_TOKEN secret were ever mistakenly set on the production
+    // environment).
+    "ENVIRONMENT": "production",
+    "FROM_ADDRESS": "otp@auth.meridiona.com",
+    "FROM_NAME": "Meridian",
+    "OTP_TTL_S": 600,
+    "MAX_VERIFY_ATTEMPTS": 5,
+    "RL_EMAIL_PER_DAY": 3,
+    "RL_IP_PER_HOUR": 10,
+    "RL_GLOBAL_PER_DAY": 2000
+  },
+
+  "env": {
+    "staging": {
+      "name": "meridian-otp-worker-staging",
+      "kv_namespaces": [
+        {
+          "binding": "OTP_KV",
+          "id": "REPLACE_ME_KV_NAMESPACE_ID_STAGING"
+        }
+      ],
+      "vars": {
+        "ENVIRONMENT": "staging",
+        "FROM_ADDRESS": "otp@auth.meridiona.com",
+        "FROM_NAME": "Meridian (staging)",
+        "OTP_TTL_S": 600,
+        "MAX_VERIFY_ATTEMPTS": 5,
+        // RL_IP_PER_HOUR is deliberately HIGHER here than the per-email cap
+        // needs, not lower — scripts/deploy-otp-worker.sh's probes (the
+        // rate-limit-trip probe, which sends RL_EMAIL_PER_DAY+1 requests from
+        // one IP, plus the happy-path send) burn several units of per-IP
+        // budget from a single source IP on every run. A cap sized close to
+        // RL_EMAIL_PER_DAY (as an earlier version of this file had it, at 5)
+        // means a SECOND `--verify-only` run against the same staging
+        // deployment within the hour trips the IP cap on the happy-path send
+        // and fails with a misleading "happy-path send -> 429" — reading as a
+        // regression rather than the smoke test having rate-limited itself.
+        // Sized well above one run's worst-case spend so re-running the
+        // script repeatedly while debugging a real failure doesn't itself
+        // become a source of failures.
+        "RL_EMAIL_PER_DAY": 3,
+        "RL_IP_PER_HOUR": 30,
+        "RL_GLOBAL_PER_DAY": 500
+      }
+    }
+  }
+}
