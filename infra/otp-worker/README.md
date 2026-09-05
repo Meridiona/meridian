@@ -165,22 +165,37 @@ Workers Logs.
 ## Account-event notification
 
 On a successful `/otp/verify` (the `verified` case only — never on a wrong
-guess), `handleVerify` fires a second, unrelated SES send to `NOTIFY_EMAIL`
-(`vars.NOTIFY_EMAIL` in `wrangler.jsonc`, currently `company@meridiona.com` on
-both channels) telling the company that an install signed up or changed its
-email. This rides on `ctx.waitUntil` exactly like the rate-limit alert below —
-fire-and-forget, never awaited inline, so a failed notification send can
-never affect the verify response the caller is waiting on.
+guess), `handleVerify` fires a notification to `NOTIFY_EMAIL` telling the team
+that an install signed up or changed its email. This rides on `ctx.waitUntil`
+exactly like the rate-limit alert below — fire-and-forget, never awaited
+inline, so a failed notification can never affect the verify response the
+caller is waiting on.
 
-`ses.ts`'s `resolveAccountEvent(newEmail, previousEmail)` decides which:
+**This one email goes via Resend, not SES** (`resend.ts`). The marketing site
+has sent the identical notification since June — `Meridian Sign-ins
+<notify@meridiona.com>` → `adithya@meridiona.com`, subject `New sign-up:
+<email>` — and routing the desktop app's copy through the same provider keeps
+web and desktop sign-ups in one inbox with one sender identity. It does **not**
+reverse the SES-over-Resend decision below: that decision was about OTP *code*
+delivery, where Resend's 100/day free tier cannot cover hundreds of
+user-facing sends. An internal notification to one address is a couple of
+dozen a day at most.
 
-- `previousEmail` absent/null → **sign-up** ("A new Meridian install just
-  verified its email: `<email>`").
-- `previousEmail` present and different → **email changed** ("...changed its
-  verified email from `<old>` to `<new>`").
+The body deliberately mirrors the website's format (plain text, no HTML part;
+address on line 1, source, then one status line). Where the web version
+carries `Clerk user id: …`, the desktop app has no equivalent since Clerk was
+removed, so line 2 names the source — which is also what distinguishes a
+desktop notification from a web one at a glance.
+
+`resend.ts`'s `resolveAccountEvent(newEmail, previousEmail)` decides which:
+
+- `previousEmail` absent/null → **sign-up**, subject `New sign-up: <email>`
+  (byte-identical to the website's convention).
+- `previousEmail` present and different → **email changed**, subject
+  `Email changed: <old> -> <new>`. No web equivalent exists for this case.
 - `previousEmail` present and identical to the new email → **no-op**, nothing
-  sent (a "Change email" re-entering the same address that's already on
-  file).
+  sent (a "Change email" re-entering the address already on file must not
+  claim something changed).
 
 `previousEmail` is sent by the client (`tray/src-tauri/src/commands/otp.rs`'s
 `confirm_account_otp`, reading `commands::account::read_account_email()`
@@ -241,9 +256,10 @@ Mirrors the existing `ops/central-observability` convention (public
 | `OTP_CLIENT_TOKEN` | `wrangler secret put` (both envs) | Bearer token the tray sends |
 | `OTP_CODE_PEPPER` | `wrangler secret put` (both envs) | HMAC pepper for code hashing |
 | `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY` / `AWS_REGION` | `wrangler secret put` (both envs) | Scoped to an IAM policy permitting only `ses:SendEmail` on the verified identity |
+| `RESEND_API_KEY` | `wrangler secret put` (both envs) | Sending-access key scoped to the `meridiona.com` domain - the account-event notification only, see above |
 | `TURNSTILE_SECRET_KEY` | `wrangler secret put` (both envs), optional | Unset until/unless the frontend spike lands — see "Turnstile" above |
 | `CI_TEST_TOKEN` | `wrangler secret put --env staging` **only** | Staging-only auth token that also unlocks the `/otp/send` code echo — see below |
-| `ENVIRONMENT`, `FROM_ADDRESS`, `FROM_NAME`, `OTP_TTL_S`, `MAX_VERIFY_ATTEMPTS`, `RL_EMAIL_PER_DAY`, `RL_IP_PER_HOUR`, `RL_GLOBAL_PER_DAY`, `ALERT_THRESHOLD_PCT`, `ALERT_EMAIL`, `NOTIFY_EMAIL` | `wrangler.jsonc` `vars` | Public, tunable without touching code |
+| `ENVIRONMENT`, `FROM_ADDRESS`, `FROM_NAME`, `OTP_TTL_S`, `MAX_VERIFY_ATTEMPTS`, `RL_EMAIL_PER_DAY`, `RL_IP_PER_HOUR`, `RL_GLOBAL_PER_DAY`, `ALERT_THRESHOLD_PCT`, `ALERT_EMAIL`, `NOTIFY_EMAIL`, `NOTIFY_FROM` | `wrangler.jsonc` `vars` | Public, tunable without touching code |
 
 ### Staging-only code echo
 

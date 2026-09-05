@@ -27,6 +27,13 @@ declare global {
     AWS_SECRET_ACCESS_KEY: string;
     AWS_REGION: string;
     /**
+     * Resend sending key for the team sign-up notification only — see
+     * `resend.ts` for why that one email is not on SES. Scoped in the Resend
+     * dashboard to sending-access on the `meridiona.com` domain, so it cannot
+     * manage the account or send as `mail.meridiona.com`.
+     */
+    RESEND_API_KEY: string;
+    /**
      * Staging-only bearer token that also unlocks the `/otp/send` code-echo
      * (see `auth.ts`). Never set outside `env.staging` — its mere presence on
      * production would still be inert there (see `auth.ts`'s `ENVIRONMENT`

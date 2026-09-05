@@ -55,7 +55,8 @@ import {
   serviceUnavailable,
   unauthorized,
 } from "./responses";
-import { resolveAccountEvent, sendAccountEventEmail, sendOtpEmail, sendRateLimitAlertEmail } from "./ses";
+import { resolveAccountEvent, sendAccountEventEmail } from "./resend";
+import { sendOtpEmail, sendRateLimitAlertEmail } from "./ses";
 import { verifyTurnstileToken } from "./turnstile";
 
 const HOUR_MS = 60 * 60 * 1000;

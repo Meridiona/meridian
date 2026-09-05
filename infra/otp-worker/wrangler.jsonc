@@ -51,12 +51,18 @@
     "ALERT_THRESHOLD_PCT": 80,
     "ALERT_EMAIL": "akarsh@meridiona.com",
     // Fires once per successful /otp/verify (sign-up or a changed email) —
-    // see ses.ts's sendAccountEventEmail. Unlike ALERT_EMAIL this has no
-    // once-per-day dedup: every verify here is a genuine one-time capture or
-    // a deliberate "Change email" action, never a routine re-login (this app
-    // has no session/sign-in-again concept), so there's no repeat-noise case
-    // to suppress.
-    "NOTIFY_EMAIL": "company@meridiona.com"
+    // see resend.ts. Unlike ALERT_EMAIL this has no once-per-day dedup: every
+    // verify here is a genuine one-time capture or a deliberate "Change
+    // email" action, never a routine re-login (this app has no
+    // session/sign-in-again concept), so there's no repeat-noise case to
+    // suppress.
+    //
+    // Recipient and sender deliberately MATCH the marketing site's existing
+    // sign-up notification, so web and desktop sign-ups thread together in
+    // one inbox rather than landing in two places. Delivered via Resend, not
+    // SES, for the same reason - see resend.ts's module header.
+    "NOTIFY_EMAIL": "adithya@meridiona.com",
+    "NOTIFY_FROM": "Meridian Sign-ins <notify@meridiona.com>"
   },
 
   "env": {
@@ -92,7 +98,8 @@
         "RL_GLOBAL_PER_DAY": 500,
         "ALERT_THRESHOLD_PCT": 80,
         "ALERT_EMAIL": "akarsh@meridiona.com",
-        "NOTIFY_EMAIL": "company@meridiona.com"
+        "NOTIFY_EMAIL": "adithya@meridiona.com",
+        "NOTIFY_FROM": "Meridian Sign-ins (staging) <notify@meridiona.com>"
       }
     }
   }
