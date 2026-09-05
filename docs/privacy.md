@@ -78,12 +78,13 @@ For the records that do qualify, every attribute is filtered on your device befo
 - **Text values are dropped unless the attribute name is on an explicit allowlist.** Anything path-like is scrubbed of your home directory; the small free-text subset (error messages, stack traces) is additionally scrubbed of URLs, email addresses, and token-shaped strings, then length-clamped.
 - **Structured values** (byte blobs, arrays, nested maps) are dropped outright.
 - **Span events and links are cleared entirely.**
+- **The message itself is sent** - it is the error, so there is nothing to filter it against. Meridian's own rule is therefore that a message must be a fixed sentence and every runtime value must travel as a named field, where the allowlist above applies to it. That rule is enforced automatically: a build fails if any warning or error message formats a value into its text.
 
 The filter fails closed: a newly added attribute anywhere in the codebase is dropped by default until someone deliberately allowlists it.
 
 ### What is therefore never sent
 
-OCR text, accessibility-tree content, window titles, browser URLs, coding-agent conversation bodies, LLM prompts and completions, ticket contents, file paths, and your local database. These stay on your machine even when error reporting is on. Local logs remain full-fidelity for your own debugging — the stripping applies only to the copy that would be transmitted.
+OCR text, accessibility-tree content, window titles, browser URLs, coding-agent conversation bodies, LLM prompts and completions, ticket keys, ticket contents, file paths, and your local database. These stay on your machine even when error reporting is on. Local logs remain full-fidelity for your own debugging — the stripping applies only to the copy that would be transmitted.
 
 ### How reports are identified
 

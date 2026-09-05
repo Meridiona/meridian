@@ -385,7 +385,7 @@ supported way to read logs locally, replacing the old JSONL-tailing UI and the
 old bash `meridian logs` (which used to tail launchd-redirected stdout/stderr
 text).
 
-**Three couplings that silently delete error coverage.** Each has bitten at
+**Four couplings that silently delete error coverage - or cause an egress.** Each has bitten at
 least once; none fails loudly, and none is visible from the call site.
 
 1. **The `EnvFilter` decides what is captured at all — before the spool, before
@@ -420,7 +420,25 @@ least once; none fails loudly, and none is visible from the call site.
    the field was the cheaper half. Likewise a full binary path (`bin`) stays
    denied while `bin_source` — a closed set of literals from
    `install::bin_source` — ships in its place.
-3. **A `u64` field is not shipped as a number.** `tracing-opentelemetry` 0.28's
+3. **The log BODY is not an attribute, and nothing filters it.** The allowlist
+   governs attribute KEYS; the body *is* the record, so it always ships, having
+   passed only `scrub_text`'s URL/email/blob patterns — which know nothing about
+   ticket keys, window titles, or a tracker's error payload. CLAUDE.md has said
+   "structured fields — never format data values into the message string" from
+   the start, and nothing enforced it, so it drifted at three tray call sites
+   that spliced a `meridian` subprocess's stderr into a WARN body. Issue #872
+   measured the result: a real user's ticket key (`ENG-7041`) in central
+   OpenObserve, from a value the allowlist denies as an attribute. It is now
+   enforced — `errors.rs::no_user_data_interpolated_into_a_log_body` walks every
+   workspace source tree and fails the build on a new interpolated WARN+/ERROR
+   body, with `INTERPOLABLE` as the deliberate, justified exemption list. **The
+   corollary when you fix one: move the value to an UNALLOWLISTED attribute
+   rather than deleting it.** Unallowlisted attributes are captured at full
+   fidelity locally (`meridian logs` renders them; export bundles carry the raw
+   spool) and dropped on the ship leg — that is the two-tier design working, and
+   it is why `stderr_tail` costs the engineer debugging their own machine
+   nothing. Deleting the value instead is #867's mistake wearing #872's clothes.
+4. **A `u64` field is not shipped as a number.** `tracing-opentelemetry` 0.28's
    `Visit` impl has no `record_u64`, so `tracing::field::Visit`'s default applies
    and forwards to `record_debug` — which emits a **StringValue**. The field then
    misses the allowlist (nobody lists `timeout_s` as a *string* key) and is

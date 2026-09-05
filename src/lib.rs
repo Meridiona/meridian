@@ -23,6 +23,10 @@ pub mod health;
 pub mod intelligence;
 pub mod llm;
 pub mod llm_experiment;
+// Test-only lints on log content; see the module header. `#[cfg(test)]` because it
+// has no runtime surface - it exists purely to fail the build.
+#[cfg(test)]
+mod log_hygiene;
 pub mod notices;
 pub mod notification_responses;
 pub mod notifications;
