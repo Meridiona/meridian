@@ -169,6 +169,19 @@ struct VerifyResponseBody {
     verified: bool,
 }
 
+/// Build `/otp/verify`'s request body. `previous_email` is whatever
+/// [`crate::commands::account::read_account_email`] returned at call time —
+/// serialized as `null` when absent, which the Worker's `normalizeEmail`
+/// treats as "no prior email" (a first-time sign-up). Pure and
+/// unit-tested separately from the network call it feeds.
+fn build_verify_body(
+    email: &str,
+    code: &str,
+    previous_email: &Option<String>,
+) -> serde_json::Value {
+    serde_json::json!({ "email": email, "code": code, "previousEmail": previous_email })
+}
+
 /// Map `/otp/verify`'s response to this command's outcome. A `200` status is
 /// NOT itself "verified" — see the module doc's "Verify response body"
 /// section — so this parses `body` rather than trusting the status code
@@ -224,6 +237,14 @@ pub async fn request_account_otp(email: String) -> Result<(), String> {
 /// `Ok(false)` means the code was wrong but the attempt was otherwise valid
 /// (retryable). Returns `Err("not_configured")` immediately when no Worker
 /// URL is resolved, same as [`request_account_otp`].
+///
+/// Includes whatever [`crate::commands::account::read_account_email`]
+/// returns as `previousEmail` in the request body — purely informational, so
+/// the Worker can tell the company's `NOTIFY_EMAIL` inbox apart a first-time
+/// sign-up from a "Change email" (`infra/otp-worker/src/ses.ts`'s
+/// `resolveAccountEvent`). Reading it here (rather than having the frontend
+/// pass it) keeps this command's contract unchanged and means a caller can't
+/// forget to include it or spoof a different value.
 #[tauri::command]
 #[tracing::instrument(skip(email, code), err)]
 pub async fn confirm_account_otp(email: String, code: String) -> Result<bool, String> {
@@ -237,10 +258,11 @@ pub async fn confirm_account_otp(email: String, code: String) -> Result<bool, St
         tracing::info!("confirm_account_otp: no OTP_API_URL configured — not_configured");
         return Err("not_configured".into());
     }
+    let previous_email = crate::commands::account::read_account_email();
     let resp = reqwest::Client::new()
         .post(format!("{base}/otp/verify"))
         .bearer_auth(otp_client_token())
-        .json(&serde_json::json!({ "email": email, "code": code }))
+        .json(&build_verify_body(&email, code, &previous_email))
         .timeout(Duration::from_secs(10))
         .send()
         .await
@@ -344,6 +366,28 @@ mod tests {
     fn map_verify_status_rejects_a_malformed_200_body() {
         assert!(map_verify_status(200, "not json").is_err());
         assert!(map_verify_status(200, "{}").is_err());
+    }
+
+    #[test]
+    fn build_verify_body_includes_previous_email_when_present() {
+        let body = build_verify_body(
+            "new@example.com",
+            "123456",
+            &Some("old@example.com".to_string()),
+        );
+        assert_eq!(body["email"], "new@example.com");
+        assert_eq!(body["code"], "123456");
+        assert_eq!(body["previousEmail"], "old@example.com");
+    }
+
+    /// `None` must serialize as JSON `null`, not be omitted — the Worker's
+    /// `handleVerify` reads `body.previousEmail` unconditionally and treats a
+    /// missing/non-string value as "no prior email" either way, but pinning
+    /// the exact shape here catches an accidental switch to `skip_serializing_if`.
+    #[test]
+    fn build_verify_body_serializes_absent_previous_email_as_null() {
+        let body = build_verify_body("new@example.com", "123456", &None);
+        assert!(body["previousEmail"].is_null());
     }
 
     #[test]

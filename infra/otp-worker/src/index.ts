@@ -55,6 +55,7 @@ import {
   serviceUnavailable,
   unauthorized,
 } from "./responses";
+import { resolveAccountEvent, sendAccountEventEmail } from "./resend";
 import { sendOtpEmail, sendRateLimitAlertEmail } from "./ses";
 import { verifyTurnstileToken } from "./turnstile";
 
@@ -200,7 +201,7 @@ async function handleSend(request: Request, env: Env, ctx: ExecutionContext): Pr
   return ok();
 }
 
-async function handleVerify(request: Request, env: Env): Promise<Response> {
+async function handleVerify(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
   const auth = checkBearerAuth(request.headers.get("Authorization"), env);
   if (!auth.ok) return unauthorized();
 
@@ -215,6 +216,10 @@ async function handleVerify(request: Request, env: Env): Promise<Response> {
     return badRequest("invalid_code");
   }
 
+  // Optional, client-supplied, purely informational — see resolveAccountEvent's
+  // doc. An absent or unparseable value just reads as "no prior email".
+  const previousEmail = normalizeEmail(body.previousEmail);
+
   const now = Date.now();
   const hash = await emailHash(email);
   const [record, providedHash] = await Promise.all([
@@ -226,9 +231,18 @@ async function handleVerify(request: Request, env: Env): Promise<Response> {
   const outcome = verifyOtpAttempt(record, providedHash, now, maxAttempts);
 
   switch (outcome.kind) {
-    case "verified":
+    case "verified": {
       await deleteOtpRecord(env.OTP_KV, hash);
+      const event = resolveAccountEvent(email, previousEmail);
+      if (event && env.NOTIFY_EMAIL) {
+        ctx.waitUntil(
+          sendAccountEventEmail(event, env).then((sent) => {
+            if (!sent) console.error("otp-worker: account-event notification failed to send", { kind: event.kind });
+          }),
+        );
+      }
       return ok({ verified: true });
+    }
     case "wrong":
       await putOtpRecord(env.OTP_KV, hash, outcome.nextRecord, now);
       return ok({ verified: false, attemptsRemaining: outcome.attemptsRemaining });
@@ -248,7 +262,7 @@ export default {
         return await handleSend(request, env, ctx);
       }
       if (request.method === "POST" && url.pathname === "/otp/verify") {
-        return await handleVerify(request, env);
+        return await handleVerify(request, env, ctx);
       }
       return notFound();
     } catch (err) {
