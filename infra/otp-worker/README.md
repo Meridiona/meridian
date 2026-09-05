@@ -22,7 +22,12 @@ Exactly two exist. Everything else — wrong path, wrong method — gets a plain
 | Route | Body | Purpose |
 |---|---|---|
 | `POST /otp/send` | `{ email, turnstileToken? }` | Generate a code, email it via SES |
-| `POST /otp/verify` | `{ email, code }` | Check a code against the live record |
+| `POST /otp/verify` | `{ email, code, previousEmail? }` | Check a code against the live record |
+
+`previousEmail` is optional and purely informational — the client's best
+knowledge of the address it had on file before this verify, used only to
+decide what (if anything) to tell `NOTIFY_EMAIL` about (see "Account-event
+notification" below). It is never used for any security decision.
 
 ### Status codes
 
@@ -157,6 +162,35 @@ SES's sandbox-mode "email address is not verified" error echoes the
 destination address back in the response text, which must never reach
 Workers Logs.
 
+## Account-event notification
+
+On a successful `/otp/verify` (the `verified` case only — never on a wrong
+guess), `handleVerify` fires a second, unrelated SES send to `NOTIFY_EMAIL`
+(`vars.NOTIFY_EMAIL` in `wrangler.jsonc`, currently `company@meridiona.com` on
+both channels) telling the company that an install signed up or changed its
+email. This rides on `ctx.waitUntil` exactly like the rate-limit alert below —
+fire-and-forget, never awaited inline, so a failed notification send can
+never affect the verify response the caller is waiting on.
+
+`ses.ts`'s `resolveAccountEvent(newEmail, previousEmail)` decides which:
+
+- `previousEmail` absent/null → **sign-up** ("A new Meridian install just
+  verified its email: `<email>`").
+- `previousEmail` present and different → **email changed** ("...changed its
+  verified email from `<old>` to `<new>`").
+- `previousEmail` present and identical to the new email → **no-op**, nothing
+  sent (a "Change email" re-entering the same address that's already on
+  file).
+
+`previousEmail` is sent by the client (`tray/src-tauri/src/commands/otp.rs`'s
+`confirm_account_otp`, reading `commands::account::read_account_email()`
+before the request) and is purely informational — this Worker has no durable
+account state of its own to derive it from independently, and doesn't need
+one: unlike a routine sign-in, every verify in this app is either a genuine
+one-time capture or a deliberate "Change email" action (there is no
+session/re-login concept), so there's no repeat-noise case to dedup against
+and no once-per-day flag like `ALERT_EMAIL`'s.
+
 ## Turnstile (conditional, per the plan)
 
 **Turnstile support is wired but CONDITIONAL: whether the client actually
@@ -209,7 +243,7 @@ Mirrors the existing `ops/central-observability` convention (public
 | `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY` / `AWS_REGION` | `wrangler secret put` (both envs) | Scoped to an IAM policy permitting only `ses:SendEmail` on the verified identity |
 | `TURNSTILE_SECRET_KEY` | `wrangler secret put` (both envs), optional | Unset until/unless the frontend spike lands — see "Turnstile" above |
 | `CI_TEST_TOKEN` | `wrangler secret put --env staging` **only** | Staging-only auth token that also unlocks the `/otp/send` code echo — see below |
-| `ENVIRONMENT`, `FROM_ADDRESS`, `FROM_NAME`, `OTP_TTL_S`, `MAX_VERIFY_ATTEMPTS`, `RL_EMAIL_PER_DAY`, `RL_IP_PER_HOUR`, `RL_GLOBAL_PER_DAY` | `wrangler.jsonc` `vars` | Public, tunable without touching code |
+| `ENVIRONMENT`, `FROM_ADDRESS`, `FROM_NAME`, `OTP_TTL_S`, `MAX_VERIFY_ATTEMPTS`, `RL_EMAIL_PER_DAY`, `RL_IP_PER_HOUR`, `RL_GLOBAL_PER_DAY`, `ALERT_THRESHOLD_PCT`, `ALERT_EMAIL`, `NOTIFY_EMAIL` | `wrangler.jsonc` `vars` | Public, tunable without touching code |
 
 ### Staging-only code echo
 

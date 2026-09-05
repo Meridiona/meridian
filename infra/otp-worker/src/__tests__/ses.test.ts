@@ -1,11 +1,15 @@
 //ambient dev tool that watches what you do and updates your PM tickets automatically, boosting developer productivity
 import { describe, expect, it, vi } from "vitest";
 import {
+  buildAccountEventBody,
+  buildAccountEventHtml,
   buildOtpEmailBody,
   buildOtpEmailHtml,
   buildRateLimitAlertBody,
   buildRateLimitAlertHtml,
   extractSesErrorCode,
+  resolveAccountEvent,
+  sendAccountEventEmail,
   sendOtpEmail,
   sendRateLimitAlertEmail,
   type AwsFetcher,
@@ -20,6 +24,7 @@ const ENV = {
 };
 
 const ALERT_ENV = { ...ENV, ALERT_EMAIL: "ops@example.com" };
+const NOTIFY_ENV = { ...ENV, NOTIFY_EMAIL: "company@meridiona.com" };
 
 describe("buildOtpEmailBody", () => {
   it("includes the code and the TTL, and no links", () => {
@@ -147,5 +152,70 @@ describe("sendOtpEmail", () => {
     await sendOtpEmail("user@example.com", "999999", 10, ENV, fakeClient);
     const [url] = (fakeClient.fetch as ReturnType<typeof vi.fn>).mock.calls[0] as [string, RequestInit];
     expect(url).not.toContain("999999");
+  });
+});
+
+describe("resolveAccountEvent", () => {
+  it("is a sign-up when there is no previous email", () => {
+    expect(resolveAccountEvent("new@example.com", null)).toEqual({ kind: "signed_up", email: "new@example.com" });
+  });
+
+  it("is an email change when the previous email differs", () => {
+    expect(resolveAccountEvent("new@example.com", "old@example.com")).toEqual({
+      kind: "email_changed",
+      from: "old@example.com",
+      to: "new@example.com",
+    });
+  });
+
+  it("is null (nothing to notify) when the previous email is the SAME as the new one", () => {
+    expect(resolveAccountEvent("same@example.com", "same@example.com")).toBeNull();
+  });
+});
+
+describe("buildAccountEventBody / buildAccountEventHtml", () => {
+  it("a sign-up mentions only the new email, with no links", () => {
+    const body = buildAccountEventBody({ kind: "signed_up", email: "new@example.com" });
+    expect(body).toContain("new@example.com");
+    expect(body).not.toMatch(/https?:\/\//);
+  });
+
+  it("an email change mentions both the old and new addresses", () => {
+    const body = buildAccountEventBody({ kind: "email_changed", from: "old@example.com", to: "new@example.com" });
+    expect(body).toContain("old@example.com");
+    expect(body).toContain("new@example.com");
+  });
+
+  it("the HTML version carries the same addresses, no script tags", () => {
+    const html = buildAccountEventHtml({ kind: "email_changed", from: "old@example.com", to: "new@example.com" });
+    expect(html).toContain("old@example.com");
+    expect(html).toContain("new@example.com");
+    expect(html.toLowerCase()).not.toContain("<script");
+  });
+});
+
+describe("sendAccountEventEmail", () => {
+  it("posts to NOTIFY_EMAIL (not the account's own address) and returns true on 2xx", async () => {
+    const fakeClient: AwsFetcher = { fetch: vi.fn(async () => new Response("{}", { status: 200 })) };
+    const result = await sendAccountEventEmail(
+      { kind: "signed_up", email: "new@example.com" },
+      NOTIFY_ENV,
+      fakeClient,
+    );
+    expect(result).toBe(true);
+    const [, init] = (fakeClient.fetch as ReturnType<typeof vi.fn>).mock.calls[0] as [string, RequestInit];
+    expect(String(init.body)).toContain(encodeURIComponent(NOTIFY_ENV.NOTIFY_EMAIL));
+  });
+
+  it("returns false (never throws) on a non-2xx response", async () => {
+    const fakeClient: AwsFetcher = {
+      fetch: vi.fn(async () => new Response(JSON.stringify({ Error: { Code: "Throttling" } }), { status: 429 })),
+    };
+    const result = await sendAccountEventEmail(
+      { kind: "signed_up", email: "new@example.com" },
+      NOTIFY_ENV,
+      fakeClient,
+    );
+    expect(result).toBe(false);
   });
 });
