@@ -28,9 +28,23 @@
 
 import { checkBearerAuth } from "./auth";
 import { emailHash, normalizeEmail } from "./email";
-import { getCounter, getOtpRecord, deleteOtpRecord, putCounter, putOtpRecord } from "./kv";
+import {
+  getCounter,
+  getOtpRecord,
+  deleteOtpRecord,
+  hasAlertBeenSent,
+  markAlertSent,
+  putCounter,
+  putOtpRecord,
+} from "./kv";
 import { createOtpRecord, generateCode, hashCode, verifyOtpAttempt } from "./otp";
-import { evaluateRateLimits, incrementCounter, utcDateString, type RateLimitScope } from "./ratelimit";
+import {
+  evaluateRateLimits,
+  incrementCounter,
+  shouldSendRateLimitAlert,
+  utcDateString,
+  type RateLimitScope,
+} from "./ratelimit";
 import {
   badRequest,
   forbidden,
@@ -41,7 +55,7 @@ import {
   serviceUnavailable,
   unauthorized,
 } from "./responses";
-import { sendOtpEmail } from "./ses";
+import { sendOtpEmail, sendRateLimitAlertEmail } from "./ses";
 import { verifyTurnstileToken } from "./turnstile";
 
 const HOUR_MS = 60 * 60 * 1000;
@@ -65,7 +79,33 @@ async function readJsonBody(request: Request): Promise<Record<string, unknown> |
   return parsed as Record<string, unknown>;
 }
 
-async function handleSend(request: Request, env: Env): Promise<Response> {
+/**
+ * Fire the once-per-UTC-day "approaching the global cap" alert if
+ * `newGlobalCount` just crossed `ALERT_THRESHOLD_PCT` of `RL_GLOBAL_PER_DAY`.
+ * Checked AFTER the global counter is durably written, using the
+ * already-incremented count — never blocks or affects the OTP send's own
+ * response (the caller wires this into `ctx.waitUntil`, fire-and-forget).
+ * The `alert:sent:<date>` KV flag is what makes this once-per-day rather
+ * than once-per-request-past-threshold.
+ */
+async function maybeSendRateLimitAlert(env: Env, newGlobalCount: number, dateKey: string): Promise<void> {
+  if (!env.ALERT_EMAIL) return;
+  const cap = Number(env.RL_GLOBAL_PER_DAY);
+  const thresholdPct = Number(env.ALERT_THRESHOLD_PCT);
+  const date = dateKey.replace("global:sends:", "");
+
+  const alreadySentToday = await hasAlertBeenSent(env.OTP_KV, date);
+  if (!shouldSendRateLimitAlert(newGlobalCount, cap, thresholdPct, alreadySentToday)) return;
+
+  const sent = await sendRateLimitAlertEmail(newGlobalCount, cap, thresholdPct, env);
+  if (sent) {
+    await markAlertSent(env.OTP_KV, date, GLOBAL_COUNTER_KV_TTL_S);
+  } else {
+    console.error("otp-worker: rate-limit alert email failed to send", { newGlobalCount, cap });
+  }
+}
+
+async function handleSend(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
   const auth = checkBearerAuth(request.headers.get("Authorization"), env);
   if (!auth.ok) return unauthorized();
 
@@ -130,18 +170,19 @@ async function handleSend(request: Request, env: Env): Promise<Response> {
   const codeHash = await hashCode(code, env.OTP_CODE_PEPPER);
   const record = createOtpRecord(codeHash, now, ttlMs);
 
+  const newGlobalCounter = incrementCounter(globalCounter, now, DAY_MS);
+
   await Promise.all([
     putOtpRecord(env.OTP_KV, hash, record, now),
     putCounter(env.OTP_KV, `rl:email:${hash}`, incrementCounter(emailCounter, now, DAY_MS), now),
     putCounter(env.OTP_KV, `rl:ip:${ip}`, incrementCounter(ipCounter, now, HOUR_MS), now),
-    putCounter(
-      env.OTP_KV,
-      dateKey,
-      incrementCounter(globalCounter, now, DAY_MS),
-      now,
-      GLOBAL_COUNTER_KV_TTL_S,
-    ),
+    putCounter(env.OTP_KV, dateKey, newGlobalCounter, now, GLOBAL_COUNTER_KV_TTL_S),
   ]);
+
+  // Fire-and-forget: never let the alert path slow down or fail the actual
+  // OTP send. `waitUntil` keeps the Worker alive long enough to finish it
+  // after the response has already been returned to the caller.
+  ctx.waitUntil(maybeSendRateLimitAlert(env, newGlobalCounter.count, dateKey));
 
   const ttlMinutes = Math.max(1, Math.round(Number(env.OTP_TTL_S) / 60));
   const sent = await sendOtpEmail(email, code, ttlMinutes, env);
@@ -200,11 +241,11 @@ async function handleVerify(request: Request, env: Env): Promise<Response> {
 }
 
 export default {
-  async fetch(request: Request, env: Env): Promise<Response> {
+  async fetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
     const url = new URL(request.url);
     try {
       if (request.method === "POST" && url.pathname === "/otp/send") {
-        return await handleSend(request, env);
+        return await handleSend(request, env, ctx);
       }
       if (request.method === "POST" && url.pathname === "/otp/verify") {
         return await handleVerify(request, env);

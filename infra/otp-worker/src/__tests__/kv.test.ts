@@ -1,7 +1,16 @@
 //ambient dev tool that watches what you do and updates your PM tickets automatically, boosting developer productivity
 import { env } from "cloudflare:test";
 import { beforeEach, describe, expect, it } from "vitest";
-import { deleteOtpRecord, getCounter, getOtpRecord, putCounter, putOtpRecord, ttlSecondsFromExpiry } from "../kv";
+import {
+  deleteOtpRecord,
+  getCounter,
+  getOtpRecord,
+  hasAlertBeenSent,
+  markAlertSent,
+  putCounter,
+  putOtpRecord,
+  ttlSecondsFromExpiry,
+} from "../kv";
 
 describe("ttlSecondsFromExpiry", () => {
   it("computes the ceiling of the remaining seconds", () => {
@@ -63,5 +72,19 @@ describe("CounterRecord KV round-trip", () => {
     const record = { count: 1, expiresAt: now + 86_400_000 };
     await putCounter(env.OTP_KV, "global:sends:test-date", record, now, 90_000);
     expect(await getCounter(env.OTP_KV, "global:sends:test-date")).toEqual(record);
+  });
+});
+
+describe("rate-limit alert flag", () => {
+  const DATE = "2026-09-05-alert-flag-test";
+
+  it("reports not-sent for a date that was never marked", async () => {
+    expect(await hasAlertBeenSent(env.OTP_KV, DATE)).toBe(false);
+  });
+
+  it("reports sent once marked, and is scoped to that specific date", async () => {
+    await markAlertSent(env.OTP_KV, DATE, 90_000);
+    expect(await hasAlertBeenSent(env.OTP_KV, DATE)).toBe(true);
+    expect(await hasAlertBeenSent(env.OTP_KV, `${DATE}-different`)).toBe(false);
   });
 });

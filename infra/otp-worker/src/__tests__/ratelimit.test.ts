@@ -1,6 +1,6 @@
 //ambient dev tool that watches what you do and updates your PM tickets automatically, boosting developer productivity
 import { describe, expect, it } from "vitest";
-import { evaluateRateLimits, incrementCounter, isOverCap, utcDateString } from "../ratelimit";
+import { evaluateRateLimits, incrementCounter, isOverCap, shouldSendRateLimitAlert, utcDateString } from "../ratelimit";
 
 describe("incrementCounter", () => {
   it("opens a fresh window (count 1) when there is no existing record", () => {
@@ -84,5 +84,32 @@ describe("utcDateString", () => {
     // 2026-03-05T23:30:00Z
     const ms = Date.UTC(2026, 2, 5, 23, 30, 0);
     expect(utcDateString(ms)).toBe("2026-03-05");
+  });
+});
+
+describe("shouldSendRateLimitAlert", () => {
+  it("does not alert below the threshold", () => {
+    expect(shouldSendRateLimitAlert(1599, 2000, 80, false)).toBe(false);
+  });
+
+  it("alerts exactly at the threshold", () => {
+    expect(shouldSendRateLimitAlert(1600, 2000, 80, false)).toBe(true);
+  });
+
+  it("alerts above the threshold too", () => {
+    expect(shouldSendRateLimitAlert(2000, 2000, 80, false)).toBe(true);
+  });
+
+  it("never alerts twice in the same day, regardless of count", () => {
+    expect(shouldSendRateLimitAlert(2000, 2000, 80, true)).toBe(false);
+  });
+
+  it("is disabled when thresholdPct is 0 or negative — not 'alert on every send'", () => {
+    expect(shouldSendRateLimitAlert(2000, 2000, 0, false)).toBe(false);
+    expect(shouldSendRateLimitAlert(2000, 2000, -5, false)).toBe(false);
+  });
+
+  it("is disabled when cap is non-positive (misconfiguration, not a division trap)", () => {
+    expect(shouldSendRateLimitAlert(10, 0, 80, false)).toBe(false);
   });
 });

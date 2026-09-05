@@ -83,3 +83,26 @@ export function evaluateRateLimits(params: {
   if (isOverCap(globalRecord, now, caps.global)) return { allowed: false, scope: "global" };
   return { allowed: true };
 }
+
+/**
+ * Whether crossing `newGlobalCount` should fire the once-per-day
+ * "approaching the cap" alert (`index.ts`'s `maybeSendRateLimitAlert`, which
+ * wraps this with the actual KV read for `alreadySentToday` and the SES
+ * call). Pure so this can be unit-tested without secrets or a real send —
+ * `index.test.ts` deliberately configures neither.
+ *
+ * `thresholdPct <= 0` disables alerting entirely (treated as "not
+ * configured" rather than "alert on every send") — matches `ALERT_EMAIL`
+ * being unset having the same effect at the call site.
+ */
+export function shouldSendRateLimitAlert(
+  newGlobalCount: number,
+  cap: number,
+  thresholdPct: number,
+  alreadySentToday: boolean,
+): boolean {
+  if (alreadySentToday) return false;
+  if (!Number.isFinite(thresholdPct) || thresholdPct <= 0) return false;
+  if (!Number.isFinite(cap) || cap <= 0) return false;
+  return newGlobalCount >= (cap * thresholdPct) / 100;
+}

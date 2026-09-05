@@ -83,3 +83,21 @@ export async function putCounter(
     expirationTtl: ttlOverrideS ?? ttlSecondsFromExpiry(record.expiresAt, now),
   });
 }
+
+function alertSentKey(date: string): string {
+  return `alert:sent:${date}`;
+}
+
+/** Whether the daily rate-limit-approaching alert has already fired for this
+ *  UTC date — makes the alert a once-per-day event rather than firing again
+ *  on every request once the threshold is crossed. */
+export async function hasAlertBeenSent(kv: KVNamespace, date: string): Promise<boolean> {
+  return (await kv.get(alertSentKey(date))) !== null;
+}
+
+/** Record that the alert fired for this UTC date. `ttlS` mirrors the global
+ *  counter's own cleanup buffer (see `index.ts`'s `GLOBAL_COUNTER_KV_TTL_S`)
+ *  — deliberately longer than one day, not a precise window. */
+export async function markAlertSent(kv: KVNamespace, date: string, ttlS: number): Promise<void> {
+  await kv.put(alertSentKey(date), "1", { expirationTtl: ttlS });
+}
