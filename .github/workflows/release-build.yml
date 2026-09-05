@@ -459,6 +459,8 @@ jobs:
       MERIDIAN_POSTHOG_API_KEY: ${{ secrets.POSTHOG_API_KEY }}
       MERIDIAN_COUNTER_API_KEY: ${{ secrets.COUNTER_API_KEY }}
       MERIDIAN_CLERK_PUBLISHABLE_KEY: ${{ secrets.CLERK_PUBLISHABLE_KEY_PROD }}
+      MERIDIAN_OTP_API_URL: ${{ vars.MERIDIAN_OTP_API_URL }}
+      MERIDIAN_OTP_CLIENT_TOKEN: ${{ secrets.MERIDIAN_OTP_CLIENT_TOKEN }}
       MERIDIAN_CHANNEL: ${{ needs.prepare.outputs.channel }}
       # Signing + updater material. TAURI_SIGNING_* is consumed at BUNDLE time.
       TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
@@ -857,6 +859,8 @@ jobs:
       MERIDIAN_POSTHOG_API_KEY: ${{ secrets.POSTHOG_API_KEY }}
       MERIDIAN_COUNTER_API_KEY: ${{ secrets.COUNTER_API_KEY }}
       MERIDIAN_CLERK_PUBLISHABLE_KEY: ${{ secrets.CLERK_PUBLISHABLE_KEY_PROD }}
+      MERIDIAN_OTP_API_URL: ${{ vars.MERIDIAN_OTP_API_URL }}
+      MERIDIAN_OTP_CLIENT_TOKEN: ${{ secrets.MERIDIAN_OTP_CLIENT_TOKEN }}
       MERIDIAN_CHANNEL: ${{ needs.prepare.outputs.channel }}
       # The updater's minisign keypair is cross-platform — the SAME key signs
       # the macOS tarball and the Windows installer, and the pubkey baked into
