@@ -193,10 +193,19 @@ pub async fn note_transient_sync_failure(
     // proxy, TLS interception, a firewall rule) fails every single attempt
     // forever, and suppressing that outright would leave the board silently going
     // stale with no signal at all - strictly worse than a misleading banner.
+    // The count lives in the `streak` FIELD, not in the message body. The body
+    // is the one thing `telemetry_spool::redact` cannot filter - attributes are
+    // dropped unless allowlisted, but the body always ships verbatim - so
+    // interpolating anything runtime-derived into it is what `log_hygiene`
+    // forbids. `streak` was already a field here; the body merely duplicated
+    // it, so nothing is lost. (It survives the ship leg as a bare number via
+    // `redact::is_bare_number` - see that function for why a `u32` arrives as a
+    // StringValue in the first place.)
     tracing::warn!(
         provider,
         streak,
-        "provider unreachable on {streak} consecutive attempts - escalating to a notice"
+        needed = TRANSIENT_ESCALATION_ATTEMPTS,
+        "provider unreachable on every consecutive sync attempt - escalating to a notice"
     );
     // The message names the evidence, not a duration. The old wording ("No
     // successful sync in the last 6 hours") described normal on-demand operation
