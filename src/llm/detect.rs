@@ -785,6 +785,17 @@ pub struct InstallOutcome {
 /// This was a live bug: it made the Install button fail for every npm-based provider on
 /// Windows, and - because the leading token is what triggers the rewrite - Cursor was
 /// unaffected purely by accident, its command starting with `$s`.
+/// POSIX single-quote a string for safe interpolation into the shell text
+/// [`resolve_installer_binary`] builds. `dir`/`resolved` come from a local
+/// filesystem path resolution (`resolve_cli`), not a fixed literal like
+/// `rest` - an attacker able to plant a maliciously-named file in a PATH
+/// directory could otherwise inject shell syntax into the installer command
+/// this builds.
+#[cfg(not(windows))]
+fn shell_quote(s: &str) -> String {
+    format!("'{}'", s.replace('\'', r"'\''"))
+}
+
 #[cfg(windows)]
 async fn resolve_installer_binary(cmd: &str) -> String {
     cmd.to_string()
@@ -806,11 +817,11 @@ async fn resolve_installer_binary(cmd: &str) -> String {
             // npm itself fixed the first one.
             Some(resolved) => match resolved.parent() {
                 Some(dir) => format!(
-                    "export PATH=\"{}:$PATH\"; {} {rest}",
-                    dir.display(),
-                    resolved.display()
+                    "export PATH={}:$PATH; {} {rest}",
+                    shell_quote(&dir.display().to_string()),
+                    shell_quote(&resolved.display().to_string())
                 ),
-                None => format!("{} {rest}", resolved.display()),
+                None => format!("{} {rest}", shell_quote(&resolved.display().to_string())),
             },
             None => cmd.to_string(),
         },
@@ -1154,6 +1165,33 @@ fn buffered_tail(buf: &std::sync::Mutex<String>, n: usize) -> String {
     tail(&s, n)
 }
 
+/// Recognize a Node.js uncaught-exception crash during the CLI's own module
+/// load (as opposed to an auth failure the CLI reported cleanly) and swap the
+/// raw, multi-line internal stack trace for plain-language copy.
+///
+/// `codex`/`claude`/`cursor-agent` are all `#!/usr/bin/env node` scripts,
+/// and a crash while Node is still loading the entrypoint - not running its
+/// own logic - always ends its report with a bare `Node.js vX.Y.Z` line and
+/// names `internal/modules/esm`/`ModuleJob.run` in the stack. That signature
+/// is what was dumped verbatim into Settings: `codex exited Some(1):
+/// .../codex.js:105:9) ... at ModuleJob.run (node:internal/modules/esm/
+/// module_job:437:25) ... Node.js v25.9.0`. Anything not matching this exact
+/// shape returns `None` and the caller falls back to the raw tail unchanged -
+/// this only replaces a message we can say something more specific about, it
+/// never hides one.
+fn node_crash_message(bin: &str, stderr_tail: &str) -> Option<String> {
+    if stderr_tail.contains("Node.js v")
+        && (stderr_tail.contains("internal/modules/esm") || stderr_tail.contains("ModuleJob.run"))
+    {
+        return Some(format!(
+            "{bin} crashed on startup instead of signing in - this usually means the installed \
+             {bin} isn't compatible with your current Node.js version. Try updating {bin} to its \
+             latest version, or switching to a different Node.js version, then sign in again."
+        ));
+    }
+    None
+}
+
 /// [`interactive_login`]'s three durations, bundled so a real sign-in and a test can each
 /// supply their own without growing the function's argument count. Production always uses
 /// [`Self::PRODUCTION`]; tests use tiny values so the same race logic exercises in
@@ -1324,15 +1362,33 @@ where
             } else {
                 stderr_tail
             };
-            let process_message = format!(
-                "{bin} exited {:?}: {}",
-                status.code(),
-                if reason.is_empty() {
-                    "no output".to_string()
-                } else {
-                    reason
-                }
-            );
+            let process_message = if let Some(friendly) = node_crash_message(bin, &reason) {
+                // Length and classification, never the body. `reason` is the raw
+                // tail of the CLI's own output, and this branch's own comment
+                // above says a device code or OAuth URL can be the only thing in
+                // it. DEBUG is off by default so this rarely captures at all -
+                // but when it does it lands in the telemetry spool, and an
+                // Export Diagnostics bundle ships the spool UNREDACTED to
+                // support. The classification is what this line exists to
+                // record; the tail adds nothing the friendly message does not.
+                tracing::debug!(
+                    bin,
+                    raw_tail_len = reason.chars().count() as i64,
+                    crash_class = "node_module_load",
+                    "sign-in CLI crashed at Node module load, showing a friendlier message"
+                );
+                friendly
+            } else {
+                format!(
+                    "{bin} exited {:?}: {}",
+                    status.code(),
+                    if reason.is_empty() {
+                        "no output".to_string()
+                    } else {
+                        reason
+                    }
+                )
+            };
             confirm_or_report(label, bin, &path, success_message, &verify, process_message).await
         }
         Ended::WaitError(e) => {
@@ -1801,6 +1857,56 @@ fn path_candidate_names(bin: &str) -> Vec<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    const NODE_ESM_CRASH_TAIL: &str = "///opt/homebrew/lib/node_modules/@openai/codex/bin/codex.js:105:9)\n    at ModuleJob.run (node:internal/modules/esm/module_job:437:25)\n    at async onImport.tracePromise.__proto__ (node:internal/modules/esm/loader:639:26)\n    at async asyncRunEntryPointWithESMLoader (node:internal/modules/run_main:101:5)\n\nNode.js v25.9.0";
+
+    /// The exact signature from the reported crash: a friendlier message replaces the raw
+    /// Node internal stack trace.
+    #[test]
+    fn recognizes_a_node_esm_loader_crash() {
+        let msg = node_crash_message("codex", NODE_ESM_CRASH_TAIL).expect("should recognize crash");
+        assert!(msg.contains("codex"));
+        assert!(msg.contains("Node.js version"));
+        assert!(
+            !msg.contains("ModuleJob.run"),
+            "raw stack trace must not leak into the friendly message"
+        );
+    }
+
+    /// An ordinary auth failure (no Node crash signature) must fall through unchanged - this
+    /// must never mask a real, different failure reason.
+    #[test]
+    fn leaves_an_unrelated_failure_untouched() {
+        assert!(
+            node_crash_message("codex", "Error: invalid device code, please try again").is_none()
+        );
+        assert!(node_crash_message("codex", "").is_none());
+    }
+
+    /// "Node.js v" alone (e.g. a version banner some CLIs print on success) is not enough by
+    /// itself - only the module-loader signature counts as a crash.
+    #[test]
+    fn requires_the_module_loader_signature_not_just_a_node_version_string() {
+        assert!(node_crash_message("codex", "codex 1.2.3 (Node.js v22.1.0)").is_none());
+    }
+
+    #[cfg(not(windows))]
+    #[test]
+    fn shell_quote_wraps_an_ordinary_path_unchanged() {
+        assert_eq!(shell_quote("/opt/homebrew/bin"), "'/opt/homebrew/bin'");
+    }
+
+    /// The finding this exists to close: an embedded single quote must not let the string
+    /// escape its own quoting and inject shell syntax.
+    #[cfg(not(windows))]
+    #[test]
+    fn shell_quote_escapes_an_embedded_single_quote() {
+        let malicious = "/tmp/evil'; rm -rf ~; echo '";
+        let quoted = shell_quote(malicious);
+        // Every character of the input must appear only inside a quoted segment -
+        // reassembling the escape sequence proves it round-trips back to the original.
+        assert_eq!(quoted, r"'/tmp/evil'\''; rm -rf ~; echo '\'''");
+    }
 
     fn groq_custom_provider() -> meridian_core::settings::CustomLlmProvider {
         meridian_core::settings::CustomLlmProvider {
@@ -2845,9 +2951,9 @@ mod tests {
         assert_eq!(
             resolved,
             format!(
-                "export PATH=\"{}:$PATH\"; {} i -g some-package",
-                bin_dir.display(),
-                fake_bin.display()
+                "export PATH={}:$PATH; {} i -g some-package",
+                shell_quote(&bin_dir.display().to_string()),
+                shell_quote(&fake_bin.display().to_string())
             ),
             "expected the leading binary swapped for its resolved absolute path, with its \
              directory prepended onto PATH"

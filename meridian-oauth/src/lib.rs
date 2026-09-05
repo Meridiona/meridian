@@ -28,6 +28,7 @@ pub mod flow;
 pub mod github;
 pub mod jira;
 pub mod pkce;
+pub mod refresh_journal;
 pub mod store;
 pub mod trello;
 

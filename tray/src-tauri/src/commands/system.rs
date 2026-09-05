@@ -42,6 +42,16 @@ pub async fn open_dashboard(app: tauri::AppHandle) -> Result<(), String> {
         crate::tray::open_wizard_window(&app);
         return Ok(());
     }
+    // ON-DEMAND PM SYNC. The daemon no longer syncs the board on a timer (see
+    // `commands::tasks`'s header for why that timer was killing OAuth grants),
+    // so opening the dashboard is one of the moments that has to ask for a
+    // refresh. Placed AFTER the onboarding gate: a fresh install has no tracker
+    // to sync and the redirect above returns before reaching here.
+    //
+    // Fire-and-forget and gated - the window paints from the cached board
+    // immediately and never waits on the network, and a re-open seconds later
+    // no-ops on the staleness gate rather than re-fetching.
+    crate::commands::tasks::trigger_background_pm_sync("dashboard_open");
     dismiss_popover(&app);
     if let Some(win) = app.get_webview_window("dashboard") {
         let _ = win.show();

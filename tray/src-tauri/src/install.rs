@@ -345,7 +345,7 @@ fn dotenv_line_value(line: &str, key: &str) -> Option<String> {
 /// tray does NOT auto-load env into its own process; see the crate-level
 /// gotcha in CLAUDE.md). Used wherever a command needs one credential from
 /// [`InstallMode::env_path`] — e.g. `commands::integrations`'s tracker keys,
-/// `commands::account::clerk_publishable_key`.
+/// `commands::otp::otp_api_url`/`otp_client_token`.
 pub(crate) fn env_key_from_path(path: &std::path::Path, key: &str) -> Option<String> {
     let contents = std::fs::read_to_string(path).ok()?;
     contents.lines().find_map(|l| dotenv_line_value(l, key))

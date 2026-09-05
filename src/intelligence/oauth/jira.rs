@@ -56,7 +56,7 @@ pub async fn resolve(jira: &JiraConfig) -> Result<JiraReqCtx> {
         });
     }
     bail!(
-        "no Jira auth available — run `meridian oauth-login jira`, \
+        "no Jira auth available - run `meridian oauth-login jira`, \
          or set JIRA_BASE_URL / JIRA_EMAIL / JIRA_API_TOKEN"
     )
 }

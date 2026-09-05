@@ -60,6 +60,19 @@ async fn main() -> Result<()> {
         let _ = dotenvy::from_path(home.join(".meridian").join(".env"));
     }
 
+    // 1a-bis. Reject unrecognised flags BEFORE any subcommand can act on them.
+    //
+    //     Every block below parses argv by searching for tokens it knows, so an
+    //     unknown flag used to contribute nothing and leave the command running
+    //     its DEFAULTS. `meridian coding-agent-summarise --help` therefore
+    //     summarised and persisted real rows (reported from production
+    //     2026-08-27), and `meridian worklog-post-approved --help` would have
+    //     posted approved worklogs to a customer's real tracker. This runs
+    //     ahead of the whole chain, so no side effect is reachable through a
+    //     typo. See `meridian::cli_flags` for the table and the test that keeps
+    //     new subcommands from slipping past it.
+    meridian::cli_flags::enforce();
+
     // 1b. Subcommand dispatch. `meridian coding-agent-hook` is the Claude Code
     //     SessionEnd hook entry point: one-shot, reads a JSON payload on stdin,
     //     seals that session, exits 0. It must stay light (no daemon init, no
@@ -367,6 +380,38 @@ async fn main() -> Result<()> {
                 // "migration N was previously applied / missing" cause) instead
                 // of just the top-level "failed to run migrations" context.
                 eprintln!("tasks-sync: open db: {e:#}");
+                std::process::exit(1);
+            }
+        }
+        return Ok(());
+    }
+
+    // `meridian pm-sync` — the GATED sibling of `tasks-sync`: sync all configured
+    // PM providers, but honour each provider's staleness gate so a fresh cache is
+    // a cheap no-op. This is what every ON-DEMAND trigger spawns (tracker
+    // connected, dashboard opened), which is why it must not be `tasks-sync`:
+    // those triggers can fire repeatedly within seconds and a forced fetch each
+    // time would be exactly the API hammering the timer used to do.
+    //
+    // Exits 0 whether it fetched, skipped as fresh, or skipped because another
+    // sync held the dedup lock — all three are successful outcomes for a
+    // best-effort trigger, and only a DB that cannot be opened is a real failure.
+    if std::env::args().nth(1).as_deref() == Some("pm-sync") {
+        let cfg = Config::from_env();
+        match setup_db(&cfg.meridian_db_uri()).await {
+            Ok(pool) => {
+                if let Err(e) = run_pm_sync(&pool, &cfg).await {
+                    eprintln!("pm-sync: {}", meridian::errors::chain(&e));
+                }
+                // Close the pool explicitly, same as `tasks-sync`: this is a
+                // short-lived process writing the SAME meridian.db the daemon and
+                // tray hold open, and dropping a pool without closing it can
+                // leave the WAL un-checkpointed behind a connection the OS is
+                // still tearing down.
+                pool.close().await;
+            }
+            Err(e) => {
+                eprintln!("pm-sync: open db: {e:#}");
                 std::process::exit(1);
             }
         }
@@ -694,6 +739,18 @@ async fn main() -> Result<()> {
         let obs_guard = observability::init("meridian-rust").ok();
         match setup_db(&cfg.meridian_db_uri()).await {
             Ok(pool) => {
+                // Refresh the board BEFORE matching, now that nothing does it on
+                // a timer. A stale `pm_tasks` is not a cosmetic problem here: it
+                // is what silently binds an hour of work to a ticket that was
+                // closed or reassigned hours ago. Gated (a fresh cache no-ops)
+                // and log-and-continue — drafting from a slightly stale board
+                // beats not drafting at all.
+                if let Err(e) = run_pm_sync(&pool, &cfg).await {
+                    tracing::warn!(
+                        error = %meridian::errors::chain(&e),
+                        "worklog-generate: pre-draft PM sync failed — matching against the cached board"
+                    );
+                }
                 match meridian::pm_worklog::generate(&pool, &cfg, &day, &task_id).await {
                     Ok(mut draft) => {
                         // A matched draft carries a target_key we can link even
@@ -983,6 +1040,30 @@ async fn main() -> Result<()> {
     // bash `meridian logs` (which tailed launchd-redirected stdout/stderr
     // text) now that the OTel spool is the sole log/trace sink — see
     // observability.rs's module doc. No daemon init needed.
+    // `meridian restart` - restart the managed daemon. This subcommand did not
+    //     exist while FIVE places in this same binary told users to run it,
+    //     including the Jira/Trello OAuth handlers' success output and
+    //     `doctor`'s etl-freshness remedy. It works on a source install only
+    //     because that path symlinks `meridian` at `scripts/meridian-cli.sh`,
+    //     whose bash `cmd_restart` has always existed; a DMG install runs this
+    //     binary directly and got `unknown subcommand "restart"`.
+    if std::env::args().nth(1).as_deref() == Some("restart") {
+        let outcome = meridian::restart::run();
+        let text = meridian::restart::describe(&outcome);
+        match outcome {
+            meridian::restart::Outcome::Restarted => {
+                println!("{text}");
+                return Ok(());
+            }
+            // Exit non-zero so a script (or the tray) can tell "restarted" from
+            // "there was nothing to restart" without parsing the message.
+            _ => {
+                eprintln!("{text}");
+                std::process::exit(1);
+            }
+        }
+    }
+
     if std::env::args().nth(1).as_deref() == Some("logs") {
         let args: Vec<String> = std::env::args().collect();
         meridian::telemetry_spool::render::run(&args).await;
@@ -1023,8 +1104,26 @@ async fn main() -> Result<()> {
     let initial_cfg = Config::from_env();
     tracing::info!(stage = "config_loaded", "configuration ready");
 
-    // 4. Log startup parameters
+    // 4. Log startup parameters.
+    //
+    //    `pid` is here so a generation can be TOLD APART from the next one.
+    //    Without it, a machine that started three daemons in 35 seconds — which
+    //    is what a quit-then-relaunch during an update looks like — produces
+    //    three identical "meridian daemon starting" lines and a set of signal
+    //    lines that cannot be attributed to any of them. Every corruption
+    //    investigation so far has run aground on exactly that: the events are
+    //    all in the spool, and nothing says which process each belongs to.
+    //
+    //    Logged as `i64`, not the `u32` `std::process::id` returns, and this is
+    //    load-bearing rather than cosmetic. `tracing-opentelemetry` 0.28 has no
+    //    `record_u64`, so a `u32`/`u64` field falls through to `record_debug`
+    //    and is emitted as a STRING — which then has to survive the attribute
+    //    allowlist as a string key to egress at all. An `i64` becomes a real
+    //    `IntValue`, and `redact::keep_attribute`'s first arm keeps every
+    //    `IntValue` unconditionally. See CLAUDE.md's third "coupling that
+    //    silently deletes error coverage".
     tracing::info!(
+        pid = std::process::id() as i64,
         meridian_db = %initial_cfg.meridian_db,
         poll_interval_secs = initial_cfg.poll_interval_secs,
         "meridian daemon starting"
@@ -1053,8 +1152,10 @@ async fn main() -> Result<()> {
         return Ok(());
     }
 
-    // 4a-ter. Single-instance guard — CHECKED here, before `setup_db`, even
-    //     though the listener isn't bound until 5b below.
+    // 4a-ter. Single-instance guard, part 1 of 2: the endpoint PROBE. Cheap,
+    //     informative, and not authoritative — 4a-quater below is the acquire.
+    //     Checked here, before `setup_db`, even though the listener isn't
+    //     bound until 5b.
     //
     //     ~/.meridian/daemon.sock: a successful connect that gets a greeting
     //     means ANOTHER daemon already owns this data dir. That happens
@@ -1070,7 +1171,8 @@ async fn main() -> Result<()> {
     //     and ran migrations — including a live `ALTER TABLE` — against a
     //     file the winning daemon could simultaneously be writing to or
     //     checkpointing. Checking before `setup_db` means a losing daemon
-    //     never touches meridian.db at all.
+    //     never touches meridian.db at all — but only for a race this probe
+    //     can SEE, which is why the lock at 4a-quater exists.
     //
     //     Only a stale socket (no listener) is removed, and only right before
     //     THIS process binds its own — see the bind site below. Whoever starts
@@ -1084,13 +1186,96 @@ async fn main() -> Result<()> {
     //
     //     The endpoint itself is OS-specific (a socket file on Unix, a named
     //     pipe on Windows) — see `meridian::platform`.
+    //
+    //     `pid` on this and the two stand-down logs below is not decoration.
+    //     These WARNs are the ONLY record of a stand-down that reaches central
+    //     telemetry: the redaction ship leg is WARN+ only, and `meridian daemon
+    //     starting` — the line that would otherwise carry the pid — is INFO and
+    //     never egresses. Without it a stand-down arrives as an anonymous event
+    //     that cannot be tied to a process or correlated with anything around
+    //     it, which is the same gap that made the 2026-08-25 investigation
+    //     unresolvable.
     if meridian::platform::daemon_already_running().await {
         tracing::warn!(
+            pid = std::process::id() as i64,
             endpoint = %meridian::platform::endpoint_display(),
             "another meridian daemon already owns this data dir — exiting (single-instance guard)"
         );
+        // Flush before returning, matching the repair-marker stand-down above.
+        // Without it this WARN dies in the batch processor: `main` returning
+        // does not flush (`ObservabilityGuard` has no Drop — see its docs), so
+        // the record of a stand-down never reached the spool at all. MEASURED,
+        // not theorised: a second daemon was made to lose the race and
+        // `meridian logs` found zero occurrences of its own WARN.
+        obs_guard.shutdown().await;
+        meridian::telemetry_spool::shipper::drain_once().await;
         return Ok(());
     }
+
+    // 4a-quater. ACQUIRE the single-instance lock. The check above is a probe;
+    //     this is the acquire, and the difference is the whole point.
+    //
+    //     `daemon_already_running` asks "is anyone listening?" — and the winner
+    //     of a two-daemon race has NOT bound its listener at that moment,
+    //     because the bind is deliberately deferred to 5b so a daemon about to
+    //     `exit(1)` on a corrupt database never advertises `{"running":true}`.
+    //     So two daemons starting together both see nothing, both fall through,
+    //     and both run `setup_db` — migrations included, `ALTER TABLE`
+    //     included — against one file. That is check-then-act, and this repo
+    //     has a documented history of `database disk image is malformed`
+    //     attributed to exactly two writers.
+    //
+    //     `flock`/`LockFileEx` is atomic: exactly one caller wins however the
+    //     two interleave. The guard is held for the rest of the process's life
+    //     and released by the OS when the process dies, however it dies — so
+    //     there is no stale lock to reason about and nothing to clean up.
+    //
+    //     The probe stays. It is the cheap, informative check, it produces the
+    //     better log line, and it is the ONLY thing that sees a daemon from a
+    //     build predating this lock — which is every daemon during the rollout
+    //     window. Neither is redundant.
+    //
+    //     `None` below is "running unlocked", not "no lock needed" — see the
+    //     Unavailable arm.
+    let _single_instance_lock = match meridian::platform::acquire_single_instance_lock() {
+        meridian::platform::LockOutcome::Acquired(guard) => Some(guard),
+        // This WARN is a MEASUREMENT as much as a stand-down. It fires exactly
+        // when two daemons raced and the probe above did not see it — the case
+        // that was previously invisible AND unguarded. Because it egresses to
+        // central telemetry, its rate across the fleet is the first direct
+        // evidence of how often this actually happens, rather than how often it
+        // could happen in principle. Rewording it is fine; dropping it or
+        // demoting it below WARN removes the only signal we have.
+        meridian::platform::LockOutcome::HeldByAnother => {
+            tracing::warn!(
+                pid = std::process::id() as i64,
+                "another meridian daemon holds the single-instance lock for this data dir — exiting (lock)"
+            );
+            // See the probe stand-down above. This one matters most: it is the
+            // ONLY evidence that two daemons raced past the probe, and it was
+            // reaching nothing.
+            obs_guard.shutdown().await;
+            meridian::telemetry_spool::shipper::drain_once().await;
+            return Ok(());
+        }
+        // Could not find out. Proceed UNLOCKED rather than refuse to start:
+        // before this lock existed there was no lock at all, so running on is
+        // exactly the previous behaviour and gives up nothing that was ever
+        // guaranteed. Standing down here would instead be a brand-new way for
+        // the daemon to be permanently dead on a machine where nothing is
+        // wrong (a read-only home, an odd errno, an antivirus holding the
+        // file). A guard against a rare race must not be able to cause a
+        // common outage.
+        meridian::platform::LockOutcome::Unavailable(e) => {
+            tracing::warn!(
+                pid = std::process::id() as i64,
+                error = %e, // not-anyhow: a String the acquire already formatted with its full cause; there is no chain to walk
+                "could not take the single-instance lock — continuing without it; \
+                 the endpoint probe above remains the only guard this start has"
+            );
+            None
+        }
+    };
 
     // 4b. Open / create meridian pool and run migrations FIRST — before any
     //     preflight that can block or fail. The UI and MCP server read this DB
@@ -1111,10 +1296,26 @@ async fn main() -> Result<()> {
             // locked, corruption — is finally diagnosable in central telemetry
             // instead of crash-looping silently. `shutdown` consumes the guard,
             // but we exit immediately after, so the success path still owns it.
-            tracing::error!(
-                error = %meridian::errors::chain(&e),
-                "daemon startup: failed to open the database — the daemon cannot start (wrong/absent encryption key, a locked file, or corruption)"
-            );
+            //
+            // The "schema ahead of the binary" case is split out because it is
+            // the one failure here where the database is HEALTHY and the general
+            // message actively misleads: it names an encryption key, a lock and
+            // corruption, and the answer is none of those - this build is simply
+            // older than the database. It is also the only one that never clears
+            // on its own, because launchd `KeepAlive` retries a daemon that
+            // cannot possibly succeed. See `db::meridian::schema_ahead_of_binary`
+            // for the 13,306-crash-loop measurement behind both statements.
+            match meridian::db::meridian::schema_ahead_of_binary(&e) {
+                Some(version) => tracing::error!(
+                    error = %meridian::errors::chain(&e),
+                    migration_version = version,
+                    "daemon startup: this daemon is OLDER than meridian.db — the database has migrations this build does not carry, so it cannot start and will keep retrying until the binary is updated. The database itself is fine."
+                ),
+                None => tracing::error!(
+                    error = %meridian::errors::chain(&e),
+                    "daemon startup: failed to open the database — the daemon cannot start (wrong/absent encryption key, a locked file, or corruption)"
+                ),
+            }
             obs_guard.shutdown().await;
             meridian::telemetry_spool::shipper::drain_once().await;
             std::process::exit(1);
@@ -1138,9 +1339,28 @@ async fn main() -> Result<()> {
     //     would let a daemon that's about to `exit(1)` on a locked or corrupt
     //     database falsely tell the tray's watchdog it's healthy for the
     //     brief window before that failure surfaces. Safe to bind
-    //     unconditionally here: the check above already established nothing
-    //     else is listening, and nothing between there and here binds it out
-    //     from under us (both single-threaded up to the poll loop).
+    //     unconditionally here — but read the next paragraph before relying
+    //     on WHY, because the obvious reason is only true most of the time.
+    //
+    //     ON THE `Acquired` PATH we hold the single-instance lock taken at
+    //     4a-quater, so no other daemon process reached this line at all. (The
+    //     older justification — "the check above established nothing else is
+    //     listening, and we're single-threaded up to the poll loop" — was only
+    //     ever about THIS process's threads and said nothing about a second
+    //     process.)
+    //
+    //     ON THE `Unavailable` PATH WE HOLD NO LOCK. That path exists on
+    //     purpose (a lock we could not attempt must not stop the daemon
+    //     starting), and it reaches this line with exactly the pre-lock
+    //     guarantees: the endpoint probe, which is check-then-act. So the
+    //     lock does NOT make the sequence below unreachable in general — only
+    //     on the path where it was actually acquired.
+    //
+    //     NOTE: `spawn_health_listener` itself unlinks a stale socket and then
+    //     binds, which is its own check-then-act across processes. Do not
+    //     delete that stale-socket handling on the strength of the lock: on
+    //     the `Unavailable` path it is still the only thing standing there.
+    //     #862 owns that boundary.
     meridian::platform::spawn_health_listener()?;
     tracing::info!(endpoint = %meridian::platform::endpoint_display(), "daemon health endpoint ready");
 
@@ -1210,6 +1430,15 @@ async fn main() -> Result<()> {
     //     stop the daemon anyway — exiting here would just crash-loop under
     //     launchd's KeepAlive.
     let db_corrupt = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    // Identity of meridian.db as this process opened it. Re-checked only while
+    // latched, to tell "the file was repaired and swapped underneath us" (our
+    // pool is now on a dead inode) apart from "the same file is still damaged".
+    // See `integrity::file_identity` for why the distinction is load-bearing.
+    let db_identity_at_start = meridian::db::integrity::file_identity(&initial_cfg.meridian_db);
+    // When the swap above is detected, the pool must NOT be checkpointed or
+    // closed on the way out - SQLite addresses -wal/-shm by path, so a stale
+    // pool's journal state would land on the NEW file. Set only on that path.
+    let mut db_file_swapped = false;
     {
         let meridian = meridian.clone();
         let db_corrupt = db_corrupt.clone();
@@ -1256,9 +1485,12 @@ async fn main() -> Result<()> {
     }
 
     // 7c. Run ETL once immediately before entering the loop.
-    //     Re-read config so that any settings.json present at startup takes effect.
+    //
+    //     No `Config::from_env()` re-read here any more: it existed only to hand
+    //     a fresh config to the startup PM sync that used to live at the end of
+    //     this block, and nothing else in the block reads it. ETL and the
+    //     retention sweep take the pool alone.
     {
-        let cfg = Config::from_env();
         let startup_tick = tracing::info_span!("startup_tick");
         *etl_tick_span.lock().unwrap_or_else(|e| e.into_inner()) = Some(startup_tick.clone());
         let _guard = startup_tick.enter();
@@ -1282,15 +1514,20 @@ async fn main() -> Result<()> {
                 tracing::warn!(error = %meridian::errors::chain(&e), "capture retention sweep failed");
             }
         }
-        if let Err(e) = run_pm_sync(&meridian, &cfg).await {
-            tracing::error!(
-                error = %meridian::errors::chain(&e),
-                "intelligence run failed"
-            );
-        }
+        // No startup PM sync either, for the same reason as the poll tick above:
+        // launchd `KeepAlive` restarts this process on every wake, so a
+        // sync-on-boot IS a wake-triggered token refresh wearing different
+        // clothes. Nothing at startup needs a fresh board - `pm_tasks_present`
+        // and `daily_plan::maybe_nudge` only check EXISTENCE, not freshness.
     }
 
     let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
+    // Every task below holds its own clone of the `meridian` pool and must be
+    // known to have actually stopped touching it before shutdown checkpoints
+    // and closes that pool — see the bounded join at the "9. Shutdown" step,
+    // and its doc comment for why a fire-and-forget `tokio::spawn` here isn't
+    // enough on its own.
+    let mut background_tasks: Vec<(&'static str, tokio::task::JoinHandle<()>)> = Vec::new();
 
     // 8a-bis. Coding-agent tasks (both gated — dormant if neither agent is
     //         present). The indexer turns Claude Code / Codex JSONLs into
@@ -1303,18 +1540,26 @@ async fn main() -> Result<()> {
         let pool_idx = meridian.clone();
         let notify_idx = ca_notify.clone();
         let rx_idx = shutdown_rx.clone();
-        tokio::spawn(async move {
-            meridian::coding_agent_session_ingest::indexer::run_loop(pool_idx, notify_idx, rx_idx)
+        background_tasks.push((
+            "coding_agent_indexer",
+            tokio::spawn(async move {
+                meridian::coding_agent_session_ingest::indexer::run_loop(
+                    pool_idx, notify_idx, rx_idx,
+                )
                 .await;
-        });
+            }),
+        ));
         let pool_sum = meridian.clone();
         let rx_sum = shutdown_rx.clone();
-        tokio::spawn(async move {
-            meridian::coding_agent_session_ingest::summariser::run_loop(
-                pool_sum, ca_notify, rx_sum,
-            )
-            .await;
-        });
+        background_tasks.push((
+            "coding_agent_summariser",
+            tokio::spawn(async move {
+                meridian::coding_agent_session_ingest::summariser::run_loop(
+                    pool_sum, ca_notify, rx_sum,
+                )
+                .await;
+            }),
+        ));
     }
 
     // 7d. PM-worklog driver: hour-level pipeline — clock-aligned (HH:03 local), runs
@@ -1324,9 +1569,12 @@ async fn main() -> Result<()> {
         let pool_pm = meridian.clone();
         let db_path_pm = initial_cfg.meridian_db.clone();
         let rx_pm = shutdown_rx.clone();
-        tokio::spawn(async move {
-            meridian::worklog_pipeline::run_loop(pool_pm, db_path_pm, rx_pm).await;
-        });
+        background_tasks.push((
+            "worklog_pipeline",
+            tokio::spawn(async move {
+                meridian::worklog_pipeline::run_loop(pool_pm, db_path_pm, rx_pm).await;
+            }),
+        ));
     }
 
     // 7e. PM-worklog approved-poster: the ~60s sweep that posts worklogs the user
@@ -1336,9 +1584,12 @@ async fn main() -> Result<()> {
     {
         let pool_post = meridian.clone();
         let rx_post = shutdown_rx.clone();
-        tokio::spawn(async move {
-            meridian::pm_worklog::run_post_loop(pool_post, rx_post).await;
-        });
+        background_tasks.push((
+            "pm_worklog_post",
+            tokio::spawn(async move {
+                meridian::pm_worklog::run_post_loop(pool_post, rx_post).await;
+            }),
+        ));
     }
 
     // 7f. Telemetry spool shipper: drains ~/.meridian/telemetry/pending/ to
@@ -1376,6 +1627,11 @@ async fn main() -> Result<()> {
     // Track the last-applied log level so we can detect changes and hot-reload
     // the EnvFilter without restarting the daemon.
     let mut last_log_level = initial_cfg.runtime.log_level.clone();
+    // Paces the latched-state re-check. `None` = never checked, so the first
+    // latched tick re-checks immediately rather than waiting out a full
+    // interval - a daemon that latches during startup (the reported case) then
+    // recovers as soon as the rebuild it raced finishes.
+    let mut last_corrupt_check: Option<std::time::Instant> = None;
 
     loop {
         // Determine the sleep duration from the current settings.json before sleeping.
@@ -1410,10 +1666,30 @@ async fn main() -> Result<()> {
                 *etl_tick_span.lock().unwrap_or_else(|e| e.into_inner()) = Some(poll_tick.clone());
                 let _guard = poll_tick.enter();
                 tracing::debug!("starting ETL tick");
-                // Latched, never re-tried — see DB_CORRUPT_NOTICE. Everything
-                // else in the tick (PM sync, notifications, plan nudge) reads
-                // tables corruption may not have touched, so the daemon stays
-                // useful instead of exiting.
+                // Latched on corruption — but NOT forever. Everything else in
+                // the tick (PM sync, notifications, plan nudge) reads tables
+                // corruption may not have touched, so the daemon stays useful
+                // instead of exiting; the ETL itself waits for the database to
+                // be provably healthy again. See `recover_from_corruption`.
+                if db_corrupt.load(std::sync::atomic::Ordering::Relaxed) {
+                    match recover_from_corruption(
+                        &meridian,
+                        &initial_cfg.meridian_db,
+                        db_identity_at_start,
+                        &mut last_corrupt_check,
+                    )
+                    .await
+                    {
+                        CorruptionRecheck::Waiting => {}
+                        CorruptionRecheck::Recovered => {
+                            db_corrupt.store(false, std::sync::atomic::Ordering::Relaxed);
+                        }
+                        CorruptionRecheck::FileSwapped => {
+                            db_file_swapped = true;
+                            break;
+                        }
+                    }
+                }
                 if !db_corrupt.load(std::sync::atomic::Ordering::Relaxed) {
                     if etl_tick(&meridian).await {
                         db_corrupt.store(true, std::sync::atomic::Ordering::Relaxed);
@@ -1506,17 +1782,38 @@ async fn main() -> Result<()> {
                     tracing::debug!(error = %meridian::errors::chain(&e), "notification response consume skipped");
                 }
 
-                // Refresh the PM task cache (pm_tasks) every tick — interval-gated
-                // per provider (~5 min), so this is a cheap no-op most ticks. The
-                // legacy drafting driver that used to trigger this before every
-                // pass was retired when the worklog pipeline moved to the
-                // clock-aligned Python trigger, which never calls this itself —
-                // leaving pm_tasks (and hence a ticket's title on the timeline)
-                // stuck at whatever it was at the last daemon restart. This is
-                // the only thing that keeps it live during normal operation.
-                if let Err(e) = run_pm_sync(&meridian, &cfg).await {
-                    tracing::warn!(error = %meridian::errors::chain(&e), "pm_tasks refresh failed — using cached tasks");
-                }
+        // ── NO PM SYNC ON THE POLL TICK. ────────────────────────────────────
+        //
+        // This used to call `run_pm_sync` every tick (~60 s), interval-gated per
+        // provider to ~5 min. It was removed because the timer, not the network,
+        // is what was permanently destroying production users' Jira grants.
+        //
+        // macOS dark-wakes a sleeping machine every 15-16 minutes. The daemon
+        // resumed, found the OAuth access token expired, and POSTed a refresh.
+        // Atlassian rotated the refresh token and replied - and the machine
+        // re-suspended before the response was read. `reqwest`'s timeout could
+        // not save it: the timeout is `Instant`-based and the monotonic clock
+        // does not advance while the system is asleep, so the request simply
+        // hung. On the NEXT dark wake, 15-16 minutes later, the socket was dead
+        // and the retry went out with the OLD refresh token - now past
+        // Atlassian's 10-minute reuse leeway. `invalid_grant`, classified
+        // terminal, grant dead forever, user sees "refresh_token is invalid".
+        //
+        // The dark-wake interval being LONGER than the leeway is why no retry
+        // policy can fix this from inside the daemon; see
+        // `~/.claude` notes and `meridian-oauth::jira::ensure_fresh`.
+        //
+        // A sleeping machine has no work to do, so it must attempt no token
+        // refreshes. Nothing here needs `pm_tasks` fresh on a clock either: the
+        // hourly worklog fold never reads it, and the one place that matches
+        // sessions to tickets now syncs for itself
+        // (`pm_worklog::auto_generate::sweep::draft_qualifying_tasks`). The
+        // remaining triggers are all things a PRESENT user did - connecting a
+        // tracker, opening the dashboard, pressing Sync now, a tracker write -
+        // and they live in `tray/src-tauri/src/commands/tasks.rs`.
+        //
+        // Do not reintroduce a timer here. If something needs a fresher board,
+        // give it its own trigger and let `intelligence::sync_lock` dedupe it.
             }
         }
     }
@@ -1526,15 +1823,104 @@ async fn main() -> Result<()> {
     let _ = shutdown_tx.send(true);
 
     // 9. Shutdown
-    tracing::info!("shutting down");
+    tracing::info!(pid = std::process::id() as i64, "shutting down");
+
+    // Wait for every background task to actually stop touching `meridian`
+    // before checkpointing/closing it, instead of just firing the shutdown
+    // signal and hoping. Each task above holds its own clone of this same
+    // pool, and closing it while one is still mid-query races the exact
+    // "held open after stopping the daemon" failure `wait_for_db_unheld`
+    // (`backend_install.rs`) exists to catch during an app update: on macOS
+    // the rename underneath a live writer SUCCEEDS, so two writers end up
+    // sharing one WAL — the root cause of the `code: 11` corruption in this
+    // repo's history. Bounded rather than unconditional: a task that is
+    // stuck on an external subprocess (the coding-agent summariser's `claude
+    // -p` / `codex exec`) must not hang the daemon's own shutdown forever.
+    // The bound is loud on expiry so a future recurrence shows up in
+    // `meridian logs` instead of silently racing the checkpoint below — see
+    // the module doc on `poll::permissions` for why a silent failure mode
+    // here previously cost days to diagnose.
+    const BACKGROUND_TASK_SHUTDOWN_BUDGET: std::time::Duration = std::time::Duration::from_secs(5);
+    // Joined CONCURRENTLY, not one after another: these tasks are already
+    // running in parallel, so waiting on them sequentially would let 4 tasks
+    // each burn their own 5s budget and add up to 20s to every shutdown - on
+    // a machine slow enough to need the full budget even once, that's also
+    // long enough to blow past `bootout_agent_and_wait`'s own 15s wait for
+    // the launchd label to clear (`backend_install.rs`), turning a slow but
+    // healthy shutdown into a failed update. `join_all` bounds the total added
+    // latency to one budget's worth, matching how long the slowest task
+    // actually needed.
+    let results = futures::future::join_all(background_tasks.into_iter().map(
+        |(name, handle)| async move {
+            (
+                name,
+                tokio::time::timeout(BACKGROUND_TASK_SHUTDOWN_BUDGET, handle).await,
+            )
+        },
+    ))
+    .await;
+    for (name, outcome) in results {
+        match outcome {
+            Ok(Ok(())) => tracing::debug!(task = name, "background task stopped for shutdown"),
+            Ok(Err(e)) => tracing::warn!(
+                task = name,
+                error = %e, // not-anyhow: tokio::task::JoinError, no chain to walk
+                "background task panicked during shutdown"
+            ),
+            Err(_) => tracing::error!(
+                task = name,
+                budget_s = BACKGROUND_TASK_SHUTDOWN_BUDGET.as_secs(),
+                "background task did not stop within the shutdown budget — \
+                 it may still be holding the database open (e.g. mid an \
+                 external subprocess call); proceeding with checkpoint/close \
+                 anyway rather than hanging shutdown indefinitely"
+            ),
+        }
+    }
+
     meridian::platform::release_endpoint();
     // See `db::meridian::checkpoint_wal`'s doc for why this runs before every
     // close, not just a plain shutdown. Best-effort: a failed checkpoint must
     // not block shutdown.
-    if let Err(e) = meridian::db::meridian::checkpoint_wal(&meridian).await {
-        tracing::warn!(error = %meridian::errors::chain(&e), "WAL checkpoint on shutdown failed - continuing anyway");
+    //
+    // BOTH outcomes are logged, and the success line is the point. Previously a
+    // failed checkpoint logged a WARN and a successful one logged nothing, so
+    // "no line after `shutting down`" meant either "it worked" or "the process
+    // was killed part-way through" — indistinguishable, and the difference is
+    // the entire question when a `meridian.db` is later found malformed. A
+    // corruption investigation on 2026-08-25 stalled on exactly this ambiguity
+    // and had to withdraw its conclusion. Now silence here means killed.
+    //
+    // Skipped ENTIRELY when the database file was replaced underneath us. The
+    // pool's connections are on the old, unlinked inode, but SQLite addresses
+    // the `-wal` and `-shm` sidecars BY PATH - so checkpointing or closing here
+    // would write this process's stale journal state against the NEW file. That
+    // is not a lesser version of the corruption this checkpoint prevents, it is
+    // precisely the v1.80.0 mechanism. Leaking the pool on the way out of a
+    // process that is exiting anyway costs nothing by comparison.
+    if db_file_swapped {
+        tracing::error!(
+            pid = std::process::id() as i64,
+            "exiting without a WAL checkpoint: meridian.db was replaced underneath this \
+             process, so this pool's journal state must not be written back"
+        );
+    } else {
+        match meridian::db::meridian::checkpoint_wal(&meridian).await {
+            Ok(()) => tracing::info!(
+                pid = std::process::id() as i64,
+                "WAL checkpoint on shutdown complete"
+            ),
+            // `pid` here too: the whole reason both outcomes are logged is to
+            // attribute a checkpoint to a generation, and a FAILED checkpoint is
+            // the one most worth attributing.
+            Err(e) => tracing::warn!(
+                pid = std::process::id() as i64,
+                error = %meridian::errors::chain(&e),
+                "WAL checkpoint on shutdown failed - continuing anyway"
+            ),
+        }
+        meridian.close().await;
     }
-    meridian.close().await;
 
     // Flush OTel exporters FIRST, while the runtime is alive — this writes the
     // daemon's final shutdown spans/logs into the spool's pending/ dir...
@@ -1547,6 +1933,140 @@ async fn main() -> Result<()> {
     let _ = shipper_shutdown_tx.send(true);
 
     Ok(())
+}
+
+/// How long a latched daemon waits between re-checks of whether the database
+/// has become healthy underneath it.
+///
+/// Far slower than the ~60 s poll tick on purpose. The original latch existed
+/// because "retrying only re-reads damaged pages", and that reasoning is sound
+/// for the ETL itself - `quick_check` reads every page in the file, which is
+/// multi-second on a multi-GB database. Fifteen minutes keeps that cost
+/// negligible while bounding an outage at minutes instead of "until a human
+/// notices and restarts the daemon", which in the reported incident was 44.7
+/// hours.
+const CORRUPT_RECHECK_EVERY: std::time::Duration = std::time::Duration::from_secs(900);
+
+/// What a latched daemon should do after re-examining its database.
+#[derive(Debug, PartialEq, Eq, Clone, Copy)]
+enum CorruptionRecheck {
+    /// Still damaged, or not yet due for a re-check. Stay latched.
+    Waiting,
+    /// The database is provably sound again - resume the ETL.
+    Recovered,
+    /// The file was replaced underneath this process (a repair rebuilt and
+    /// renamed it). The pool is on a dead inode; the daemon must exit WITHOUT
+    /// touching the database so launchd restarts it against the new file.
+    FileSwapped,
+}
+
+/// Re-examine a database the ETL has latched on, and say whether to resume.
+///
+/// # The bug this closes
+///
+/// `db_corrupt` used to be a one-way flag: set on the first corruption signal
+/// and never cleared for the life of the process. That silently disabled the
+/// ETL, the task-linker wakeups and capture retention, and emitted nothing
+/// after the single error that tripped it. The justification - that the
+/// condition "cannot clear without an operator" - is false in practice, and
+/// production disproved it on 2026-08-25: a daemon latched at startup against
+/// a file that was still being rebuilt, the rebuild finished ~45 minutes
+/// later, and the daemon then sat idle against a perfectly healthy database
+/// for 44.7 hours until someone restarted it by hand. The very first ETL pass
+/// after that restart succeeded, catching up 12,642 frames.
+///
+/// It was also unobservable from outside: `db::repair::rebuild` clears the
+/// `db.corrupt` notice from the file it rebuilds, so the banner - the only
+/// user-visible signal - disappears while a still-running daemon stays
+/// latched. The dashboard reported a healthy system with a dead ETL.
+///
+/// # Why the file-identity check comes first
+///
+/// A repair rebuilds into a new file and renames it into place, so the
+/// recovered database is a DIFFERENT inode. Re-running `quick_check` through
+/// the existing pool would keep examining the old, unlinked one and could
+/// never observe the fix. Worse, that pool must not be checkpointed or closed
+/// (see [`meridian::db::integrity::file_identity`]). So identity is checked
+/// before health, and a swap short-circuits to [`CorruptionRecheck::FileSwapped`].
+///
+/// # Safety of resuming
+///
+/// `quick_check` returning clean is not a promise the database is perfect - it
+/// skips the index-vs-table checks `integrity_check` performs. It does not
+/// need to be a promise: if damage remains, the next ETL pass hits it and
+/// `etl_tick` latches again, costing one pass. The failure is self-correcting
+/// in the safe direction, which is what makes resuming reasonable at all.
+async fn recover_from_corruption(
+    pool: &sqlx::SqlitePool,
+    db_path: &str,
+    identity_at_start: Option<(u64, u64)>,
+    last_check: &mut Option<std::time::Instant>,
+) -> CorruptionRecheck {
+    let now = std::time::Instant::now();
+    if let Some(prev) = *last_check {
+        if now.duration_since(prev) < CORRUPT_RECHECK_EVERY {
+            return CorruptionRecheck::Waiting;
+        }
+    }
+    *last_check = Some(now);
+
+    // Only meaningful when both readings exist: `file_identity` is `None` on
+    // non-unix and on a stat failure, and "could not tell" must never be read
+    // as "it changed" - that would exit the daemon on a transient stat error.
+    let identity_now = meridian::db::integrity::file_identity(db_path);
+    if let (Some(before), Some(after)) = (identity_at_start, identity_now) {
+        if before != after {
+            tracing::error!(
+                db_path,
+                "meridian.db was replaced underneath this process (a repair rebuilt it) - \
+                 this pool is on the old, unlinked file and must not write to it. Exiting \
+                 without checkpointing so the service manager restarts against the new file."
+            );
+            return CorruptionRecheck::FileSwapped;
+        }
+    }
+
+    match meridian::db::integrity::quick_check(pool, 20).await {
+        Ok(problems) if problems.is_empty() => {
+            tracing::info!(
+                "meridian.db passes its integrity check again - resuming the ETL (it was \
+                 stopped when corruption was detected)"
+            );
+            // The daemon raised this notice, so the daemon clears it. Without
+            // this the banner outlives the fault it reports.
+            if let Err(e) =
+                meridian::notices::clear_typed(pool, DB_CORRUPT_NOTICE, DB_CORRUPT_NOTICE).await
+            {
+                tracing::warn!(
+                    error = %meridian::errors::chain(&e),
+                    "could not clear the db.corrupt notice after recovery"
+                );
+            }
+            CorruptionRecheck::Recovered
+        }
+        Ok(problems) => {
+            // WARN every recheck interval, not once. The original latch went
+            // silent after a single error, which is why 44.7 hours of total
+            // ETL outage left nothing in `meridian logs` to find.
+            tracing::warn!(
+                problem_count = problems.len(),
+                first = %problems.first().map(String::as_str).unwrap_or_default(),
+                recheck_s = CORRUPT_RECHECK_EVERY.as_secs(),
+                "ETL is still stopped: meridian.db remains damaged. Run 'meridian db repair' \
+                 with Meridian quit."
+            );
+            CorruptionRecheck::Waiting
+        }
+        Err(e) => {
+            // The check failing is not evidence either way, so stay latched -
+            // but say so, for the same reason as above.
+            tracing::warn!(
+                error = %meridian::errors::chain(&e),
+                "ETL is still stopped: the integrity re-check could not run"
+            );
+            CorruptionRecheck::Waiting
+        }
+    }
 }
 
 /// Runs one ETL pass and maps the outcome onto the notice bus.
@@ -1620,6 +2140,178 @@ async fn etl_tick(meridian: &meridian::db::SqlitePool) -> bool {
 const DB_CORRUPT_NOTICE: &str = meridian::notices::DB_CORRUPT;
 
 #[cfg(test)]
+mod corruption_recovery_tests {
+    use super::{recover_from_corruption, CorruptionRecheck, CORRUPT_RECHECK_EVERY};
+    use sqlx::sqlite::SqliteConnectOptions;
+    use sqlx::SqlitePool;
+    use std::str::FromStr;
+    use std::time::Instant;
+
+    async fn fresh_db() -> SqlitePool {
+        let opts = SqliteConnectOptions::from_str("sqlite::memory:")
+            .unwrap()
+            .create_if_missing(true);
+        let pool = SqlitePool::connect_with(opts).await.unwrap();
+        sqlx::migrate!("src/migrations").run(&pool).await.unwrap();
+        pool
+    }
+
+    /// THE regression. The latch had no way out: `db_corrupt` was stored `true`
+    /// in three places and `false` in none, so a database that became healthy
+    /// underneath a running daemon left the ETL stopped for the life of the
+    /// process - 44.7 hours in the reported incident, ended only by a manual
+    /// restart whose very first pass succeeded.
+    #[tokio::test]
+    async fn a_healthy_database_resumes_the_etl() {
+        let pool = fresh_db().await;
+        let mut last = None;
+        assert_eq!(
+            recover_from_corruption(&pool, ":memory:", None, &mut last).await,
+            CorruptionRecheck::Recovered,
+            "a database that passes its integrity check must un-latch the ETL"
+        );
+    }
+
+    /// Recovery must also retract the banner the daemon itself raised,
+    /// otherwise the notice outlives the fault it reports.
+    #[tokio::test]
+    async fn recovery_clears_the_notice_the_daemon_raised() {
+        let pool = fresh_db().await;
+        meridian::notices::raise_typed(
+            &pool,
+            meridian::notices::Notice {
+                id: meridian::notices::DB_CORRUPT,
+                severity: "error",
+                title: "Meridian's database is damaged",
+                detail: "test",
+                remedy: None,
+                event_key: meridian::notices::DB_CORRUPT,
+                deep_link: None,
+            },
+        )
+        .await
+        .unwrap();
+
+        let mut last = None;
+        assert_eq!(
+            recover_from_corruption(&pool, ":memory:", None, &mut last).await,
+            CorruptionRecheck::Recovered
+        );
+
+        let notices = meridian_core::notices::read_notices(&pool).await;
+        assert!(
+            !notices
+                .iter()
+                .any(|n| n.notice_id == meridian::notices::DB_CORRUPT),
+            "the db.corrupt banner must not survive the recovery that fixes it"
+        );
+    }
+
+    /// The re-check reads every page of the database, so it must not run on
+    /// every ~60 s poll tick. The first latched tick checks immediately
+    /// (`last` is `None`); the next one waits out the interval.
+    #[tokio::test]
+    async fn the_recheck_is_throttled() {
+        let pool = fresh_db().await;
+        let mut last = Some(Instant::now());
+        assert_eq!(
+            recover_from_corruption(&pool, ":memory:", None, &mut last).await,
+            CorruptionRecheck::Waiting,
+            "a re-check ran before its interval elapsed - this reads every page in the file"
+        );
+
+        // Once the interval has passed it runs again and, on a clean database,
+        // recovers. Drives the clock rather than sleeping 15 minutes.
+        //
+        // `checked_sub`, not `-`. `Instant` is measured from an arbitrary epoch
+        // that on Windows is system boot, so on a CI runner whose uptime is
+        // under CORRUPT_RECHECK_EVERY the subtraction underflows and `std`
+        // panics with "overflow when subtracting duration from instant" - which
+        // is exactly how this failed on the Windows job while macOS stayed
+        // green. It returns `Option<Instant>`, which is already this variable's
+        // type: on a long-lived machine that is `Some(an elapsed instant)` and
+        // exercises the elapsed path, and on a just-booted one it is `None`,
+        // meaning "never checked", which must also proceed. Both satisfy the
+        // assertion below, so the test is portable without being weakened into
+        // a no-op on either.
+        last = Instant::now().checked_sub(CORRUPT_RECHECK_EVERY);
+        assert_eq!(
+            recover_from_corruption(&pool, ":memory:", None, &mut last).await,
+            CorruptionRecheck::Recovered
+        );
+    }
+
+    /// A repair rebuilds into a NEW file and renames it into place, so the pool
+    /// is left on the old, unlinked inode. Re-checking through it could never
+    /// see the fix, and - the dangerous half - checkpointing or closing it
+    /// writes stale journal state against the NEW file's `-wal`/`-shm`, which
+    /// is the v1.80.0 corruption mechanism exactly.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_replaced_file_is_detected_rather_than_re_checked() {
+        let pool = fresh_db().await;
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("meridian.db");
+        std::fs::write(&path, b"first").unwrap();
+        let before = meridian::db::integrity::file_identity(path.to_str().unwrap());
+        assert!(before.is_some(), "identity must be readable on unix");
+
+        // Replace it the way a repair does: a different file renamed into place.
+        let replacement = dir.path().join("rebuilt");
+        std::fs::write(&replacement, b"second").unwrap();
+        std::fs::rename(&replacement, &path).unwrap();
+
+        let mut last = None;
+        assert_eq!(
+            recover_from_corruption(&pool, path.to_str().unwrap(), before, &mut last).await,
+            CorruptionRecheck::FileSwapped,
+            "a swapped database must be detected, not re-checked through the dead pool"
+        );
+    }
+
+    /// The same file must NOT read as swapped, or a healthy latched daemon
+    /// would exit every re-check interval.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn an_unchanged_file_is_not_mistaken_for_a_swap() {
+        let pool = fresh_db().await;
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("meridian.db");
+        std::fs::write(&path, b"same").unwrap();
+        let ident = meridian::db::integrity::file_identity(path.to_str().unwrap());
+
+        let mut last = None;
+        assert_ne!(
+            recover_from_corruption(&pool, path.to_str().unwrap(), ident, &mut last).await,
+            CorruptionRecheck::FileSwapped,
+            "an unchanged file read as swapped - the daemon would exit on every re-check"
+        );
+    }
+
+    /// "Could not tell" must never be read as "it changed". `file_identity`
+    /// returns `None` on a stat failure and on non-unix; treating that as a
+    /// swap would exit the daemon on a transient error, or on every re-check
+    /// on Windows.
+    #[tokio::test]
+    async fn an_unreadable_identity_never_reads_as_swapped() {
+        let pool = fresh_db().await;
+        let mut last = None;
+        let outcome = recover_from_corruption(
+            &pool,
+            "/nonexistent/path/that/cannot/be/stated.db",
+            Some((1, 2)),
+            &mut last,
+        )
+        .await;
+        assert_ne!(
+            outcome,
+            CorruptionRecheck::FileSwapped,
+            "an unreadable identity must not be treated as evidence of a swap"
+        );
+    }
+}
+
+#[cfg(test)]
 mod startup_order_tests {
     /// The single-instance guard's CHECK must run before `setup_db` opens the
     /// pool and runs migrations, and the health-endpoint BIND must run after.
@@ -1642,8 +2334,46 @@ mod startup_order_tests {
     /// `backend_install.rs` (`a_stuck_bootout_is_reported_at_warn`,
     /// `every_early_return_still_restores_the_daemon`) — this scans the
     /// source for the three call sites and asserts their relative order.
+    /// A stand-down must FLUSH before it returns, or its own WARN is lost.
+    ///
+    /// `main` returning does not flush: `ObservabilityGuard` has no `Drop`
+    /// (its docs say to call `shutdown` explicitly), so a record emitted just
+    /// before `return Ok(())` dies in the batch processor.
+    ///
+    /// This was not theoretical. MEASURED before the fix: a second daemon was
+    /// made to lose the lock race and `meridian logs` found ZERO occurrences of
+    /// the WARN the daemon had just printed. On a release build there is no
+    /// stdout mirror either, so the event was invisible everywhere - and that
+    /// WARN is the only evidence that two daemons raced past the endpoint
+    /// probe, which is the entire reason the lock reports it.
     #[test]
-    fn single_instance_check_precedes_setup_db_and_bind_follows_it() {
+    fn every_stand_down_flushes_before_returning() {
+        const SRC: &str = include_str!("main.rs");
+        let prod = SRC
+            .split_once("\n#[cfg(test)]")
+            .map_or(SRC, |(before, _)| before);
+
+        for needle in ["exiting (single-instance guard)", "exiting (lock)"] {
+            let at = prod
+                .find(needle)
+                .unwrap_or_else(|| panic!("the {needle} stand-down must exist in main()"));
+            let after = &prod[at..];
+            let ret = after
+                .find("return Ok(());")
+                .unwrap_or_else(|| panic!("the {needle} stand-down must return"));
+            let between = &after[..ret];
+            assert!(
+                between.contains("obs_guard.shutdown().await;"),
+                "the '{needle}' stand-down must flush telemetry before it \
+                 returns - without it the WARN it just emitted never reaches \
+                 the spool and the stand-down is invisible. Found between the \
+                 log and the return: {between:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn single_instance_lock_precedes_setup_db_and_bind_follows_it() {
         const SRC: &str = include_str!("main.rs");
         // Truncate at THIS test module first — the file scans itself, and the
         // needles below (`daemon_already_running`, `setup_db(&initial_cfg`)
@@ -1657,6 +2387,9 @@ mod startup_order_tests {
         let check_pos = prod
             .find("meridian::platform::daemon_already_running().await")
             .expect("the single-instance guard's check call must exist in main()");
+        let lock_pos = prod
+            .find("meridian::platform::acquire_single_instance_lock()")
+            .expect("the single-instance LOCK acquire must exist in main()");
         let setup_db_pos = prod
             .find("setup_db(&initial_cfg.meridian_db_uri()).await")
             .expect("the setup_db() call must exist in main()");
@@ -1665,11 +2398,21 @@ mod startup_order_tests {
             .expect("the health-listener bind call must exist in main()");
 
         assert!(
-            check_pos < setup_db_pos,
-            "the single-instance guard must be CHECKED before setup_db() opens \
+            check_pos < lock_pos,
+            "the cheap endpoint probe should run before the lock acquire, so \
+             the common case (a daemon that is plainly already up) produces \
+             the informative log line. Found check at byte {check_pos}, lock \
+             at byte {lock_pos}."
+        );
+        assert!(
+            lock_pos < setup_db_pos,
+            "the single-instance lock must be ACQUIRED before setup_db() opens \
              the pool and runs migrations — a daemon that will lose that race \
-             must never touch meridian.db. Found check at byte {check_pos}, \
-             setup_db at byte {setup_db_pos}."
+             must never touch meridian.db. This assertion used to name the \
+             PROBE instead, which is why it passed for two releases while the \
+             hazard was wide open: the probe is check-then-act, so both racers \
+             pass it. Only the lock is an acquire. Found lock at byte \
+             {lock_pos}, setup_db at byte {setup_db_pos}."
         );
         assert!(
             setup_db_pos < bind_pos,
