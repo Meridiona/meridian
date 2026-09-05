@@ -149,16 +149,59 @@ pub async fn ensure_backend_installed(app: &tauri::AppHandle) {
         return;
     }
 
-    // `ensure_backend_installed` runs off the setup hook, after `app.manage(db_pool)`
-    // (see `lib.rs`), so the pool is already there to raise/clear against —
-    // `None` only when the DB itself couldn't be opened, in which case there's
-    // nowhere to write a notice anyway.
-    let pool = app
+    // QUIESCE THE TRAY'S OWN POOL ACROSS THE RESTAGE.
+    //
+    // `install` below stops the running daemon, swaps its binary and bootstraps
+    // a new one. The outgoing daemon checkpoints and RESETS the WAL as it exits.
+    // A connection held across that reset keeps a stale `-shm` index: it still
+    // maps page numbers to WAL frames that have since been recycled for other
+    // pages, so reads AND writes through it silently address the wrong content.
+    //
+    // The tray is a writer here, not a bystander - the capture engine is
+    // appending to `capture_frames`/`capture_ui_events` throughout - so those
+    // misdirected writes deposit one page's bytes into another page's slot.
+    // Measured 2026-09-05: the tray opened the database 100 ms before it sent
+    // the stop signal, held it across the 15:54:23.168 checkpoint, and the
+    // resulting interior pages carried child pointers to pages 90143-90671 in a
+    // database whose highest page ever allocated was 90093 - pointers to space
+    // that has never existed, which is what a page written to the wrong slot
+    // looks like. One WAL file held two salt generations, the fingerprint of a
+    // reset spanned by a live connection. Fifth occurrence since 17 Aug.
+    //
+    // `DbPool::close`/`reopen` has existed since the 24 Aug incident for exactly
+    // this, but only `commands::daemon::reload_daemon` used it; the restage path
+    // - the one an ordinary user hits by installing an update while Meridian is
+    // running - never did.
+    //
+    // Every reader sees `get() == None` for the window and degrades exactly as
+    // it does on a cold start. That includes capture, which drops the handful of
+    // frames produced during the swap. Losing seconds of scratch capture is the
+    // cheap failure; the expensive one is the b-tree.
+    let db_handle = app
         .try_state::<crate::db_pool::DbPool>()
-        .and_then(|s| s.get());
+        .map(|s| s.inner().clone());
+    if let Some(h) = db_handle.as_ref() {
+        h.close().await;
+        tracing::info!("backend_install: closed the tray db pool for the restage");
+    }
 
     tracing::info!(hash = %bundled_hash, "backend_install: installing bundled backend");
-    if let Err(e) = install(&backend, &home).await {
+    let outcome = install(&backend, &home).await;
+
+    // Reopen BEFORE anything below touches the database. Unconditional on the
+    // install outcome: a failed stage leaves the OLD daemon to be restarted by
+    // `restore_unless_paused`, and the tray needs its pool back either way -
+    // leaving it closed would silently end capture and every dashboard read for
+    // the rest of the session, which is the failure mode `start_capture`'s doc
+    // describes.
+    if let Some(h) = db_handle.as_ref() {
+        h.reopen().await;
+        tracing::info!("backend_install: reopened the tray db pool after the restage");
+    }
+    // Re-read AFTER the reopen - a pool captured before `close` is the shut one.
+    let pool = db_handle.as_ref().and_then(|h| h.get());
+
+    if let Err(e) = outcome {
         tracing::error!(error = %e, "backend_install: install failed — will retry next launch");
         // Previously silent beyond the log line: staging/registration can fail
         // for reasons a user can actually act on (antivirus quarantining the
@@ -1626,6 +1669,69 @@ mod tests {
                  first is what makes the window silent. stop at {stop}, stage at {stage}"
             );
         }
+    }
+
+    /// The tray's pool must be CLOSED before the restage and REOPENED after.
+    ///
+    /// This is the fix for the corruption that has now happened five times on
+    /// one machine (17, 19, 20, 27 Aug and 5 Sep). `install` stops the running
+    /// daemon, and the outgoing daemon checkpoints and RESETS the WAL as it
+    /// goes. A connection held across that reset keeps a stale `-shm` index and
+    /// resolves page numbers to WAL frames that have since been recycled, so
+    /// writes through it land on the wrong pages. The tray is a writer here -
+    /// capture is appending to `capture_frames` throughout - so what it deposits
+    /// is one page's bytes in another page's slot. On 5 Sep that produced
+    /// interior pages pointing at pages 90143-90671 in a database whose highest
+    /// page ever allocated was 90093.
+    ///
+    /// Source-scanned because the ordering IS the behaviour and none of it can
+    /// be exercised in a unit test - it needs a real launchd domain, a real
+    /// daemon and a real WAL reset. The same idiom as the sibling scans here.
+    ///
+    /// Both halves are asserted, and the reopen is not optional politeness: a
+    /// pool left closed silently ends capture and every dashboard read for the
+    /// rest of the session, which would trade a corrupt database for a dead one.
+    #[test]
+    fn the_tray_pool_is_closed_across_the_restage_and_reopened_after() {
+        const SRC: &str = include_str!("backend_install.rs");
+        let prod = SRC
+            .split_once("\n#[cfg(test)]")
+            .map_or(SRC, |(before, _)| before);
+        let body = prod
+            .split_once("pub async fn ensure_backend_installed")
+            .expect("ensure_backend_installed must exist")
+            .1;
+        let end = ["\npub ", "\npub(crate) ", "\nasync fn", "\nfn "]
+            .iter()
+            .filter_map(|m| body.find(m))
+            .min()
+            .unwrap_or(body.len());
+        let body = &body[..end];
+
+        let close = body.find(".close().await").expect(
+            "ensure_backend_installed must close the tray's db pool before staging - a \
+             connection held across the outgoing daemon's WAL reset writes to the wrong \
+             pages, which is the recurring capture-table corruption",
+        );
+        let install = body
+            .find("install(&backend, &home).await")
+            .expect("ensure_backend_installed must call install()");
+        let reopen = body.find(".reopen().await").expect(
+            "ensure_backend_installed must reopen the pool after staging - leaving it \
+             closed ends capture and every dashboard read for the rest of the session",
+        );
+
+        assert!(
+            close < install,
+            "the pool must be closed BEFORE install(), not after - closing afterwards \
+             leaves the connection spanning the daemon restart, which is the whole bug. \
+             close at {close}, install at {install}"
+        );
+        assert!(
+            install < reopen,
+            "the pool must be reopened AFTER install() completes. install at {install}, \
+             reopen at {reopen}"
+        );
     }
 
     /// Staging must wait on the **daemon binary**, never on `meridian.db`.
