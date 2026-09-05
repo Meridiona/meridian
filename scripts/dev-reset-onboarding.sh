@@ -20,8 +20,9 @@
 #             sign-in and permission grants all survive. This is the loop you
 #             want for wizard copy/logic/step-ordering iteration.
 #   --data    --soft plus user data: meridian.db, settings.json, oauth/, .env,
-#             account.json and the WebKit caches that hold the signed-in session.
-#             Keeps the keychain key and the TCC grants.
+#             account.json (the whole sign-in state - no session lives anywhere
+#             else) and the WebKit caches, cleared for general webview-cache
+#             hygiene. Keeps the keychain key and the TCC grants.
 #   --deep    shells out to `meridian uninstall --remove-data --yes` — the real
 #             uninstall path: launchd agents, staged binaries, the install
 #             marker, ~/.meridian data, the OS keychain entry and a tccutil
@@ -101,8 +102,10 @@ SOFT_MARKERS=(
     provider_runtime_health.json
 )
 
-# Additional user data for --data. account.json alone does NOT sign you out —
-# the session lives in the WebKit caches below.
+# Additional user data for --data. account.json ALONE is now the full sign-in
+# state — there is no separate client session to also clear (email capture is
+# a one-time write, not a login). The WebKit caches below are cleared for
+# general webview-cache hygiene, unrelated to sign-in.
 DATA_ITEMS=(
     meridian.db
     meridian.db-shm
@@ -116,8 +119,10 @@ DATA_ITEMS=(
     icon-cache
 )
 
-# macOS OS-managed app data for the tray's bundle id — cookies/localStorage, i.e.
-# where the signed-in Clerk session actually lives. Mirrors `app_cache_items()`.
+# macOS OS-managed app data for the tray's bundle id — cookies/localStorage/
+# webview cache. No sign-in state lives here anymore (see DATA_ITEMS' note on
+# account.json above) — kept for general webview-cache hygiene. Mirrors
+# `app_cache_items()`.
 app_cache_paths() {
     printf '%s\n' \
         "${HOME}/Library/Application Support/${TRAY_BUNDLE_ID}" \

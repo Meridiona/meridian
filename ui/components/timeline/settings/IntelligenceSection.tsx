@@ -16,8 +16,7 @@
 'use client'
 
 import { useCallback, useEffect, useRef, useState } from 'react'
-import { invoke } from '@tauri-apps/api/core'
-import { load } from '@/lib/bridge'
+import { invoke, load } from '@/lib/bridge'
 import type { RuntimeSettings } from '@/lib/settings'
 import { LLM_INTRO_TITLE, providerChoiceFields, type LlmProviderId } from '@/lib/llm-providers'
 import LlmProviderPicker, { useLlmProviderDetection } from '@/components/LlmProviderPicker'
