@@ -196,7 +196,10 @@ pub async fn note_transient_sync_failure(
     tracing::warn!(
         provider,
         streak,
-        "provider unreachable on {streak} consecutive attempts - escalating to a notice"
+        // Static body: `streak` is already a structured field above, and a WARN
+        // body ships verbatim to central OpenObserve whatever it interpolates -
+        // see `log_hygiene::no_user_data_interpolated_into_a_log_body`.
+        "provider unreachable on a full escalation streak - escalating to a notice"
     );
     // The message names the evidence, not a duration. The old wording ("No
     // successful sync in the last 6 hours") described normal on-demand operation
