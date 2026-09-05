@@ -98,7 +98,12 @@
         "RL_GLOBAL_PER_DAY": 500,
         "ALERT_THRESHOLD_PCT": 80,
         "ALERT_EMAIL": "akarsh@meridiona.com",
-        "NOTIFY_EMAIL": "adithya@meridiona.com",
+        // Staging notifies the ENGINEER, not the team inbox: a test sign-up
+        // here is not a real one, and delivering "New sign-up: <test
+        // address>" to a colleague makes the production notification less
+        // trustworthy every time someone exercises staging. Production is
+        // the only channel that reaches the team inbox.
+        "NOTIFY_EMAIL": "akarsh@meridiona.com",
         "NOTIFY_FROM": "Meridian Sign-ins (staging) <notify@meridiona.com>"
       }
     }
