@@ -148,8 +148,8 @@ mod tests {
     }
 
     /// The brevity rule, enforced rather than trusted: What's New is read at a
-    /// glance or not at all, so a release gets at most three entries and each
-    /// body stays one short sentence. Without this the file drifts back into
+    /// glance or not at all, so a release gets 1-3 entries and each body stays
+    /// one short sentence. Without this the file drifts back into
     /// pasted commit messages within a few releases.
     #[test]
     fn release_notes_stay_short() {
@@ -162,14 +162,17 @@ mod tests {
                 r.items.len()
             );
             for it in &r.items {
+                // chars, not bytes: CLAUDE.md states these limits in characters,
+                // and `String::len` counts UTF-8 bytes - a single non-ASCII glyph
+                // would fail an entry that is well inside the documented limit.
                 assert!(
-                    it.title.len() <= 44,
+                    it.title.chars().count() <= 44,
                     "v{}: title too long: {:?}",
                     r.version,
                     it.title
                 );
                 assert!(
-                    it.body.len() <= 160,
+                    it.body.chars().count() <= 160,
                     "v{}: body must be one short sentence: {:?}",
                     r.version,
                     it.body

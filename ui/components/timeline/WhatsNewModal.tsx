@@ -112,8 +112,12 @@ function ReleaseList({ releases }: { releases: ReleaseNote[] }) {
               <p className="mt-body-sm ml-auto" style={{ color: 'var(--t-faint)' }}>{r.date}</p>
             </div>
             <div className="flex flex-col gap-3">
-              {r.items.map(item => (
-                <div key={item.title}>
+              {/* Keyed on position within the release, not the title: two items
+                  in one release may legitimately share a title, and a duplicate
+                  key makes React reuse the wrong node. The list is static and
+                  never reordered, so the index is a stable identity here. */}
+              {r.items.map((item, idx) => (
+                <div key={`${r.version}-${idx}`}>
                   <p className="mt-body-sm" style={{ color: 'var(--t-title)', fontWeight: 600 }}>{item.title}</p>
                   <p className="mt-body-sm" style={{ color: 'var(--t-muted)', marginTop: 2 }}>{item.body}</p>
                 </div>

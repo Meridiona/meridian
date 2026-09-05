@@ -1363,7 +1363,20 @@ where
                 stderr_tail
             };
             let process_message = if let Some(friendly) = node_crash_message(bin, &reason) {
-                tracing::debug!(bin, raw_tail = %reason, "sign-in CLI crashed at Node module load, showing a friendlier message");
+                // Length and classification, never the body. `reason` is the raw
+                // tail of the CLI's own output, and this branch's own comment
+                // above says a device code or OAuth URL can be the only thing in
+                // it. DEBUG is off by default so this rarely captures at all -
+                // but when it does it lands in the telemetry spool, and an
+                // Export Diagnostics bundle ships the spool UNREDACTED to
+                // support. The classification is what this line exists to
+                // record; the tail adds nothing the friendly message does not.
+                tracing::debug!(
+                    bin,
+                    raw_tail_len = reason.chars().count() as i64,
+                    crash_class = "node_module_load",
+                    "sign-in CLI crashed at Node module load, showing a friendlier message"
+                );
                 friendly
             } else {
                 format!(
