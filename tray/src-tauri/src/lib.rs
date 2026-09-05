@@ -653,20 +653,28 @@ pub fn run() {
                     // as it was before this span grew a wrapper): the capture
                     // feature is the only later consumer, but the clone itself is
                     // cheap and every build needs a value to return.
-                    let capture_pool = db_pool.clone();
                     // The encryption-state notice below needs a pool handle before
                     // db_pool is moved into managed state.
                     let encryption_notice_pool = db_pool.clone();
-                    // Wrapped so `commands::daemon::reload_daemon` can close and
-                    // reopen it around a daemon restart instead of holding one
-                    // connection across two different daemon process
-                    // generations — see `db_pool::DbPool`'s header for the
-                    // corruption incident this closes off.
-                    app.manage(db_pool::DbPool::new(
+                    // Wrapped so `commands::daemon::reload_daemon` and
+                    // `backend_install::install` can close and reopen it around a
+                    // daemon restart instead of holding one connection across two
+                    // different daemon process generations — see
+                    // `db_pool::DbPool`'s header for the corruption this closes
+                    // off.
+                    let handle = db_pool::DbPool::new(
                         db_pool,
                         db_path.clone(),
                         db_key_hex.clone(),
-                    ));
+                    );
+                    // Capture gets the HANDLE, not a pool clone. A clone would go
+                    // on writing to the pool object that `close()` shut, which is
+                    // both a dead capture engine and the reason quiescing across a
+                    // restage was not previously possible — see `start_capture`.
+                    // Returned from this closure so `app.manage` is guaranteed to
+                    // have run before capture starts.
+                    let capture_pool = handle.clone();
+                    app.manage(handle);
 
                     // Report the repair now that there is a pool to write a notice
                     // with. Deliberately after `app.manage`: the notice is the
@@ -676,7 +684,9 @@ pub fn run() {
                     // never the `db_pool` that was just moved above, and the
                     // pool is already managed by the time this block runs at all.
                     if let Some(outcome) = repair_outcome {
-                        if let Some(p) = capture_pool.clone() {
+                        // `.get()`: `capture_pool` is the swappable handle now, not
+                        // an `Option<SqlitePool>`. Same graceful skip when no pool is open.
+                        if let Some(p) = capture_pool.get() {
                             // Own the strings before the task takes them: the
                             // notice borrows its fields, and `outcome` cannot
                             // outlive this scope. `fault_cleared` decides both
@@ -874,8 +884,7 @@ pub fn run() {
 
                     capture_pool
                 }),
-            )
-            .flatten();
+            );
             // `.manage()` no-ops (returns `false`) when the type is already
             // managed — see `tauri::Manager::manage`'s doc — so this only takes
             // effect on the panic path above, where `app.manage(db_pool)` inside
@@ -1218,7 +1227,14 @@ pub fn run() {
             // isolation, so this matters). Frames → capture_frames (slice 4a),
             // input events → capture_ui_events (slice 3c).
             #[cfg(feature = "capture")]
-            start_capture(app_state.clone(), capture_pool);
+            // `capture_pool` is `None` only when the setup span panicked before it
+            // could build the handle. The fallback `app.manage` above guarantees
+            // one is managed even on that path, so fall through to it rather than
+            // leaving capture dead for the session.
+            match capture_pool {
+                Some(h) => start_capture(app_state.clone(), h),
+                None => restart_capture(app.handle(), &app_state, "setup panic fallback"),
+            }
 
             // Auto-open the setup wizard on first launch (no ~/.meridian/onboarded).
             // The 800 ms delay lets the tray menu settle before the window appears.
@@ -1680,10 +1696,52 @@ fn tray_debug(window: tauri::Window, msg: String) {
 /// # Who calls this
 /// Once from `lib.rs`'s `setup()` on launch, and again from
 /// `commands::pause_for_duration` on resume.
+/// Restart capture using the managed [`db_pool::DbPool`] handle.
+///
+/// Every resume path (pause expiry, disk-space recovery, work-hours start)
+/// wants the same thing, and the one way to get it wrong is to pass a raw
+/// `SqlitePool` clone instead - which is what all three did, and why capture
+/// died silently on the first `DbPool::close`. Centralised so there is one
+/// place to be right.
+///
+/// `try_state` rather than `state`: a tray whose database never opened manages
+/// no handle, and that must warn rather than panic in a poll tick.
+#[cfg(feature = "capture")]
+pub(crate) fn restart_capture(
+    app: &tauri::AppHandle,
+    app_state: &std::sync::Arc<std::sync::Mutex<AppState>>,
+    reason: &'static str,
+) {
+    use tauri::Manager as _;
+    match app.try_state::<db_pool::DbPool>() {
+        Some(h) => start_capture(app_state.clone(), h.inner().clone()),
+        None => tracing::warn!(reason, "no db pool handle managed - capture not restarted"),
+    }
+}
+
+/// `pool` is the SWAPPABLE [`db_pool::DbPool`] handle, not a bare
+/// `Option<SqlitePool>`.
+///
+/// The distinction is the whole point. This used to take a pool clone captured
+/// once at startup and hold it for the tray's entire life. `sqlx::Pool` is
+/// `Arc`-backed and `close()` closes the shared inner pool, so the moment
+/// anything called [`db_pool::DbPool::close`] every write here began failing -
+/// permanently, because the consumers never looked at the handle again and so
+/// never saw the reopened pool. `commands::daemon::reload_daemon` has been
+/// doing exactly that close/reopen since it was written, which means a daemon
+/// reload silently ended capture until the next tray restart.
+///
+/// That also blocked the fix for the recurring corruption: quiescing the pool
+/// across a daemon restage (`backend_install::install`) is the right move, and
+/// with a captured clone it would have traded a corrupt database for a dead
+/// capture engine. Reading `get()` per item makes both safe - a `None` during
+/// the restage window drops that item, which is the same graceful degradation
+/// every reader already has on a cold start, and the next item after `reopen`
+/// lands normally.
 #[cfg(feature = "capture")]
 pub(crate) fn start_capture(
     app_state: std::sync::Arc<std::sync::Mutex<AppState>>,
-    pool: Option<meridian_core::SqlitePool>,
+    pool: db_pool::DbPool,
 ) {
     use capture::{screenpipe::ScreenpipeEngine, CaptureEngine};
 
@@ -1783,7 +1841,8 @@ pub(crate) fn start_capture(
                         );
                         continue;
                     }
-                    let Some(p) = consumer_pool.as_ref() else {
+                    // Re-read the handle per item: see `start_capture`'s doc.
+                    let Some(p) = consumer_pool.get() else {
                         continue;
                     };
                     let row = meridian_core::CaptureFrameInsert {
@@ -1794,8 +1853,8 @@ pub(crate) fn start_capture(
                         text: frame.text,
                         text_source: frame.text_source.as_str().to_string(),
                     };
-                    if let Err(e) = meridian_core::insert_capture_frame(p, &row).await {
-                        tracing::warn!(error = %e, "capture: failed to persist frame");
+                    if let Err(e) = meridian_core::insert_capture_frame(&p, &row).await {
+                        tracing::warn!(error = %meridian::errors::chain(&e), "capture: failed to persist frame");
                     }
                 }
                 capture::CaptureItem::Secondary(sample) => {
@@ -1817,7 +1876,8 @@ pub(crate) fn start_capture(
                         );
                         continue;
                     }
-                    let Some(p) = consumer_pool.as_ref() else {
+                    // Re-read the handle per item: see `start_capture`'s doc.
+                    let Some(p) = consumer_pool.get() else {
                         continue;
                     };
                     let row = meridian_core::CaptureSecondaryScreenInsert {
@@ -1827,8 +1887,8 @@ pub(crate) fn start_capture(
                         window_name: sample.window_name,
                         text: sample.text,
                     };
-                    if let Err(e) = meridian_core::insert_capture_secondary_screen(p, &row).await {
-                        tracing::warn!(error = %e, "capture: failed to persist secondary-screen sample");
+                    if let Err(e) = meridian_core::insert_capture_secondary_screen(&p, &row).await {
+                        tracing::warn!(error = %meridian::errors::chain(&e), "capture: failed to persist secondary-screen sample");
                     }
                 }
             }
@@ -1873,9 +1933,10 @@ pub(crate) fn start_capture(
                     if ui_ignore.lock().unwrap().should_drop_app(ev.app_name.as_deref()) {
                         continue;
                     }
-                    let Some(p) = ui_pool.as_ref() else { continue };
-                    if let Err(e) = meridian_core::insert_capture_ui_event(p, &ev).await {
-                        tracing::warn!(error = %e, "capture: failed to persist ui event");
+                    // Re-read the handle per item: see `start_capture`'s doc.
+                    let Some(p) = ui_pool.get() else { continue };
+                    if let Err(e) = meridian_core::insert_capture_ui_event(&p, &ev).await {
+                        tracing::warn!(error = %meridian::errors::chain(&e), "capture: failed to persist ui event");
                     }
                 }
             }

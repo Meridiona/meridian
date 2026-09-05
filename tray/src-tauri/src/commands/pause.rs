@@ -339,8 +339,15 @@ pub(crate) async fn resume_capture(
     }
 
     // Restart the capture engine so screen recording resumes.
+    //
+    // Takes the SWAPPABLE handle from managed state rather than cloning the raw
+    // `pool` this function was given. A raw clone keeps writing to the pool
+    // object `DbPool::close` shut, so capture would be dead from the next daemon
+    // restart onward - see `crate::start_capture`'s doc. `try_state` because a
+    // tray whose database never opened has no handle to manage, and capture
+    // degrades to dropping frames exactly as it already does on a cold start.
     #[cfg(feature = "capture")]
-    crate::start_capture(state.clone(), pool.cloned());
+    crate::restart_capture(app, state, "pause resumed");
 
     // Emit immediately so the popover reverts to the picker without waiting for the next tick.
     if let Ok(s) = state.lock() {
