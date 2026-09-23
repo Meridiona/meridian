@@ -10,7 +10,7 @@
 <br>
 <br>
 
-<a href="https://meridiona.com/?ref=github-readme#download">
+<a href="https://meridiona.com/dev?ref=github-readme#download">
   <img src="docs/images/download-button.png" alt="Download Meridian" width="280" />
 </a>
 
