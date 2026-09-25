@@ -67,30 +67,6 @@ tauri-plugin-notifications = { version = "=0.4.6", default-features = false }
 # capture writer before it exits.
 tauri-plugin-single-instance = "2"
 tauri-plugin-opener = "2"
-# Email sign-in on the setup wizard's Sign-in step (see ui/app/setup/signin.tsx).
-# Community-maintained (Nipsuli/tauri-plugin-clerk) — originally pinned exact
-# for supply-chain control, same as tauri-plugin-notifications above. It
-# patches `fetch` to route Clerk's session calls through tauri-plugin-http,
-# working around Clerk's own documented limitation that cookies don't work on
-# Tauri's custom-domain webview. OAuth/social sign-in is NOT supported by this
-# plugin — email-code only, which matches the passwordless flow this app uses
-# (see clerk.json capability + the manual Clerk dashboard config note in
-# commands/account.rs).
-#
-# VENDORED at 0.1.1 (not the crates.io release) to carry a fix for
-# https://github.com/Nipsuli/tauri-plugin-clerk/issues/7: the JS->Rust
-# auth-event sync silently failed to persist a signed-in user's session into
-# the offline cache for EVERY real signed-in user, so any cold start that
-# couldn't complete a live Clerk fetch (e.g. no network yet) showed
-# signed-out despite a genuine prior sign-in. See
-# `vendor/tauri-plugin-clerk/src/lib.rs`'s module doc for the full writeup
-# and `src/json_backfill.rs` for the fix + regression tests. Un-vendor once
-# upstream ships a fix (issue #7 has an open, unmerged PR #9) — restore the
-# line below to `tauri-plugin-clerk = "=0.1.1"` (or whatever version carries
-# the fix) and delete `vendor/tauri-plugin-clerk/`.
-tauri-plugin-clerk = { path = "vendor/tauri-plugin-clerk" }
-tauri-plugin-http = "=2.5.9"
-tauri-plugin-store = "=2.4.3"
 # DMG auto-update (Step 1 of the public-distribution plan). Checks the GitHub
 # `latest.json` against the running version, downloads the signed `.app.tar.gz`,
 # verifies it against the minisign pubkey in tauri.conf.json, swaps it in, and

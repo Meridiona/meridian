@@ -247,6 +247,22 @@ impl Report {
             _ => paint("\x1b[32m", "  ✓ all systems healthy"),
         };
         out.push_str(&format!("{verdict}\n"));
+        // Where to look next. Reported from production 2026-08-27: an operator
+        // debugging a stalled ETL went to the paths in the launchd plist
+        // (`~/.meridian/logs/daemon.log`), found 0 bytes, and concluded logging
+        // was broken. It is not - those files are a crash-only safety net by
+        // design, and every structured log goes to the telemetry spool, which
+        // `meridian logs` decodes. Nothing anywhere told them that, so the one
+        // tool that would have shown the fault went unused. Printed
+        // unconditionally rather than only on a warning: the times you most
+        // need it are the times `doctor` looks fine and something is still off.
+        out.push_str(&format!(
+            "\n  {}\n",
+            dim(
+                "Logs: meridian logs [-f]   (the files in ~/.meridian/logs are a crash-only \
+                 safety net and are normally empty)"
+            )
+        ));
         out
     }
 

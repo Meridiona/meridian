@@ -12,6 +12,10 @@
 //!   server-side per row).
 //! - [`live`] — the live data → Tauri events that replace the dashboard's SSE
 //!   streams: `notices-update`, `notifications-update`.
+//! - [`startup_health`] — a separate, faster one-shot loop (spawned
+//!   alongside this one, not called from inside it) that repaints the
+//!   displayed health status the moment the daemon+DB are ready, instead of
+//!   waiting for this loop's next 30/60 s-cadenced health tick.
 //!
 //! The tray-sync helpers (emit / tooltip / menu) stay here, coupled to the loop.
 
@@ -20,6 +24,7 @@ mod notifications;
 mod permissions;
 mod plan_auto_open;
 mod refresh;
+mod startup_health;
 mod watchdog;
 mod whats_new_auto_open;
 
@@ -29,6 +34,7 @@ use notifications::drain_notifications;
 use refresh::{
     refresh_active, refresh_current_task, refresh_health, refresh_today, refresh_worklogs,
 };
+pub use startup_health::fast_poll_until_healthy;
 use std::sync::atomic::Ordering;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
@@ -116,7 +122,7 @@ pub async fn run_poll_loop(app: tauri::AppHandle, state: Arc<Mutex<AppState>>) {
         // check_disk_space's doc comment for why writing into a nearly-full
         // disk must stop rather than degrade silently.
         if let Some(pool) = &pool {
-            check_disk_space(&state, pool).await;
+            check_disk_space(&app, &state, pool).await;
         }
         // Work-hours schedule enforcement: auto-pause capture outside the
         // configured window, auto-resume when entering it. Only fires when the
@@ -217,7 +223,11 @@ fn update_tray_icon(app: &tauri::AppHandle, state: &Arc<Mutex<AppState>>) {
 /// timer) is separately gated in [`crate::commands::pause::resume_capture`],
 /// so a still-low disk can't be resumed into from any direction — this
 /// function only owns the disk-low pause's own start/end transition.
-async fn check_disk_space(state: &Arc<Mutex<AppState>>, pool: &meridian_core::SqlitePool) {
+async fn check_disk_space(
+    app: &tauri::AppHandle,
+    state: &Arc<Mutex<AppState>>,
+    pool: &meridian_core::SqlitePool,
+) {
     let low = meridian::health::platform::meridian_data_low_gb().is_some();
 
     let (pause_source, started_at, capture_paused_flag) = {
@@ -342,7 +352,7 @@ async fn check_disk_space(state: &Arc<Mutex<AppState>>, pool: &meridian_core::Sq
             // capturing nothing) rather than a bug worth cross-checking
             // schedule state here too.
             #[cfg(feature = "capture")]
-            crate::start_capture(state.clone(), Some(pool.clone()));
+            crate::restart_capture(app, state, "disk space recovered");
             tracing::info!(duration_s, "disk-space guard: capture resumed");
         }
         _ => {
@@ -440,7 +450,7 @@ async fn check_work_hours(
             }
             // Restart engine so screen recording resumes.
             #[cfg(feature = "capture")]
-            crate::start_capture(state.clone(), Some(pool.clone()));
+            crate::restart_capture(app, state, "work hours started");
             tracing::info!(
                 duration_s,
                 "work-hours: schedule pause ended — capture resumed"

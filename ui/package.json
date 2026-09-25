@@ -9,7 +9,6 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
-    "@clerk/react": "^6.12.2",
     "@hello-pangea/dnd": "^18.0.1",
     "@radix-ui/react-select": "^2.2.6",
     "@radix-ui/react-switch": "^1.2.6",
@@ -20,8 +19,7 @@
     "next": "16.2.6",
     "react": "19.2.7",
     "react-dom": "19.2.7",
-    "react-markdown": "^10.1.0",
-    "tauri-plugin-clerk": "0.1.1"
+    "react-markdown": "^10.1.0"
   },
   "devDependencies": {
     "@happy-dom/global-registrator": "^20.10.6",

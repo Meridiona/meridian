@@ -3,435 +3,463 @@
     {
       "version": "1.90.0",
       "date": "2026-08-24",
-      "highlights": [
-        "Meridian now starts itself reliably, and comes back when you actually start work rather than at a time we picked. It used to register once and never check again, so moving the app to Applications, reinstalling, or restoring it from the Bin could leave it unable to start at login with nothing to tell you - and because Meridian records your day from the app itself, a launch that never happened meant a day with nothing in it. It now checks and repairs that registration every single launch, and the next-day restart triggers on your Mac or PC waking, unlocking or signing in, instead of a fixed hour that missed you if your laptop was shut at the time.",
-        "On macOS, Meridian now appears by name under System Settings - General - Login Items & Extensions, so you can see it and turn it off there like any other app. It used to install itself as an unnamed background job, and uninstalling left that job behind pointing at an app that no longer existed.",
-        "If your project tool is not one we support yet, you can now tell us which one you use instead of being stuck on that step."
-      ],
-      "fixes": [
-        "Creating a task on GitHub from your daily plan works properly now. It used to fail outright if your project board had no GitHub task on it yet, and even when it worked the new issue never came back into Meridian - it was created but never added to your board or assigned to you, which is what Meridian looks for. New tasks are now filed, assigned to you and placed on your board. You will need to reconnect GitHub in Settings - Integrations once, because adding an issue to a board needs a permission the old connection did not ask for.",
-        "The end-of-day time you pick during the guided tour is actually saved. The tour would move on as though you had answered, and Settings still showed the old default afterwards.",
-        "The guided tour no longer gets stuck on that same question. Dismissing the dialog could leave the tour waiting on a button that was no longer on screen, and it pointed at the Turn on button before choosing a time had switched it on.",
-        "The end-of-day time dialog no longer appears twice if you skip the tour while it is opening, and it now asks you to pick a time before it will save.",
-        "Meridian no longer reports your project tool as failing to sync just because your laptop was asleep. A gap in time was being treated the same as a run of failures, so the first attempt after waking raised a warning about a tracker that was working fine.",
-        "Signing in sticks across a relaunch. A session that was still loading reported an empty status, which Meridian read as a failed sign-in and quietly dropped, so you were shown the sign-in screen again.",
-        "The sign-in fix above didn't catch every case - a couple of background fields your session carries could still arrive missing or blank and break the same offline check. Both are handled now.",
-        "Today's focus no longer shows \"What are you working on today?\" after you've already saved a plan. It used to need one extra edit in the planner before it noticed the plan was there.",
-        "Several fixes that protect your database around a restart: the write-ahead log is now flushed cleanly when the daemon stops, damage is spotted from Meridian's own reads rather than waiting for a scan, an automatic repair that fails now falls back to a fresh start instead of leaving you stuck, and Meridian no longer holds a connection open across a daemon restart.",
-        "On Windows, an automatic repair no longer gives up when a file is briefly locked by another process, and updating your start-at-login setting no longer closes Meridian while it does so.",
-        "The tray popover has a cleaner edge - the window is clipped to its own rounded corners and no longer draws a second shadow behind it."
+      "items": [
+        {
+          "title": "Starts reliably, every time",
+          "body": "Meridian repairs its own start-at-login registration on every launch, and comes back when your machine wakes instead of at a fixed hour."
+        },
+        {
+          "title": "GitHub tasks from your plan",
+          "body": "New issues are filed, assigned to you and placed on your board - reconnect GitHub in Settings once to grant the permission this needs."
+        },
+        {
+          "title": "Steadier around restarts",
+          "body": "Your database and your signed-in session both come through a restart intact."
+        }
       ]
     },
     {
       "version": "1.89.0",
       "date": "2026-08-20",
-      "highlights": [
-        "Ollama Cloud joins the setup wizard as a free, no-subscription way to draft with AI, and is now the one we recommend if you don't already have a subscription. Groq is being retired from active use - if you're currently on it, Settings will show a notice pointing you to Ollama, and your configuration stays exactly as you left it until you switch.",
-        "Settings now shows exactly what daily usage reporting sends - a health snapshot alongside the counts, never your screen activity or anything you wrote - and a new switch lets you turn it off separately from error reporting, without losing crash reports."
-      ],
-      "fixes": [
-        "Signing in sticks even on a cold start with no network. A session that was still loading could report its status as empty, which Meridian was reading as a failed sign-in and quietly dropping - so a user who had genuinely signed in before would see the sign-in screen anyway.",
-        "Codex and Cursor sign-in are detected more reliably. A browser sign-in that visibly succeeded could still get reported back to Meridian as failed; it no longer does.",
-        "Draft with AI on Cursor no longer takes up to a minute when it usually takes seconds.",
-        "A brief network or provider hiccup no longer flips your AI provider to unavailable and stops your day from being written - Meridian retries once before giving up.",
-        "Several worklog drafts falling behind in the same hour now arrive as one notification instead of landing all at once.",
-        "Drafting stopped failing with a hidden schema error on some custom AI endpoints.",
-        "Coding-agent session summaries no longer silently fail to generate on some setups.",
-        "A database repair that fails on launch now retries automatically within the same session instead of leaving Meridian stuck until you relaunch.",
-        "Testing a specific AI provider's connection is more reliable when you have more than one free-tier key configured - it could fail outright, or show one endpoint's result on another's card."
+      "items": [
+        {
+          "title": "Ollama Cloud, free to use",
+          "body": "A no-subscription way to draft with AI, and the one we now recommend if you don't already have a subscription."
+        },
+        {
+          "title": "Usage reporting you can switch off",
+          "body": "Settings shows exactly what daily usage reporting sends, with its own switch separate from error reports."
+        },
+        {
+          "title": "Sign-in and drafting fixes",
+          "body": "Signing in sticks on a cold start, and a brief provider hiccup no longer stops your day being written."
+        }
       ]
     },
     {
       "version": "1.88.0",
       "date": "2026-08-17",
-      "highlights": [
-        "The guided tour no longer blocks the very buttons it asks you to press. Choosing your project tool, answering the AI question, even typing a task title - the tour was covering all of it, so you could read the instruction but not follow it, and the step only moved on when it timed out minutes later.",
-        "The daily summary now updates a work log the moment you post it. A row you had just filed still said DRAFT READY TO POST, in the colour reserved for things that need you, until you closed the summary and opened it again.",
-        "The installer now says to open Meridian after dragging it. A disk image cannot start an app itself, so the app sat in Applications doing nothing while the window that put it there gave no hint a second step was left."
-      ],
-      "fixes": [
-        "Permission warnings no longer fire on launch when nothing is wrong. Rebuilding or updating the app made macOS report Screen Recording and Accessibility as off for a moment; the toast fired on that first read and then cleared itself. A permission now has to read off for five minutes before you hear about it.",
-        "The tour no longer leaves the app clickable while it narrates over a window it opened. A stray click could close the modal it was describing, after which it carried on explaining a screen that was no longer there.",
-        "The planner no longer reports Sync failed for a sync that worked.",
-        "The setup wizard's permission cards line up. The Screen Recording title wraps to two lines where Accessibility does not, which pushed everything below it a line lower in that one card, and the notifications card drew a different header from the two beside it.",
-        "The setup window no longer resizes itself when macOS or Windows cannot say whether it is maximized. On Windows a resize clears the maximized state, so the window would snap back to its old size mid-wizard when you pressed Continue.",
-        "The dashboard builds no longer depend on a font downloaded at build time, which had started failing and taking the build with it.",
-        "The open-source card fits its buttons at every width, and leads with starring the repo."
+      "items": [
+        {
+          "title": "The tour stays out of your way",
+          "body": "It no longer covers the very buttons it asks you to press."
+        },
+        {
+          "title": "Work logs update as you post",
+          "body": "A row you just filed no longer keeps saying it is a draft waiting for you."
+        },
+        {
+          "title": "Fewer false permission warnings",
+          "body": "A permission has to read as off for five minutes before Meridian mentions it."
+        }
       ]
     },
     {
       "version": "1.87.0",
       "date": "2026-08-16",
-      "highlights": [
-        "Notifications on Windows can now be answered. Buttons and the reply box did nothing there - the only way a question ever closed itself was by expiring - and a notification Meridian tried to take back stayed in the Action Center with buttons that still looked live. Both now work the way they already did on Mac.",
-        "The guided tour can be replayed. Settings - Account - Show me around brings it back. Until now that control existed only in development builds, so once you finished or skipped the tour there was no way to see it again.",
-        "The tour writes your first task for you instead of waiting at an empty box. It used to ask you to invent one before you had watched Meridian draft anything, which is the wrong moment to ask - the step straight after is the one where a scruffy one-liner becomes a titled, described task."
-      ],
-      "fixes": [
-        "On Windows the dashboard no longer opens with no title bar and no taskbar. It covered the whole screen with nothing to click - no minimize, no close - and the only ways out were Alt+F4 and Alt+Tab. It now fills the usable screen with its window controls intact.",
-        "On Windows, pressing Continue in the setup wizard no longer shrinks a maximized window back down to its smaller size.",
-        "The setup wizard no longer stops on the Alerts step when there is nothing to ask. Windows switches notifications on for most apps already, so that step usually opened with its one setting done.",
-        "The setup wizard's Continue button is easier to read - the old fill was pale enough that the button looked half-disabled.",
-        "Installing an update no longer races Meridian's own health check, which could put the background service back while the file it runs from was still being replaced.",
-        "Windows no longer logs a notification error every time Meridian starts.",
-        "Pressing Generate on a work log with no AI connected now takes you somewhere. The Choose a provider button opened Settings behind the card you were still looking at, so the one route the app offers for connecting a model appeared to do nothing.",
-        "The tour no longer demonstrates generating a work log on a machine with no AI set up at all.",
-        "The tour's spotlight no longer shows square corners around a rounded card, and its narration bar no longer covers the first line of what it is talking about.",
-        "Writing a task, being sent off to connect an AI provider, and coming back now returns you to what you were typing rather than to the task list.",
-        "Finishing the tour no longer asks a second time when you want your work log written."
+      "items": [
+        {
+          "title": "Notifications work on Windows",
+          "body": "Buttons and the reply box now do what they already did on Mac."
+        },
+        {
+          "title": "Replay the guided tour",
+          "body": "Settings - Account - Show me around brings it back any time."
+        },
+        {
+          "title": "The Windows dashboard behaves",
+          "body": "It opens with its title bar and window controls intact instead of covering the whole screen."
+        }
       ]
     },
     {
       "version": "1.86.0",
       "date": "2026-08-16",
-      "highlights": [
-        "Setup now picks up where you left off. Closing the wizard part-way through used to mean starting again from the first card.",
-        "Meridian tells you when your daily summary is ready, instead of leaving you to go and look.",
-        "The dashboard opens filling the screen rather than in a small window you have to resize every time."
-      ],
-      "fixes": [
-        "Signing in sticks. Your session was being quietly dropped every time Meridian restarted, so you had to sign in again each launch.",
-        "Settings no longer crashes on builds where sign-in is switched off.",
-        "The vendored sign-in component was writing your session token into Meridian's own logs. It no longer does, and that logging is now switched off by default regardless.",
-        "The wizard's privacy wording now matches what the app actually does. It said Meridian never collects anything - true of a build you compile yourself, but not of the installed app, which sends redacted error reports and product analytics you can switch off. The download page, the privacy document and the wizard all say the same thing now.",
-        "The Notifications permission card in setup now shows the real Notifications pane rather than a stand-in, and the permission cards are highlighted one at a time instead of all at once.",
-        "The setup wizard no longer renders black when the window is in full screen.",
-        "What's New no longer opens on top of you the moment first-run setup finishes.",
-        "The walkthrough survives a stray click, and the tray's own pop-ups no longer interrupt it half way through.",
-        "Connecting GitHub no longer blames your token when GitHub simply cut the response short. Meridian retries instead."
+      "items": [
+        {
+          "title": "Setup picks up where you left off",
+          "body": "Closing the wizard part-way no longer means starting again from the first card."
+        },
+        {
+          "title": "Signing in sticks",
+          "body": "Your session is no longer quietly dropped every time Meridian restarts."
+        },
+        {
+          "title": "Told when your summary is ready",
+          "body": "Meridian tells you, instead of leaving you to go and look."
+        }
       ]
     },
     {
       "version": "1.85.0",
       "date": "2026-08-13",
-      "highlights": [
-        "Meridian shows you around the first time you open it. A guided walkthrough covers planning a day, watching your work get picked up, and having a work log written for you - starting on your own day, then on an example day so you can see a full one end to end.",
-        "Yesterday's unfinished work now moves into today on its own, so you no longer start the morning rebuilding a list you already made.",
-        "Meridian now says when a draft work log has fallen behind the work it describes, rather than letting you post something that stopped being true an hour ago."
-      ],
-      "fixes": [
-        "Uninstalling now removes your data. Some of it survived every uninstall route the app offered, which is not what uninstall means.",
-        "An update already being installed is no longer reported as 'Update failed', and an install that genuinely fails now tells every screen, so nothing is left sitting on a spinner.",
-        "Restarting the background service no longer runs into the limit macOS puts on how often a service may restart, which used to leave it stopped for minutes at a time.",
-        "A work-log draft that the AI failed to produce now points you at the reason rather than ending the flow with nothing.",
-        "Every notification now opens the thing it is about. Some of them went nowhere. The board-hygiene digest, which fired at midnight and which nobody ever acted on, is gone.",
-        "A fresh install opens setup rather than dropping you on an empty dashboard.",
-        "The work-log draft is laid out as a document you can read, and the live hour on your timeline now says which hour it means."
+      "items": [
+        {
+          "title": "A guided walkthrough",
+          "body": "Meridian shows you around the first time you open it, first on your own day and then on an example day."
+        },
+        {
+          "title": "Unfinished work rolls over",
+          "body": "Yesterday's open tasks move into today on their own."
+        },
+        {
+          "title": "Uninstall removes your data",
+          "body": "Data that used to survive an uninstall is now properly cleared."
+        }
       ]
     },
     {
       "version": "1.84.0",
       "date": "2026-08-07",
-      "highlights": [
-        "Meridian now checks its database when it starts and repairs a damaged one on its own. Until now the offer to repair lived inside the database itself, so the worst damage took the offer down with it - the app simply sat there doing nothing, with no warning and no button to press, and the only way back was a support ticket. That case now heals itself before the app finishes opening.",
-        "Quit now really does stop Meridian. The background service used to keep running after you closed the app: still watching, still holding your data file open, still making network calls. Quitting stops it, and opening Meridian starts it again.",
-        "Pause now actually pauses. The menu switched to 'Disconnected' but the background service was put straight back a few seconds later, so it kept working while the menu said it had stopped."
-      ],
-      "fixes": [
-        "The 'Repair Database' button in the damaged-database banner works again. It had been doing nothing at all since it shipped - the confirmation box it asked for never appeared, and a box nobody answered counted as 'no', so the repair was silently cancelled every time.",
-        "Repairing by hand used to be impossible for the same reason Quit was: the instructions said to close Meridian first, and closing it did not stop the part that had to stop.",
-        "Meridian can no longer get stuck refusing to quit. If something went wrong while shutting down, every later attempt to close the app was ignored and the only way out was to force it.",
-        "If a damaged database cannot be opened at all, Meridian now leaves it alone unless it can confirm the file is genuinely damaged rather than locked. A file it cannot unlock looks identical to a broken one, and the safe assumption is that your data is fine and something else is wrong.",
-        "On Windows, the instructions shown when a database needs repairing now cover installs that start Meridian from the Startup folder, not only those using a scheduled task.",
-        "Pausing while Meridian was still setting itself up no longer leaves it running behind a paused label."
+      "items": [
+        {
+          "title": "A self-repairing database",
+          "body": "Meridian checks its database at startup and rebuilds a damaged one on its own."
+        },
+        {
+          "title": "Quit really quits",
+          "body": "Closing the app now stops the background service with it."
+        },
+        {
+          "title": "Pause really pauses",
+          "body": "Pausing no longer puts the background service straight back a few seconds later."
+        }
       ]
     },
     {
       "version": "1.83.2",
       "date": "2026-08-05",
-      "highlights": [
-        "Meridian no longer reports its own background service as stopped when it is merely busy. The popover said 'Daemon: Not running' and offered a Restart button while recording carried on normally - and restarting at that moment is one of the ways the database gets damaged.",
-        "The 'database is damaged' banner now clears itself once a repair succeeds. It used to survive the very repair that fixed it, so people saw a warning about a problem that no longer existed - in one case twelve hours and two repairs later."
-      ],
-      "fixes": [
-        "Every notice banner now shows when it was raised, so a warning left over from this morning is obvious at a glance.",
-        "Fixed the background service's health check shutting down for good after one momentary error. Every screen then reported the service as stopped, next to a Restart button, while it was in fact still recording, and only restarting it cleared that.",
-        "Versions older than this one now install this update on their own rather than waiting for you to click, so a machine left on an affected build does not stay there."
+      "items": [
+        {
+          "title": "Honest service status",
+          "body": "Meridian no longer reports its background service as stopped when it is merely busy."
+        },
+        {
+          "title": "The damaged-database banner clears",
+          "body": "It now disappears once a repair succeeds, instead of outliving the fix."
+        }
       ]
     },
     {
       "version": "1.83.1",
       "date": "2026-08-04",
-      "highlights": [
-        "The Repair Database button now actually works. In the last version, clicking through it did nothing at all - the confirmation box it relied on is invisible in the app, so repairing a damaged database meant using a terminal.",
-        "Three causes of database damage on Mac are fixed. One could strike while Meridian upgraded your data to encrypted storage, one on any busy day once Meridian ran out of the file handles macOS allows it, and one when Meridian restarted its own background service in the middle of a write because a health check mistook 'busy' for 'stopped'.",
-        "When a work log action fails, Meridian now tells you why. Approving, rejecting, posting and editing used to fail silently - the row simply snapped back to its old value with no explanation."
-      ],
-      "fixes": [
-        "Fixed the one-time encryption upgrade running while the background service was still writing to your data, which could leave the database damaged. Meridian now stops the service first, checks nothing else is still using the file, and leaves your data alone entirely if it cannot.",
-        "Fixed Meridian running out of file handles on Mac, which could damage the database in the middle of a write. It now asks the system for enough at startup.",
-        "Fixed Meridian restarting its own background service roughly every 45 seconds on a busy machine. The service was healthy every time; the check that judged it simply gave up waiting too early.",
-        "On Windows machines where company policy blocks scheduled tasks, restarting no longer reports a failure every single time. The backup method was already working - only the false alarm is gone.",
-        "Error reports now say which health check failed, rather than only that one did.",
-        "Fixed the Windows build of the app, which had been broken by the database fixes above."
+      "items": [
+        {
+          "title": "Repair Database works",
+          "body": "Clicking through the repair no longer silently does nothing."
+        },
+        {
+          "title": "Three causes of database damage fixed",
+          "body": "The one-time encryption step, running out of file handles, and needless restarts of the background service."
+        },
+        {
+          "title": "Work log errors explain themselves",
+          "body": "Approving, rejecting, posting and editing now say why they failed."
+        }
       ]
     },
     {
       "version": "1.83.0",
       "date": "2026-08-03",
-      "highlights": [
-        "Meridian now notices when its own database has been damaged and can rebuild it from inside the app, with no terminal needed. Your data is salvaged into a fresh file, the damaged copy is kept as a backup and never deleted, and the background service stands down while the work happens.",
-        "A banner tells you when the database is damaged, and offers the repair right there rather than leaving you to find it."
-      ],
-      "fixes": [
-        "The Install button for Claude and Codex now works on Windows. It used to report that the installer had finished and the tool was still missing, when in fact nothing had been installed at all.",
-        "The 'provider unavailable' banner now catches an assistant that is installed, tested fine an hour ago, and has been failing every request since. Before, your day could quietly stay empty while the banner insisted everything was fine."
+      "items": [
+        {
+          "title": "Repair a damaged database in the app",
+          "body": "Your data is salvaged into a fresh file and the damaged copy is kept as a backup."
+        },
+        {
+          "title": "The Install button works on Windows",
+          "body": "Claude and Codex now genuinely install rather than just reporting success."
+        }
       ]
     },
     {
       "version": "1.82.3",
       "date": "2026-08-01",
-      "highlights": [],
-      "fixes": [
-        "A failure while Meridian was starting up no longer takes the whole app down with it. It now reports the problem and carries on.",
-        "Solo users can see their confirmed daily plan again."
+      "items": [
+        {
+          "title": "Startup failures are survivable",
+          "body": "A problem while Meridian is starting no longer takes the whole app down."
+        },
+        {
+          "title": "Solo plans are visible again",
+          "body": "Solo users can see their confirmed daily plan."
+        }
       ]
     },
     {
       "version": "1.82.2",
       "date": "2026-07-31",
-      "highlights": [
-        "A brand-new install now works on its very first launch. Meridian used to look for its database moments before the background service had created it, then never look again - so the dashboard stayed empty and nothing was recorded until you quit and reopened the app."
-      ],
-      "fixes": [
-        "Meridian no longer claims your data is encrypted under a lost key when the file is actually empty or cut short. That warning told people to contact support before removing anything, when deleting the leftover stub was all that was needed.",
-        "Meridian now refuses to create a new encryption key while your existing data is still encrypted under an older one - which would have made that data permanently unreadable. It stops and explains instead of quietly locking you out.",
-        "The tray tooltip no longer gets stranded on screen after a right-click.",
-        "Windows: notifications are no longer reported as blocked when the system simply has no record of them yet.",
-        "Windows: the background service can now open an encrypted database, instead of failing to find the settings it needed.",
-        "Dropped a health check that kept reporting a problem which no longer exists."
+      "items": [
+        {
+          "title": "First launch just works",
+          "body": "A brand-new install records from its very first launch, with no quit and reopen."
+        },
+        {
+          "title": "Clearer encryption warnings",
+          "body": "Meridian no longer claims your data is locked under a lost key when the file is simply empty."
+        }
       ]
     },
     {
       "version": "1.82.1",
       "date": "2026-07-29",
-      "highlights": [],
-      "fixes": [
-        "A behind-the-scenes release - build and packaging fixes only, with no change to how Meridian works day to day."
+      "items": [
+        {
+          "title": "A behind-the-scenes release",
+          "body": "Build and packaging fixes only, with no change to how Meridian works day to day."
+        }
       ]
     },
     {
       "version": "1.82.0",
       "date": "2026-07-29",
-      "highlights": [
-        "If you open Meridian straight from the disk image without dragging it to Applications first, it now offers to move itself there and reopen. Before, it worked for that session but could never start itself again after a restart.",
-        "Windows setup now includes a notification permission step, so reminders work from the start rather than silently doing nothing.",
-        "Meridian pauses capture when your disk is nearly full instead of writing into it. Doing so is a known way for the database to end up damaged."
-      ],
-      "fixes": [
-        "Signing in to Claude and Codex no longer fails with 'env: node: No such file or directory'.",
-        "Windows: the one-time encryption of your existing data now runs to completion, instead of being blocked by the background service still holding the file open.",
-        "If the background service cannot start at all, that now reaches the team as an error report. It used to be completely invisible from our side."
+      "items": [
+        {
+          "title": "Move to Applications on first run",
+          "body": "Opened straight from the disk image, Meridian offers to move itself there and reopen."
+        },
+        {
+          "title": "Notification permission on Windows",
+          "body": "Setup now asks for it, so reminders work from the start."
+        },
+        {
+          "title": "Pauses when your disk is nearly full",
+          "body": "Writing into a full disk is a known way for the database to end up damaged."
+        }
       ]
     },
     {
       "version": "1.81.0",
       "date": "2026-07-28",
-      "highlights": [
-        "If Meridian cannot finish encrypting your data because a copy of it is still running, it now says so plainly and tells you how to finish the job - rather than quietly leaving your database unencrypted.",
-        "While you are signed in, your Support ID now stays the same across all of your devices, so support can piece together what happened if you are testing an early build."
-      ],
-      "fixes": [
-        "Fixed Meridian being unable to open its own database after an interrupted encryption step. On Windows this could stop tracking altogether, and it did not recover on its own.",
-        "Tracker sync no longer tells you to check your credentials when the real problem is a passing network glitch. It stays quiet, retries on its own, and only raises it if the connection stays broken.",
-        "When a sync problem does need you, the message now says what actually went wrong and points you to Settings - instead of naming a file most people have never opened.",
-        "Tracker sync can no longer hang forever waiting on a server that has stopped responding."
+      "items": [
+        {
+          "title": "Clearer encryption messages",
+          "body": "If Meridian cannot finish encrypting your data, it says so plainly and tells you how to finish the job."
+        },
+        {
+          "title": "Calmer tracker sync",
+          "body": "A passing network glitch no longer looks like a credentials problem."
+        }
       ]
     },
     {
       "version": "1.80.0",
       "date": "2026-07-28",
-      "highlights": [
-        "Everything Meridian has captured is now encrypted on disk. The key is kept in your system keychain, and your existing data is upgraded automatically the first time you open this version - there is nothing to set up.",
-        "Meridian can now send error reports to the team automatically, so crashes and failures get fixed without you having to report them. It is on by default and you can turn it off any time in Settings - Capture.",
-        "Everything identifying is stripped on your device before a report is sent - file paths, web addresses, email addresses, and your computer's name. Your screen activity, OCR text, and window titles are never included.",
-        "A new Support ID in Settings - Account. Quote it when you contact us and we can find the errors from your device, without it being linked to your account."
-      ],
-      "fixes": [
-        "Error reports now work on Windows. They were silently never being sent.",
-        "Problems in screen capture and accessibility - the parts that read what is on screen - are now reported, so a device that quietly stops capturing can be spotted instead of just looking like an idle day.",
-        "Error reports now carry the actual reason something failed, instead of only naming the step that failed."
+      "items": [
+        {
+          "title": "Your data is encrypted on disk",
+          "body": "The key lives in your system keychain and your existing data is upgraded automatically."
+        },
+        {
+          "title": "Automatic error reports",
+          "body": "Crashes reach us without you reporting them, and you can turn this off in Settings - Capture."
+        },
+        {
+          "title": "Nothing identifying leaves your device",
+          "body": "Paths, web addresses, email addresses and your computer's name are stripped before anything is sent."
+        }
       ]
     },
     {
       "version": "1.79.0",
       "date": "2026-07-24",
-      "highlights": [
-        "Claude, Codex, and Cursor now sign in and run on Windows the same way they do on a Mac.",
-        "Meridian restores its own launch-at-login setting if it ever gets cleared, so tracking does not quietly stop after a restart.",
-        "Notification settings are now a single switch plus quiet hours, instead of a list of per-type toggles."
-      ],
-      "fixes": [
-        "Fixed sign-in for Claude, Codex, and Cursor on Windows, including prompts that were being dropped.",
-        "A brief network problem no longer leaves Jira showing a stuck sync error.",
-        "Export Diagnostics is reachable again, now under Settings - Account."
+      "items": [
+        {
+          "title": "AI providers on Windows",
+          "body": "Claude, Codex and Cursor sign in and run the same way they do on a Mac."
+        },
+        {
+          "title": "Launch at login repairs itself",
+          "body": "Tracking no longer quietly stops after a restart."
+        },
+        {
+          "title": "Simpler notification settings",
+          "body": "One switch plus quiet hours, instead of a list of per-type toggles."
+        }
       ]
     },
     {
       "version": "1.78.0",
       "date": "2026-07-23",
-      "highlights": [
-        "Meridian notices within about ten seconds if its background service stops, and restarts it for you.",
-        "You can delete personal tasks you created, and dismiss or merge the tasks Meridian infers from your day.",
-        "The daily plan now holds up to 20 tasks, up from 10."
-      ],
-      "fixes": [
-        "Fixed the background service failing to restart on Windows, and a console window that flashed on screen.",
-        "The Tasks board refreshes immediately after you delete a personal task.",
-        "Uninstalling now also clears cached app data and permission grants."
+      "items": [
+        {
+          "title": "The background service restarts itself",
+          "body": "Meridian notices within about ten seconds if it stops."
+        },
+        {
+          "title": "Tidy up your tasks",
+          "body": "Delete personal tasks, and dismiss or merge the ones Meridian infers from your day."
+        },
+        {
+          "title": "Room for 20 tasks a day",
+          "body": "The daily plan now holds twice as many as before."
+        }
       ]
     },
     {
       "version": "1.77.0",
       "date": "2026-07-22",
-      "highlights": [
-        "A rebuilt daily summary, organised around what you planned versus what you actually did, with a progress ring and a single checklist.",
-        "Composing the summary has its own screen now, and it composes itself at the end of the day.",
-        "Worklogs can turn a personal task into a real ticket, and write a tailored update for each ticket you moved forward.",
-        "The date picker is now a proper interactive calendar."
-      ],
-      "fixes": [
-        "Fixed a crash in accessibility capture when the recorder restarted."
+      "items": [
+        {
+          "title": "A rebuilt daily summary",
+          "body": "Organised around what you planned versus what you actually did, with a progress ring and a single checklist."
+        },
+        {
+          "title": "Summaries compose themselves",
+          "body": "Your summary is written at the end of the day, on a screen of its own."
+        },
+        {
+          "title": "A work log per ticket",
+          "body": "A tailored update for every ticket you moved forward."
+        }
       ]
     },
     {
       "version": "1.76.0",
       "date": "2026-07-22",
-      "highlights": [
-        "Meridian captures context from secondary monitors, not only the screen you are focused on.",
-        "Connected tracker cards have View tasks and Sync now buttons.",
-        "Jira gets a multi-select project picker, matching the one GitHub already had."
-      ],
-      "fixes": [
-        "Fixed connecting an account not opening a browser on Windows.",
-        "Fixed the task list briefly showing stale results while loading."
+      "items": [
+        {
+          "title": "Secondary monitors are captured",
+          "body": "Meridian reads context from every screen, not only the one you are focused on."
+        },
+        {
+          "title": "Act on a tracker from its card",
+          "body": "View tasks and Sync now sit right where the tracker is connected."
+        }
       ]
     },
     {
       "version": "1.75.1",
       "date": "2026-07-22",
-      "highlights": [],
-      "fixes": [
-        "Fixed Meridian finding and launching your AI provider CLIs on Windows.",
-        "Fixed the popover position, tooltips, onboarding, and setup wizard on Windows.",
-        "Meridian now reads your real Windows notification and permission settings instead of assuming they are off."
+      "items": [
+        {
+          "title": "Windows polish",
+          "body": "Your AI provider tools are found, and the popover, tooltips and setup wizard all behave."
+        }
       ]
     },
     {
       "version": "1.75.0",
       "date": "2026-07-21",
-      "highlights": [
-        "Signing in is now required across the dashboard and the tray popover.",
-        "The plan's task detail can change a task's status, including for personal tasks.",
-        "You can choose which tracker a proposed ticket gets created on.",
-        "A Refresh button on the daily plan once a tracker is connected."
-      ],
-      "fixes": [
-        "Streamlined the GitHub connect flow, including the device-code step and picking projects."
+      "items": [
+        {
+          "title": "Sign-in across the app",
+          "body": "The dashboard and the tray popover now both require signing in."
+        },
+        {
+          "title": "Change a task's status from its detail",
+          "body": "Personal tasks included."
+        },
+        {
+          "title": "Choose where a ticket is created",
+          "body": "Pick the tracker a proposed ticket gets filed on."
+        }
       ]
     },
     {
       "version": "1.74.0",
       "date": "2026-07-20",
-      "highlights": [
-        "Worklogs can draft themselves once a day, at a time you choose."
-      ],
-      "fixes": [
-        "Fixed the GitHub project picker not saving after connecting an account.",
-        "Fixed Dock and menu-bar icon rendering."
+      "items": [
+        {
+          "title": "Work logs draft themselves",
+          "body": "Once a day, at a time you choose."
+        },
+        {
+          "title": "The GitHub project picker saves",
+          "body": "Your board selection now sticks after connecting."
+        }
       ]
     },
     {
       "version": "1.73.0",
       "date": "2026-07-20",
-      "highlights": [
-        "Windows support. The full app - background service, tray, notifications, and installer - now runs on Windows.",
-        "Choosing a model is now a picker with a curated list, instead of typing the model name yourself."
-      ],
-      "fixes": [
-        "Fixed screen capture on macOS 26.",
-        "Hardened worklog and activity processing so a failure surfaces instead of passing silently.",
-        "Bounded the memory and time the on-device text model can use."
+      "items": [
+        {
+          "title": "Windows support",
+          "body": "The background service, tray, notifications and installer all run on Windows."
+        },
+        {
+          "title": "Pick a model from a list",
+          "body": "A curated picker, instead of typing the model name yourself."
+        }
       ]
     },
     {
       "version": "1.72.0",
       "date": "2026-07-18",
-      "highlights": [
-        "Choose apps and websites for Meridian to ignore, so nothing from them is ever captured. Set them up in Settings.",
-        "Bring your own cloud AI provider: add any OpenAI-compatible endpoint from the provider picker and Meridian will use it for worklogs and summaries.",
-        "Test your AI provider connection from Settings or during setup, so you can confirm it works before relying on it.",
-        "A new AI-composed daily summary that reads like a summary of your day, with the charts chosen to fit what actually happened.",
-        "The day timeline shows the current hour as a live strip again, so you can watch the hour fill in as you work.",
-        "Worklogs now follow the day's plan and post to every ticket you actually moved forward.",
-        "Added a \"suggest a feature\" link to the roadmap in What's New."
-      ],
-      "fixes": [
-        "Fixed a memory leak that made Meridian's memory use climb while screen capture was running.",
-        "Fixed duplicate and missing worklogs when the same hour was processed more than once.",
-        "Fixed worklog drafting failing on the Codex provider, and it now reports the real reason when it does fail.",
-        "Fixed a failed update showing a stale download percentage when you retried it.",
-        "Fixed modals scrolling instead of fitting, clipped task titles, and changing a task's status from Cleanup.",
-        "Fixed a task card's summary clipping mid-line instead of leaving room for the \"+N more\" label.",
-        "Made the AI provider picker easier to read."
+      "items": [
+        {
+          "title": "Ignore apps and websites",
+          "body": "Choose what Meridian never captures, in Settings."
+        },
+        {
+          "title": "Bring your own AI provider",
+          "body": "Add any OpenAI-compatible endpoint from the provider picker."
+        },
+        {
+          "title": "An AI-composed daily summary",
+          "body": "It reads like a summary of your day, with the charts chosen to fit what happened."
+        }
       ]
     },
     {
       "version": "1.71.0",
       "date": "2026-07-15",
-      "highlights": [
-        "Redesigned dashboard look: refined typography, a single violet accent, and real per-app brand colors.",
-        "Sign in with just your email and a one-time code, then manage your account from Settings.",
-        "Meridian is now signed and notarized by Apple, so macOS won't flag it as an unidentified app.",
-        "Added an in-app uninstall wizard.",
-        "The \"Plan your day\" view now opens automatically once a day to help you start with a plan.",
-        "Onboarding now shows an expected-memory gauge and a notifications permission step."
-      ],
-      "fixes": [
-        "Fixed navigating to a specific view sometimes not working if the dashboard was already open.",
-        "Fixed worklog creation failing for Jira projects that don't have a Bug issue type.",
-        "Fixed worklogs repeatedly failing to post once a Jira issue hit its daily worklog limit.",
-        "Fixed a bug that could trigger duplicate Jira worklog backfills.",
-        "Fixed the notifications permission link opening the wrong settings pane."
+      "items": [
+        {
+          "title": "A redesigned dashboard",
+          "body": "Refined typography, a single violet accent and real per-app brand colors."
+        },
+        {
+          "title": "Sign in with a one-time code",
+          "body": "Just your email, then manage your account from Settings."
+        },
+        {
+          "title": "Signed and notarized by Apple",
+          "body": "macOS no longer flags Meridian as an unidentified app."
+        }
       ]
     },
     {
       "version": "1.70.0",
       "date": "2026-07-09",
-      "highlights": [
-        "Track work automatically across GitHub, Linear, Azure DevOps, Jira, Trello, and Asana.",
-        "Pick which GitHub Projects (v2) board to sync right from the connect flow.",
-        "Sign in to GitHub natively - no more copy-pasting a command-line login.",
-        "Popover: tap the \"Capturing\" status to see a live health panel.",
-        "Onboarding shows expected memory usage and downloads models faster.",
-        "Redesigned Overview and Hour-detail views."
-      ],
-      "fixes": [
-        "Fixed OAuth connect flows that could get stuck if you canceled partway through.",
-        "Fixed \"Open in tracker\" links that weren't opening your browser.",
-        "Daily plan reminders no longer stack up past midnight."
+      "items": [
+        {
+          "title": "Six trackers supported",
+          "body": "GitHub, Linear, Azure DevOps, Jira, Trello and Asana."
+        },
+        {
+          "title": "Native GitHub sign-in",
+          "body": "No more copy-pasting a command-line login."
+        },
+        {
+          "title": "A live health panel",
+          "body": "Tap the Capturing status in the popover to see it."
+        }
       ]
     },
     {
       "version": "1.69.1",
       "date": "2026-07-05",
-      "highlights": [],
-      "fixes": [
-        "Fixed external links not opening from inside the app."
+      "items": [
+        {
+          "title": "External links open again",
+          "body": "Links from inside the app now reach your browser."
+        }
       ]
     },
     {
       "version": "1.69.0",
       "date": "2026-07-03",
-      "highlights": [
-        "Brand-new one-pager Timeline dashboard design.",
-        "Added the Meridian nav pill to the toolbar for quicker navigation.",
-        "Broader ticket write-back support across Jira, Linear, and Azure DevOps.",
-        "Rebuilt the popover to match the latest design."
-      ],
-      "fixes": [
-        "Fixed a leak that could grow the local AI server's memory use by several GB an hour.",
-        "Fixed a bug that could post the same work log to Jira twice."
+      "items": [
+        {
+          "title": "A one-pager Timeline dashboard",
+          "body": "A brand-new design that puts the whole day on one screen."
+        },
+        {
+          "title": "Ticket write-back everywhere",
+          "body": "Broader support across Jira, Linear and Azure DevOps."
+        }
       ]
     }
   ],
@@ -439,17 +467,17 @@
     {
       "title": "Track down the last cause of database damage on Mac",
       "status": "in-progress",
-      "description": "Four causes are now fixed: a risky one-time encryption step, running out of file handles, Meridian restarting its own background service when it was only busy, and this release closing the gaps where the app and the background service could both write to your data at the same time. Damage has still been seen after the first three, so we are not calling this solved until the machines we are watching stay clean. What has changed is the recovery: Meridian now repairs a damaged database by itself at startup, so a bad one no longer means a dead app."
+      "description": "Four causes are fixed and Meridian now repairs a damaged database by itself at startup, but we won't call this solved until the machines we're watching stay clean."
     },
     {
-      "title": "More trackers - Linear, Trello, and Azure DevOps",
+      "title": "More trackers - Linear, Trello and Azure DevOps",
       "status": "planned",
-      "description": "Meridian already speaks to all three. They are listed as coming soon while we finish testing each one end to end, so the trackers you can connect today are ones we know work."
+      "description": "Meridian already speaks to all three; they stay listed as coming soon until each one is tested end to end."
     },
     {
       "title": "Report crashes in the background service",
       "status": "planned",
-      "description": "Error reporting currently covers the app itself. Extending it to the background service means a hard crash there gets reported too, rather than only being visible in local logs."
+      "description": "Error reporting covers the app today, so a hard crash in the background service is only visible in local logs."
     }
   ]
 }

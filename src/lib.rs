@@ -10,6 +10,7 @@
 #[global_allocator]
 static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
 
+pub mod cli_flags;
 pub mod coding_agent_session_ingest;
 pub mod config;
 pub mod daily_plan;
@@ -22,6 +23,10 @@ pub mod health;
 pub mod intelligence;
 pub mod llm;
 pub mod llm_experiment;
+// Test-only lints on log content; see the module header. `#[cfg(test)]` because it
+// has no runtime surface - it exists purely to fail the build.
+#[cfg(test)]
+mod log_hygiene;
 pub mod notices;
 pub mod notification_responses;
 pub mod notifications;
@@ -29,6 +34,7 @@ pub mod observability;
 pub mod plan_tasks;
 pub mod platform;
 pub mod pm_worklog;
+pub mod restart;
 pub mod telemetry_spool;
 pub mod uninstall;
 pub mod worklog_pipeline;

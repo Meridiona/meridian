@@ -1,13 +1,15 @@
 //ambient dev tool that watches what you do and updates your PM tickets automatically, boosting developer productivity
 'use client'
 
-// Thin `next/dynamic` boundary in front of `./signin/` (the real Clerk
-// sign-in widgets). `{ ssr: false }` is load-bearing here — `@clerk/clerk-js`
-// pulls in a transitive Solana wallet-adapter chain that touches `window` at
-// module-eval time, which Next's Node prerender pass has none of, so a direct
-// import crashes the static export build. Having zero `@clerk/react` imports
-// at this top level is exactly what lets `steps.tsx` (and `AccountSection.tsx`)
-// import this module directly and safely.
+// Thin `next/dynamic` boundary in front of `./signin/` (the OTP email-capture
+// widgets). `{ ssr: false }` keeps this module's importers (`steps.tsx`,
+// `AccountSection.tsx`) free of any heavy client-only dependency the `signin/`
+// module might ever pick up (e.g. a Turnstile script tag) — the same
+// contract this boundary held when the module underneath was Clerk-backed
+// (`@clerk/clerk-js` pulled in a transitive Solana wallet-adapter chain that
+// touched `window` at module-eval time, crashing the static export's Node
+// prerender pass; nothing in the OTP flow does that today, but the boundary
+// costs nothing to keep).
 
 import dynamic from 'next/dynamic'
 import type { ReactNode } from 'react'
@@ -22,7 +24,7 @@ function GateLoading() {
   )
 }
 
-const SignInWidgetImpl = dynamic(() => import('./signin/SignInWidget').then((m) => m.SignInWidget), {
+const OtpFormImpl = dynamic(() => import('./signin/OtpForm').then((m) => m.OtpForm), {
   ssr: false,
   loading: GateLoading,
 })
@@ -32,38 +34,37 @@ const AccountAuthControlImpl = dynamic(() => import('./signin/AccountAuthControl
   loading: GateLoading,
 })
 
-const RequireSignInImpl = dynamic(() => import('./signin/RequireSignIn').then((m) => m.RequireSignIn), {
+const RequireEmailCaptureImpl = dynamic(() => import('./signin/RequireEmailCapture').then((m) => m.RequireEmailCapture), {
   ssr: false,
-  // A signed-out user must sign in before seeing the app, so the pre-Clerk
-  // placeholder is a blank surface, not a spinner over app chrome.
+  // A not-yet-captured user must see the capture screen before the app, so
+  // the pre-mount placeholder is a blank surface, not a spinner over app chrome.
   loading: () => null,
 })
 
-/** The setup wizard's Sign-in step body. Calls `onSignedIn(email)` once a
- *  Clerk session exists (fresh sign-in, or an already-persisted one from a
- *  previous launch) — never gates or hides anything itself; the wizard's
- *  `SignInBody` (steps.tsx) decides what to render based on that callback's
- *  result (`wiz.signedInEmail`). */
-export function SignInWidget({ onSignedIn }: { onSignedIn: (email: string) => void }) {
-  return <SignInWidgetImpl onSignedIn={onSignedIn} />
-}
-
-/** Settings → Account's sign-in/sign-out control (see AccountSection.tsx) —
- *  same live Clerk session as the rest of the dashboard (RequireSignIn
- *  already established it; see AccountAuthControl.tsx's module doc for why
- *  this must NOT mount a second ClerkProvider), shows who's signed in and
- *  lets them sign out. */
-export function AccountAuthControl({ onSignedIn, onSignedOut }: {
+/** The setup wizard's Email step body. Calls `onSignedIn(email)` once a code
+ *  verifies (fresh capture, or `onDevBypass` when no Worker is configured) —
+ *  never gates or hides anything itself; the wizard's `SignInBody`
+ *  (steps.tsx) decides what to render based on that callback's result
+ *  (`wiz.signedInEmail`). */
+export function OtpForm({ onSignedIn, onDevBypass }: {
   onSignedIn: (email: string) => void
-  onSignedOut: () => void
+  onDevBypass?: () => void
 }) {
-  return <AccountAuthControlImpl onSignedIn={onSignedIn} onSignedOut={onSignedOut} />
+  return <OtpFormImpl onSignedIn={onSignedIn} onDevBypass={onDevBypass} />
 }
 
-/** Product-wide sign-in gate for the dashboard window — renders `children`
- *  only when a live Clerk session exists, otherwise an inline full-window
- *  sign-in screen. Makes sign-in compulsory: sign out and the app re-locks.
- *  See `./signin/RequireSignIn.tsx`. */
-export function RequireSignIn({ children }: { children: ReactNode }) {
-  return <RequireSignInImpl>{children}</RequireSignInImpl>
+/** Settings → Account's account control (see AccountSection.tsx) — shows the
+ *  captured email and lets it be changed. See `./signin/AccountAuthControl.tsx`. */
+export function AccountAuthControl({ onSignedIn }: {
+  onSignedIn: (email: string) => void
+}) {
+  return <AccountAuthControlImpl onSignedIn={onSignedIn} />
+}
+
+/** Product-wide email-capture gate for the dashboard window — renders
+ *  `children` once an email has ever been captured, otherwise an inline
+ *  full-window capture screen. A fire-once check, not a live session: there
+ *  is no sign-out to re-lock against. See `./signin/RequireEmailCapture.tsx`. */
+export function RequireEmailCapture({ children }: { children: ReactNode }) {
+  return <RequireEmailCaptureImpl>{children}</RequireEmailCaptureImpl>
 }

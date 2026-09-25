@@ -125,9 +125,19 @@ const SAFE_STRING_KEYS: &[&str] = &[
     // output, so it needs the full scrub, not just a path scrub.
     "error",
     // Which provider/engine a failure came from. Enum-like values from a fixed
-    // internal set (`claude`, `codex`, `anthropic`, `gemini`, …) — they name
-    // OUR components, never the user's data, and without them an LLM or
-    // summariser failure can't be attributed to a backend at all.
+    // internal set — they name OUR components, never the user's data, and
+    // without them an LLM or summariser failure can't be attributed to a
+    // backend at all.
+    //
+    // TWO value domains share this key, and the second is easy to miss: LLM
+    // engines (`claude`, `codex`, `anthropic`, `gemini`, …) AND task trackers
+    // (`jira`, `linear`, `github`, `azure_devops`, `asana`, `trello`), from the
+    // tray's `ticket-parents`/`ticket-update` shell-outs. That second domain
+    // reaches the tray as a plain `String` from the frontend, so
+    // `commands::cli_exec::provider_label` narrows it to those literals or
+    // `"other"` before it is logged. An allowlist entry whose comment does not
+    // describe all of its emitters is the exact shape of #872 - do not add a
+    // third domain here without naming it.
     "provider",
     "engine",
     // ── health checks (`crate::health::Report::log`) ─────────────────────────
@@ -1818,6 +1828,89 @@ mod tests {
             let mut kv = str_attr(key, "MER-192");
             assert!(!keep(&mut kv), "{key} leaked into the ship leg");
         }
+    }
+
+    /// End-to-end proof of the #872 fix, at the boundary itself rather than at
+    /// the call site: a WARN shaped exactly like the one
+    /// `commands::cli_exec::log_non_zero_exit` now emits must ship its static
+    /// message and exit code, and must NOT ship the subprocess stderr the
+    /// pre-fix version spliced into that message.
+    ///
+    /// The pre-fix half is asserted too, and is the more important one - it is
+    /// what makes this a regression test rather than a restatement. Reverting
+    /// `log_non_zero_exit`'s body to `"{label} non-zero: {stderr}"` puts the
+    /// ticket key back in `body`, where nothing here can filter it, and this
+    /// test then fails on the very next line.
+    #[test]
+    fn a_subprocess_stderr_ships_only_when_it_is_spliced_into_the_body() {
+        const STDERR: &str = "Jira GET transitions for ENG-7041 returned 404 Not Found";
+
+        // The FIXED shape: static body, stderr on an unallowlisted attribute.
+        let mut fixed = log_record(
+            SEVERITY_WARN,
+            vec![
+                str_attr("stderr_tail", STDERR),
+                str_attr("key", "ENG-7041"),
+                str_attr("bin_source", "staged"),
+                int_attr("code", 1),
+                int_attr("stderr_len", STDERR.len() as i64),
+            ],
+        );
+        fixed.body = Some(AnyValue {
+            value: Some(Value::StringValue("ticket-statuses non-zero".into())),
+        });
+        let out = match redact_and_filter("logs", &encode_logs(vec![fixed])) {
+            Redacted::Payload { bytes, .. } => decode_logs(&bytes),
+            Redacted::Empty => panic!("the WARN was filtered out before redaction"),
+            Redacted::Undecodable => panic!("the re-encoded payload did not decode"),
+        };
+        let rec = out.first().expect("the WARN was dropped entirely");
+        let body = match rec.body.as_ref().and_then(|b| b.value.as_ref()) {
+            Some(Value::StringValue(s)) => s.clone(),
+            other => panic!("expected a string body, got {other:?}"),
+        };
+        assert!(
+            !body.contains("ENG-7041"),
+            "the ticket key reached the wire through the body: {body}"
+        );
+        let keys: Vec<&str> = rec.attributes.iter().map(|kv| kv.key.as_str()).collect();
+        assert!(
+            !keys.contains(&"stderr_tail") && !keys.contains(&"key"),
+            "stderr_tail / key are not allowlisted and must not ship: {keys:?}"
+        );
+        // …but the record is still worth having: which subcommand, which
+        // binary, and - restored by this change, having previously been
+        // debug-formatted into `\"Some(1)\"` and dropped - the exit code.
+        assert!(body.contains("ticket-statuses"), "{body}");
+        assert!(keys.contains(&"bin_source"), "{keys:?}");
+        assert!(
+            keys.contains(&"code") && keys.contains(&"stderr_len"),
+            "the numeric diagnostics were dropped: {keys:?}"
+        );
+
+        // The PRE-FIX shape, for contrast: same stderr, spliced into the body.
+        // Nothing in this module can stop it, which is precisely why the guard
+        // had to go at the call site (`errors.rs`).
+        let mut pre_fix = log_record(SEVERITY_WARN, vec![]);
+        pre_fix.body = Some(AnyValue {
+            value: Some(Value::StringValue(format!(
+                "ticket-statuses non-zero: {STDERR}"
+            ))),
+        });
+        let out = match redact_and_filter("logs", &encode_logs(vec![pre_fix])) {
+            Redacted::Payload { bytes, .. } => decode_logs(&bytes),
+            _ => panic!("expected a payload"),
+        };
+        let body = match out[0].body.as_ref().and_then(|b| b.value.as_ref()) {
+            Some(Value::StringValue(s)) => s.clone(),
+            other => panic!("expected a string body, got {other:?}"),
+        };
+        assert!(
+            body.contains("ENG-7041"),
+            "if redaction has started catching ticket keys in the body, this test \
+             and `errors.rs`'s INTERPOLABLE doc are both out of date - the fix \
+             would no longer need to live at the call site. Body was: {body}"
+        );
     }
 
     /// `health check failed` is a static message carrying no diagnostic payload

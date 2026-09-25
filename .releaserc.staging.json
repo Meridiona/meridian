@@ -11,7 +11,13 @@
     [
       "@semantic-release/commit-analyzer",
       {
-        "preset": "conventionalcommits"
+        "preset": "conventionalcommits",
+        "releaseRules": [
+          {
+            "type": "revert",
+            "release": "patch"
+          }
+        ]
       }
     ],
     [

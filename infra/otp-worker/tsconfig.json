@@ -1,0 +1,23 @@
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "lib": ["ES2022"],
+    "module": "ES2022",
+    "moduleResolution": "Bundler",
+    "types": ["vitest/globals"],
+    "strict": true,
+    "noUncheckedIndexedAccess": true,
+    "esModuleInterop": true,
+    "skipLibCheck": true,
+    "resolveJsonModule": true,
+    "isolatedModules": true,
+    "noEmit": true
+  },
+  // `files` (not `include`) for the ambient `cloudflare:test` module
+  // declaration — it lives under node_modules, and `exclude` below prunes
+  // node_modules paths even when they're listed explicitly in `include`;
+  // `files` is the one list `exclude` never filters.
+  "files": ["node_modules/@cloudflare/vitest-plugin/types/cloudflare-test.d.ts"],
+  "include": ["src/**/*", "vitest.config.mts", "worker-configuration.d.ts"],
+  "exclude": ["node_modules"]
+}

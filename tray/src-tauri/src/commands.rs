@@ -7,7 +7,7 @@
 //! name them flatly regardless of which submodule they sit in.
 //!
 //! - [`dashboard`] — the ported `/api/*` DB reads (active/today/week/tasks/…).
-//! - [`account`]   — Clerk publishable-key resolution + the captured sign-in email.
+//! - [`account`]   — the captured account email + its ALPHA telemetry mirror.
 //! - [`app_icons`] — real macOS app icon extraction for "Time by app" (`get_app_icon`).
 //! - [`daemon`]    — daemon lifecycle (restart/pause/resume) + status probes.
 //! - [`system`]    — OS/window actions (open URLs, System Settings panes).
@@ -18,6 +18,7 @@
 //!   module and its dashboard consumer are both gone).
 //! - [`integrations`] — which trackers are connected (`/api/integrations`).
 //! - [`notices`]   — clear a fault banner (`/api/notices/[id]` DELETE).
+//! - [`otp`]       — send/verify a one-time email code via the OTP Worker.
 //! - [`notifications`] — the in-app banner dismiss write.
 //! - [`parents`]   — valid parent tickets for the hygiene "link a parent" fix.
 //! - [`pm_tool_request`] — "I don't see my tool" on `ConnectTrackers`: local
@@ -52,6 +53,7 @@ pub mod integrations;
 pub mod llm_lab;
 pub mod notices;
 pub mod notifications;
+pub mod otp;
 pub mod parents;
 pub mod pause;
 pub mod plan_tasks;
@@ -86,6 +88,7 @@ pub use integrations::*;
 pub use llm_lab::*;
 pub use notices::*;
 pub use notifications::*;
+pub use otp::*;
 pub use parents::*;
 pub use pause::*;
 pub use plan_tasks::*;

@@ -97,7 +97,7 @@ pub fn root_causes(report: &Report) -> Vec<Diagnosis> {
                 ("jira", "ticket sync"),
                 ("worklog", "hour ledger"),
             ]),
-            action: "`meridian start` (or `meridian doctor --fix`).".into(),
+            action: "`meridian restart` (or `meridian doctor --fix`).".into(),
         });
     }
 
@@ -194,11 +194,20 @@ pub fn escalation_hint(color: bool) -> String {
     };
     let bold = |s: &str| paint("\x1b[1m", s);
     let dim = |s: &str| paint("\x1b[2m", s);
+    // The `meridian logs` line is here because an operator debugging a stalled
+    // ETL on 2026-08-27 went to the paths in the launchd plist, found
+    // `daemon.log` at 0 bytes, and reported that logging was broken. It is not:
+    // those files are a crash-only safety net by design and every structured
+    // log goes to the telemetry spool, which `meridian logs` decodes. Nothing
+    // told them that, so the one tool that would have shown the fault went
+    // unused for 44.7 hours.
     format!(
-        "\n  {}\n    • {}  {}\n    • {}\n",
+        "\n  {}\n    • {}  {}\n    • {}  {}\n    • {}\n",
         bold("Still stuck?"),
         "meridian doctor --fix",
         dim("attempt automatic + guided repair"),
+        "meridian logs -f",
+        dim("live daemon logs (the files in ~/.meridian/logs are normally empty)"),
         dim("share this output with the team, or run: claude \"debug my meridian doctor output\""),
     )
 }

@@ -64,10 +64,10 @@ use opentelemetry::{global, trace::TracerProvider as _, KeyValue};
 use opentelemetry_appender_tracing::layer::OpenTelemetryTracingBridge;
 use opentelemetry_otlp::{Protocol, WithExportConfig, WithHttpConfig};
 use opentelemetry_sdk::{
-    logs::LoggerProvider,
+    logs::{BatchLogProcessor, LoggerProvider},
     propagation::TraceContextPropagator,
     runtime,
-    trace::{RandomIdGenerator, Sampler, Tracer, TracerProvider},
+    trace::{BatchSpanProcessor, RandomIdGenerator, Sampler, Tracer, TracerProvider},
     Resource,
 };
 use std::collections::HashMap;
@@ -134,11 +134,97 @@ impl ObservabilityGuard {
         }
         if let Some(lp) = self.logger_provider {
             let _ = tokio::task::spawn_blocking(move || {
-                let _ = lp.force_flush();
+                // See `force_flush` for why this reports to stderr rather than
+                // through `tracing`.
+                for r in lp.force_flush() {
+                    if let Err(e) = r {
+                        eprintln!("observability: log force_flush error: {e:?}");
+                    }
+                }
                 let _ = lp.shutdown();
             })
             .await;
         }
+    }
+}
+
+/// Provider handles kept for [`force_flush`]. Set once by [`init`].
+///
+/// Separate from [`ObservabilityGuard`] because the guard is owned by whoever
+/// called `init` — in the tray that is a local in `run()` — while the code that
+/// needs to flush is somewhere else entirely (an exit handler in a spawned
+/// task). Both providers are `Arc`-backed, so this holds clones rather than
+/// taking anything away from the guard.
+static FLUSH_HANDLES: std::sync::OnceLock<FlushHandles> = std::sync::OnceLock::new();
+
+struct FlushHandles {
+    tracer_provider: Option<TracerProvider>,
+    logger_provider: Option<LoggerProvider>,
+}
+
+/// Push everything currently batched in memory out to the telemetry spool,
+/// WITHOUT shutting the providers down.
+///
+/// # Why this is needed at all
+///
+/// Spans and logs do not reach `~/.meridian/telemetry/pending/` the moment they
+/// are emitted: the batch processors hold them and drain on a timer. A process
+/// that calls `std::process::exit` — which is what `tauri::AppHandle::exit`
+/// does — takes that batch with it. Destructors do not run, so holding an RAII
+/// guard is no protection either.
+///
+/// The practical cost was that the LAST thing a process does is the thing least
+/// likely to be recorded, and for the tray the last thing it does is stop the
+/// daemon on quit. Every `daemon stopped for quit` / `could not stop the daemon
+/// on quit` / `exceeded its budget` line was emitted and then discarded
+/// microseconds later, so the outcome of the operation that most needs
+/// explaining after a corruption report was systematically the one missing from
+/// the spool.
+///
+/// [`ObservabilityGuard::shutdown`] already does this and more, but it consumes
+/// the guard and shuts the providers down; this is the "flush and keep going"
+/// half, callable from anywhere and safe to call more than once.
+///
+/// A no-op when capture is disabled (`MERIDIAN_TELEMETRY_DISABLED`) or before
+/// [`init`] has run, so callers never need to check.
+///
+/// # Who calls this
+/// - `meridian_tray_lib::run`'s `RunEvent::ExitRequested` handler, immediately
+///   before `handle.exit(0)`.
+pub async fn force_flush() {
+    let Some(handles) = FLUSH_HANDLES.get() else {
+        return;
+    };
+    if let Some(tp) = handles.tracer_provider.clone() {
+        let _ = tokio::task::spawn_blocking(move || {
+            for r in tp.force_flush() {
+                if let Err(e) = r {
+                    eprintln!("observability: span force_flush error: {e:?}");
+                }
+            }
+        })
+        .await;
+    }
+    if let Some(lp) = handles.logger_provider.clone() {
+        let _ = tokio::task::spawn_blocking(move || {
+            // Reported, not discarded - the tracer arm above already prints its
+            // error and the logger arm silently swallowed one.
+            //
+            // `eprintln!` rather than `tracing::error!` DELIBERATELY: this is
+            // the code that flushes the telemetry pipeline, so routing its own
+            // failure back into that pipeline is circular. On the quit path the
+            // process exits microseconds later, so a `tracing::error!` here
+            // would land in the very batch that just failed to flush and be
+            // lost - reporting the failure by the one mechanism the failure
+            // proves is broken. stderr is the only sink that does not depend on
+            // what is failing.
+            for r in lp.force_flush() {
+                if let Err(e) = r {
+                    eprintln!("observability: log force_flush error: {e:?}");
+                }
+            }
+        })
+        .await;
     }
 }
 
@@ -254,6 +340,14 @@ pub fn init(service_name: &str) -> Result<ObservabilityGuard> {
         );
     }
 
+    // Clones for `force_flush`, which runs far from whoever owns the guard.
+    // `set` rather than `get_or_init`: a second `init` in one process is a bug,
+    // and silently keeping the first set of handles is the safer failure.
+    let _ = FLUSH_HANDLES.set(FlushHandles {
+        tracer_provider: tracer_provider.clone(),
+        logger_provider: logger_provider.clone(),
+    });
+
     Ok(ObservabilityGuard {
         tracer_provider,
         logger_provider,
@@ -275,6 +369,42 @@ pub fn init(service_name: &str) -> Result<ObservabilityGuard> {
 ///
 /// Only `MERIDIAN_TELEMETRY_DISABLED` skips capture entirely (an explicit
 /// escape hatch, not tied to shipping config).
+///
+/// How often each pipeline drains its queue into one spool file.
+///
+/// The reason this module batches at all: at the SDK defaults (1 s for logs,
+/// 5 s for traces) the spool accumulates tens of thousands of files a day.
+/// Named rather than inlined because [`BATCH_MAX_QUEUE`] has to move with it,
+/// and `batching_cannot_silently_drop_a_burst` checks that it did.
+const BATCH_SCHEDULED_DELAY_SECS: u64 = 30;
+
+/// How many records one export carries. Raised from the SDK default of 512 so a
+/// 30 s window drains in one file rather than several - the point of batching.
+const BATCH_MAX_EXPORT: usize = 2048;
+
+/// How many records may wait in memory between exports.
+///
+/// **This has to move with the delay, and forgetting it silently drops
+/// telemetry.** The SDK's defaults are a matched pair: a 5 s delay against a
+/// 2,048-record queue, i.e. it can absorb ~410 records/second before the queue
+/// is full. Stretching the delay to 30 s without touching the queue leaves the
+/// same 2,048 slots to cover six times the window - ~68 records/second - and a
+/// full queue is DISCARDED, quietly, with no error at the call site and nothing
+/// in the spool to show for it.
+///
+/// 68/second is not hypothetical headroom to give away. One ETL tick processes
+/// `BATCH_SIZE` = 500 frames and emits several DEBUG records per frame, so a
+/// single batch can put thousands of records on the queue in well under a
+/// second. Losing precisely the records emitted during a burst is the worst
+/// available sampling bias, because a burst is what an incident looks like: a
+/// backfill, a crash-loop, a summariser storm.
+///
+/// 16,384 over 30 s is ~546 records/second, comfortably above the SDK's own
+/// ~410 and enough to swallow several ETL batches back to back. The cost is
+/// transient heap in the worst case only - a few tens of MB, and only while
+/// actually bursting - which is not a constraint on a desktop daemon.
+const BATCH_MAX_QUEUE: usize = 16384;
+
 fn try_build_otel_providers(
     service_name: &str,
 ) -> Result<Option<(Tracer, TracerProvider, LoggerProvider)>> {
@@ -390,8 +520,23 @@ fn try_build_otel_providers(
         .build()
         .context("build OTLP span exporter (spool)")?;
 
+    // Batched on the same 30 s cadence as the log pipeline below, for the same
+    // reason and with the same trade. The SDK's trace default is 5 s, which is
+    // less pathological than the logs default of 1 s but still writes ~17k
+    // spool files a day on its own - and once the log pipeline is batched,
+    // traces become the dominant contributor to the file count.
+    //
+    // The queue MUST be raised alongside the delay - see BATCH_MAX_QUEUE.
+    let span_batch = opentelemetry_sdk::trace::BatchConfigBuilder::default()
+        .with_scheduled_delay(std::time::Duration::from_secs(BATCH_SCHEDULED_DELAY_SECS))
+        .with_max_export_batch_size(BATCH_MAX_EXPORT)
+        .with_max_queue_size(BATCH_MAX_QUEUE)
+        .build();
+    let span_processor = BatchSpanProcessor::builder(span_exporter, runtime::Tokio)
+        .with_batch_config(span_batch)
+        .build();
     let tracer_provider = TracerProvider::builder()
-        .with_batch_exporter(span_exporter, runtime::Tokio)
+        .with_span_processor(span_processor)
         .with_sampler(Sampler::AlwaysOn)
         .with_id_generator(RandomIdGenerator::default())
         .with_resource(resource.clone())
@@ -412,8 +557,37 @@ fn try_build_otel_providers(
         .build()
         .context("build OTLP log exporter (spool)")?;
 
+    // Batch the LOG pipeline explicitly rather than taking the SDK default.
+    //
+    // Each export batch becomes one file in the spool
+    // (`spool_client::SpoolClient::send`), and opentelemetry_sdk 0.27's default
+    // `scheduled_delay` for logs is **1000 ms** (traces default to 5 s). One
+    // logs file per second, per install, retained for the 7-day window, is what
+    // produces the ~150k-file / ~800 MB `sent/` directory measured on two
+    // machines - and `retention.rs` already documents that steady state at
+    // ~264k files. Retention is working; the write rate is the defect.
+    //
+    // 30 s is chosen against what the files are FOR. Nothing reads the spool in
+    // real time: the shipper drains on its own ~30 s tick, and `meridian logs`
+    // decodes whatever is on disk. The cost is that up to 30 s of records sit in
+    // memory, so a hard kill (SIGKILL, OOM, panic before the flush) loses them -
+    // acceptable, because that is precisely the case the launchd stdout/stderr
+    // files exist to cover, and every ordinary shutdown path calls
+    // `obs_guard.shutdown()`, which force-flushes first.
+    //
+    // `max_export_batch_size` is raised to match: at the default 512 a busy
+    // burst forces extra out-of-band exports, i.e. extra files, defeating the
+    // longer delay.
+    let log_batch = opentelemetry_sdk::logs::BatchConfigBuilder::default()
+        .with_scheduled_delay(std::time::Duration::from_secs(BATCH_SCHEDULED_DELAY_SECS))
+        .with_max_export_batch_size(BATCH_MAX_EXPORT)
+        .with_max_queue_size(BATCH_MAX_QUEUE)
+        .build();
+    let log_processor = BatchLogProcessor::builder(log_exporter, runtime::Tokio)
+        .with_batch_config(log_batch)
+        .build();
     let logger_provider = LoggerProvider::builder()
-        .with_batch_exporter(log_exporter, runtime::Tokio)
+        .with_log_processor(log_processor)
         .with_resource(resource)
         .build();
 
@@ -482,4 +656,54 @@ pub fn span_context_from_traceparent(
     let cx = TraceContextPropagator::new().extract(&StringExtractor(traceparent));
     let sc = cx.span().span_context().clone();
     sc.is_valid().then_some(sc)
+}
+
+#[cfg(test)]
+mod batch_config_tests {
+    use super::{BATCH_MAX_EXPORT, BATCH_MAX_QUEUE, BATCH_SCHEDULED_DELAY_SECS};
+
+    /// The SDK's own defaults, as a reference point for the ratio below.
+    /// `opentelemetry_sdk` 0.27.1, `trace::span_processor`.
+    const SDK_DEFAULT_QUEUE: usize = 2_048;
+    const SDK_DEFAULT_DELAY_SECS: u64 = 5;
+
+    /// Stretching the export delay without widening the queue silently drops
+    /// records.
+    ///
+    /// A full queue is DISCARDED by the batch processor - no error at the call
+    /// site, nothing in the spool, no way to notice after the fact. So the two
+    /// constants are only ever correct as a pair, and the pair is what this
+    /// checks: records-per-second of headroom must stay at least as good as the
+    /// SDK's own defaults, whatever either value is changed to.
+    ///
+    /// This shipped wrong once. The delay went from the SDK default to 30 s to
+    /// cut spool file count, and the queue stayed at 2,048 - dropping the
+    /// absorbable rate from ~410/s to ~68/s. One ETL tick handles `BATCH_SIZE`
+    /// = 500 frames at several DEBUG records each, so a single batch can exceed
+    /// that in under a second, and the records lost would be exactly the ones
+    /// emitted during a burst - which is what an incident looks like.
+    #[test]
+    fn batching_cannot_silently_drop_a_burst() {
+        let ours = BATCH_MAX_QUEUE as f64 / BATCH_SCHEDULED_DELAY_SECS as f64;
+        let sdk = SDK_DEFAULT_QUEUE as f64 / SDK_DEFAULT_DELAY_SECS as f64;
+        assert!(
+            ours >= sdk,
+            "the queue must absorb at least as many records per second as the SDK default \
+             ({ours:.0}/s from {BATCH_MAX_QUEUE} over {BATCH_SCHEDULED_DELAY_SECS}s, vs \
+             {sdk:.0}/s from the SDK's {SDK_DEFAULT_QUEUE} over {SDK_DEFAULT_DELAY_SECS}s). \
+             Raising the delay without raising the queue silently discards bursts."
+        );
+    }
+
+    /// One export must never be asked to carry more than the queue can hold.
+    #[test]
+    fn an_export_batch_fits_in_the_queue() {
+        // Bound to locals first: comparing two `const`s directly is
+        // `clippy::assertions_on_constants`, which is denied workspace-wide.
+        let (export, queue) = (BATCH_MAX_EXPORT, BATCH_MAX_QUEUE);
+        assert!(
+            export <= queue,
+            "max_export_batch_size ({export}) exceeds max_queue_size ({queue})"
+        );
+    }
 }

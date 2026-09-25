@@ -284,7 +284,7 @@ const NO_PLATFORM_ASSET: &str = "no-platform-asset";
 /// published update artifact in `latest.json`" rather than a real check
 /// failure. Concretely this is Windows ARM64 today: `scripts/package-updater-windows.sh`
 /// only ever writes the `windows-x86_64` / `windows-x86_64-nsis` keys (the
-/// `.github/workflows/release-build.yml` `windows` job builds on `windows-latest`,
+/// `.github/workflows/release-build.yml` `windows` job builds on `windows-2025`,
 /// i.e. x86_64, only — there is no ARM64 Windows release job), so an ARM64
 /// install's updater lookup can never match anything the manifest carries.
 ///

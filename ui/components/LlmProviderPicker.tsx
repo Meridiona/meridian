@@ -26,9 +26,10 @@
 import { BackLink } from '@/components/ui/BackLink'
 import { useCallback, useState } from 'react'
 import {
-  CHOOSER_PROVIDER_IDS, CLOUD_PRESETS, customVariantId, LLM_RANK_FREE, LLM_RANK_SUBSCRIPTION,
-  LLM_RECOMMENDED_NOTE, llmProvider, presetForVendor, type CloudKeyPreset, type CustomProviderView,
-  type LlmProviderId, type LlmRank,
+  CHOOSER_PROVIDER_IDS, CLOUD_PRESETS, CUSTOM_ENDPOINT_DISPLAY, CUSTOM_ENDPOINT_VENDOR,
+  customVariantId, LLM_RANK_CUSTOM, LLM_RANK_FREE, LLM_RANK_SUBSCRIPTION,
+  LLM_RECOMMENDED_NOTE, llmProvider, presetForVendor, type CustomProviderView,
+  type CloudKeyPreset, type LlmProviderId, type LlmRank, type VendorDisplay,
 } from '@/lib/llm-providers'
 import type {
   InstallOutcome, ProviderStatus, ProviderTestOutcome, ProviderTestResult,
@@ -37,6 +38,7 @@ import { CustomVendorLogo, ProviderLogo } from '@/components/LlmProviderLogos'
 import LlmProviderDetail, { phaseFor, type Phase } from '@/components/LlmProviderDetail'
 import LlmProviderGate, { Badge } from '@/components/LlmProviderGate'
 import CloudKeySetup from '@/components/CloudKeySetup'
+import CustomEndpointSetup from '@/components/CustomEndpointSetup'
 
 // Re-exported so the existing `from '@/components/LlmProviderPicker'` imports
 // keep resolving. The definitions now live in api-types.ts, per the repo rule
@@ -280,6 +282,42 @@ export interface LlmProviderPickerProps {
   gate?: boolean
 }
 
+/** The self-configured endpoint's grid tile.
+ *
+ *  Separate from `CloudPresetTile` rather than a `preset`-less mode of it: that one is built
+ *  around a `CloudKeyPreset` it can always name and badge, and this vendor has no preset at
+ *  all. The two do share `vendorPhaseFor`, so a configured endpoint's tile and its card can
+ *  never disagree about whether it is answering - the bug that rule exists to prevent. */
+function CustomEndpointTile({ value, selectedCustomId, status, custom, onOpen }: {
+  value: LlmProviderId
+  selectedCustomId: string | null
+  status: Record<string, ProviderStatus>
+  custom: ReturnType<typeof useCustomProviders>
+  onOpen: () => void
+}) {
+  const rows = custom.providers.filter((p) => p.vendor === CUSTOM_ENDPOINT_VENDOR)
+  const { selectedRow, phase: computedPhase } = vendorPhaseFor(rows, selectedCustomId, status)
+  const selected = value === 'custom' && !!selectedRow
+  // Only a SELECTED row's ladder answers - same rule as `CloudPresetTile`, for the same
+  // reason: an unselected vendor showing a borrowed status reads as a claim about a provider
+  // that is not running.
+  const phase = selected ? computedPhase : phaseFor(false, false, false, undefined, null)
+  return (
+    <ChooserTile
+      id="custom"
+      // The row's own name once one exists - the user named it after their own server, and
+      // "Custom endpoint" would be a worse label than the one they chose.
+      name={selectedRow ? selectedRow.name : CUSTOM_ENDPOINT_DISPLAY.name}
+      rank={LLM_RANK_CUSTOM}
+      selected={selected}
+      subtitle={selectedRow ? `Uses your ${selectedRow.name} endpoint.` : CUSTOM_ENDPOINT_DISPLAY.blurb}
+      phase={phase}
+      logo={<CustomVendorLogo vendor={CUSTOM_ENDPOINT_VENDOR} size={21} />}
+      onOpen={onOpen}
+    />
+  )
+}
+
 export default function LlmProviderPicker({
   value, selectedCustomId, onChange, status, scanning, testingIds, installingIds, signingIds,
   testOne, install, signIn, rescan, gate = false,
@@ -303,6 +341,10 @@ export default function LlmProviderPicker({
   // the main grid's per-vendor tiles - those already know their vendor and skip straight to
   // whichever screen (wizard or registry) that vendor needs, via `openVendor` instead.
   const [pendingPreset, setPendingPreset] = useState<CloudKeyPreset | null>(null)
+  // "Add another" on the self-configured vendor's registry view. A separate flag from
+  // `pendingPreset` because that one carries WHICH preset, and this vendor has none - the
+  // question it answers is only "form or registry view".
+  const [addingCustom, setAddingCustom] = useState(false)
   // A provider the user picked DURING this gated flow. Under the gate nothing is shown as
   // selected on arrival (`value` falls back to Claude whether or not it works), but once
   // they have actually chosen one, coming back to the grid must show which - otherwise the
@@ -358,8 +400,15 @@ export default function LlmProviderPicker({
   // stranded, here's what you're on and where to go" line - otherwise the screen just looks
   // empty where their provider used to be, with no explanation.
   const activeRow = custom.providers.find((p) => p.id === selectedCustomId)
+  //
+  // The `custom` vendor is excluded EXPLICITLY, and this is not a cosmetic exclusion: it is
+  // not in `CLOUD_PRESETS` (it never can be - it has no preset), so without this clause every
+  // self-configured endpoint would match "not an offered preset" and its owner would be told
+  // their working endpoint is discontinued and that Meridian is not sending it any requests.
+  // Both halves of that would be false, and it now has a tile of its own to go back to.
   const usingHiddenCloud =
-    value === 'custom' && !!activeRow && !CLOUD_PRESETS.some((p) => p.vendor === activeRow.vendor)
+    value === 'custom' && !!activeRow && activeRow.vendor !== CUSTOM_ENDPOINT_VENDOR
+    && !CLOUD_PRESETS.some((p) => p.vendor === activeRow.vendor)
 
   // Every preset tile the grid shows: exactly the OFFERED presets (Ollama), full stop.
   //
@@ -389,6 +438,52 @@ export default function LlmProviderPicker({
         onSignIn={() => signIn(openId)}
         onTest={() => testOne(openId)}
         onUse={async () => { await commitAndMark(openId) }}
+      />
+    )
+  }
+
+  // The SELF-CONFIGURED vendor, handled before the preset lookup below because it has no
+  // preset and never will: there is no key URL, sign-up copy or published free-tier limit to
+  // put in one (see `CUSTOM_ENDPOINT_VENDOR`). Falling through would hit the `!preset`
+  // dead-end BackLink and make the tile unopenable.
+  if (openId === 'custom' && openVendor === CUSTOM_ENDPOINT_VENDOR) {
+    const customRows = custom.providers.filter((p) => p.vendor === CUSTOM_ENDPOINT_VENDOR)
+    const backToGrid = () => { setOpenId(null); setOpenVendor(null); setAddingCustom(false) }
+    // Nothing configured yet, or "Add another" pressed: the form owns the screen. `!custom.loading`
+    // so a slow registry read cannot flash the form at someone who already has endpoints.
+    if (addingCustom || (!custom.loading && customRows.length === 0)) {
+      return (
+        <CustomEndpointSetup
+          // EVERY row, not just this vendor's: the tray rejects a duplicate name across the
+          // whole registry, so a check scoped to `custom` rows would miss a clash with an
+          // Ollama or Groq row and fail after the probe was already paid for.
+          existing={custom.providers}
+          onBack={customRows.length > 0 ? () => setAddingCustom(false) : backToGrid}
+          onAdd={custom.add}
+          onPick={(id) => commitAndMark('custom', id)}
+        />
+      )
+    }
+    const { selectedRow, phase: vendorPhase } = vendorPhaseFor(customRows, selectedCustomId ?? null, status)
+    return (
+      <CustomDetail
+        display={CUSTOM_ENDPOINT_DISPLAY}
+        providers={customRows}
+        value={value}
+        selectedCustomId={selectedCustomId ?? null}
+        live={!TILE_NOT_LIVE.includes(vendorPhase.kind)}
+        statusDetail={'message' in vendorPhase ? vendorPhase.message : undefined}
+        custom={custom}
+        onBack={backToGrid}
+        onPick={(id) => commitAndMark('custom', id)}
+        // Always offered, unlike a retired preset: a second endpoint here is a normal thing
+        // to want (a local model and a cloud key, say), and nothing about this vendor can be
+        // discontinued - it is whatever address the user types.
+        onAddAnother={() => setAddingCustom(true)}
+        onVerify={async () => {
+          await testOne(selectedRow ? customVariantId(selectedRow.id) : 'custom')
+          rescan()
+        }}
       />
     )
   }
@@ -447,7 +542,7 @@ export default function LlmProviderPicker({
     const { selectedRow, phase: vendorPhase } = vendorPhaseFor(vendorRows, selectedCustomId ?? null, status)
     return (
       <CustomDetail
-        preset={preset}
+        display={preset}
         providers={vendorRows}
         value={value}
         selectedCustomId={selectedCustomId ?? null}
@@ -561,6 +656,25 @@ export default function LlmProviderPicker({
             onOpen={() => { setOpenId('custom'); setOpenVendor(preset.vendor) }}
           />
         ))}
+        {/* Bring-your-own endpoint - any OpenAI-compatible base URL, local or cloud.
+            BEHIND `!gate`, exactly like the preset tiles above, and that placement is the
+            point rather than an accident of where it fits. The form this restores was
+            deleted for standing on the no-subscription path, where it handed a questionnaire
+            to the one person who came to avoid one; the gate still never shows a form, and
+            still routes "no subscription" straight to `<CloudKeySetup>`. Here it is reached
+            only by someone who came looking for it.
+            Last in the grid, after the recommended providers and the free presets: it is the
+            option that needs the user to already have something, so it should not compete
+            with the ones that do not. */}
+        {!gate && (
+          <CustomEndpointTile
+            value={value}
+            selectedCustomId={selectedCustomId ?? null}
+            status={status}
+            custom={custom}
+            onOpen={() => { setOpenId('custom'); setOpenVendor(CUSTOM_ENDPOINT_VENDOR) }}
+          />
+        )}
       </div>
 
       <p style={{ fontSize: 13.5, lineHeight: 1.5, fontWeight: 500, color: 'var(--t-muted)' }}>
@@ -640,10 +754,17 @@ export default function LlmProviderPicker({
  *  endpoint bills you per call" is advice for a decision this screen no longer offers, and it
  *  was the loudest text on a screen whose actual subject is free. */
 function CustomDetail({
-  preset, providers, value, selectedCustomId, live, statusDetail, custom, onBack, onPick,
+  display, providers, value, selectedCustomId, live, statusDetail, custom, onBack, onPick,
   onAddAnother, onVerify,
 }: {
-  preset: CloudKeyPreset
+  /** Just the name - NOT a whole `CloudKeyPreset`.
+   *
+   *  This used to take the preset, for the two `.name` reads below, and that was what shut a
+   *  self-configured endpoint out of this screen: satisfying the type would have meant
+   *  inventing a key URL, a FREE badge and privacy claims for a server nobody here has seen,
+   *  and invented trust copy is worse than none. Narrowing the prop to what is actually
+   *  rendered lets both kinds of vendor share one registry view. */
+  display: VendorDisplay
   /** This vendor's OWN rows only - pre-filtered by the caller. */
   providers: CustomProviderView[]
   value: LlmProviderId
@@ -670,12 +791,17 @@ function CustomDetail({
 
       <div className="flex flex-col" style={{ gap: 3 }}>
         <span style={{ fontSize: 18, fontWeight: 600, color: 'var(--t-title)', letterSpacing: '-.01em' }}>
-          Your {preset.name} key
+          {display.detailHeading ?? `Your ${display.name} key`}
         </span>
         {/* One line, and it says what the key DOES rather than what a different kind of key
-            might cost. 13px: a subtitle under an 18px heading, not a footnote. */}
+            might cost. 13px: a subtitle under an 18px heading, not a footnote.
+            OVERRIDABLE because the default's second sentence is a CLAIM, not decoration:
+            "Nothing is charged" is true of every curated free-tier preset and false of an
+            endpoint the user brought, which may be a metered cloud key. A self-configured
+            endpoint supplies its own line rather than inheriting a promise about someone
+            else's pricing. */}
         <p style={{ fontSize: 13, lineHeight: 1.5, color: 'var(--t-muted)' }}>
-          Meridian writes your summaries on this key. Nothing is charged.
+          {display.detailBlurb ?? 'Meridian writes your summaries on this key. Nothing is charged.'}
         </p>
       </div>
 
@@ -713,7 +839,7 @@ function CustomDetail({
             strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
             <path d="M8 3v10M3 8h10" />
           </svg>
-          Add another {preset.name} key
+          {display.addAnotherLabel ?? `Add another ${display.name} key`}
         </button>
       )}
     </div>

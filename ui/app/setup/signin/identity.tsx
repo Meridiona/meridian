@@ -19,7 +19,7 @@ export function GateLoading() {
 
 /** First one or two letters for an avatar glyph — `first.last@x` → `FL`,
  *  anything without a clean split (`first@x`) → first two chars of the local
- *  part. Never fabricates a name Clerk didn't give us; the email is the only
+ *  part. Never fabricates a name we were never given; the email is the only
  *  identity we have. */
 function emailInitials(email: string): string {
   const local = email.split('@')[0] ?? ''
@@ -45,9 +45,9 @@ function AccountAvatar({ email }: { email: string }) {
 }
 
 /** The standard "who am I signed in as" row (Linear/Notion/Raycast-style
- *  account rows): avatar, email, a caption for how the session was
- *  established, and a trailing action slot — a live Sign out button once
- *  Clerk has loaded, or a spinner for an optimistic pre-load render. */
+ *  account rows): avatar, email, a caption for how the address was captured,
+ *  and a trailing action slot — a "Change email" button once the captured
+ *  address has loaded, or a spinner for an optimistic pre-load render. */
 export function AccountIdentityRow({ email, caption, action }: {
   email: string
   caption: string

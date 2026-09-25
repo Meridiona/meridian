@@ -137,9 +137,16 @@ async fn run_tick() -> Result<()> {
     {
         let pending = pending.clone();
         let sent = sent.clone();
+        let quarantine = quarantine.clone();
         let retention_secs = retention_days() * 24 * 3600;
         tokio::task::spawn_blocking(move || {
-            run_housekeeping(&pending, &sent, retention_secs, prune_due(tick))
+            run_housekeeping(
+                &pending,
+                &sent,
+                &quarantine,
+                retention_secs,
+                prune_due(tick),
+            )
         })
         .await
         .context("telemetry housekeeping task")??;

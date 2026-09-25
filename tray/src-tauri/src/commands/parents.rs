@@ -102,9 +102,19 @@ pub async fn get_ticket_parents(provider: String, key: String) -> ParentsRespons
         let msg = if stderr.is_empty() {
             format!("exited {:?}", output.status.code())
         } else {
-            stderr
+            stderr.clone()
         };
-        tracing::warn!(%provider, %key, "ticket-parents non-zero: {msg}");
+        // Static body + `stderr_tail`, NOT `"…non-zero: {msg}"`. The stderr here
+        // is a tracker's error payload and routinely contains the ticket key -
+        // see `cli_exec::log_non_zero_exit` and issue #872.
+        crate::commands::cli_exec::log_non_zero_exit(crate::commands::cli_exec::NonZeroExit {
+            label: "ticket-parents",
+            bin: Some(bin.as_str()),
+            provider: Some(&provider),
+            key: Some(&key),
+            code: output.status.code(),
+            stderr: &stderr,
+        });
         return ParentsResponse::failure(msg);
     }
 

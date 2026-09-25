@@ -260,9 +260,17 @@ pub async fn apply_ticket_fix(body: ApplyBody) -> Result<ApplyResponse, String> 
         let msg = if stderr.is_empty() {
             format!("ticket-update exited {:?}", output.status.code())
         } else {
-            stderr
+            stderr.clone()
         };
-        tracing::warn!("ticket-update non-zero: {msg}");
+        // Static body + `stderr_tail` - see `cli_exec::log_non_zero_exit` (#872).
+        crate::commands::cli_exec::log_non_zero_exit(crate::commands::cli_exec::NonZeroExit {
+            label: "ticket-update",
+            bin: Some(bin.as_str()),
+            provider: Some(&body.provider),
+            key: Some(&body.key),
+            code: output.status.code(),
+            stderr: &stderr,
+        });
         return Err(msg);
     }
 

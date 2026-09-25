@@ -15,7 +15,7 @@ import { TRACKERS } from '@/lib/integrations'
 import { llmProvider, LLM_INTRO_BODY, LLM_INTRO_TITLE, type LlmProviderId } from '@/lib/llm-providers'
 import ConnectTrackers from '@/components/IntegrationConnect'
 import LlmProviderPicker, { type InstallOutcome, type ProviderStatus } from '@/components/LlmProviderPicker'
-import { SignInWidget } from './signin'
+import { OtpForm } from './signin'
 
 /** The live wizard handle page.tsx builds and threads to every step body. */
 export interface Wiz {
@@ -33,13 +33,16 @@ export interface Wiz {
   // Step 2 — integrations (live connected-state from get_integrations)
   integrations: IntegrationsResponse | null
   refetchIntegrations: () => void
-  // Whether sign-in is required — false only in a dev build with no Clerk key
-  // configured. When false, the sign-in step shows a notice instead of the form,
-  // and never blocks wizard progression.
-  signInRequired: boolean | null
-  // Step 3 — sign in (Clerk email one-time-code — see ui/app/setup/signin.tsx).
-  // The step body owns its own form/busy/error state; `onSignedIn` is just
-  // how it reports a completed sign-in back up to the wizard.
+  // Whether the OTP Worker reported "not configured" on the first send/verify
+  // attempt — the fresh-clone dev case (no `OTP_API_URL` baked in or set).
+  // Starts `false`; flips to `true` via `OtpForm`'s `onDevBypass` and never
+  // resets. When `true`, the Email step's Next button unblocks even with no
+  // captured email — see `EMAIL_STEP.canNext`.
+  otpNotConfigured: boolean
+  onDevBypass: () => void
+  // Step 3 — email capture (one-time OTP — see ui/app/setup/signin.tsx). The
+  // step body owns its own form/busy/error state; `onSignedIn` is just how it
+  // reports a completed capture back up to the wizard.
   signedInEmail: string | null
   onSignedIn: (email: string) => void
   // Step 4 — intelligence. The one AI choice everything downstream obeys
@@ -281,20 +284,22 @@ function IntegrationsBody({ wiz }: { wiz: Wiz }) {
   )
 }
 
-// ── STEP 3 — Sign in ──────────────────────────────────────────────────────────
-// Clerk email one-time-code, entirely inside the webview via tauri-plugin-clerk
-// (see lib.rs's plugin registration + signin.tsx). <SignInWidget> is a thin
-// next/dynamic boundary around the actual Clerk-aware form (the signin/ module —
-// see SignInWidget.tsx/EmailCodeForm.tsx) — importing it here stays safe for the
-// static-export build because signin.tsx itself has no @clerk/react imports at
-// the top level.
+// ── STEP 3 — Email ────────────────────────────────────────────────────────────
+// One-time email + code, sent/verified through a small Cloudflare Worker
+// (tray/src-tauri/src/commands/otp.rs) — no client auth library, no session.
+// <OtpForm> is a thin next/dynamic boundary around the actual form (the
+// signin/ module — see OtpForm.tsx) — importing it here stays safe for the
+// static-export build (see signin.tsx's module doc).
 //
-// When sign-in is disabled in a dev build (no Clerk key configured), this shows
-// a notice instead of the form and the wizard can proceed past this step without
-// signing in.
+// When the Worker isn't configured (a fresh clone with no `OTP_API_URL`), the
+// first send/verify attempt reports that via `onDevBypass` (see `Wiz.otpNotConfigured`),
+// and this shows a notice instead of the form — the wizard can proceed past
+// this step without an email captured.
 function SignInBody({ wiz }: { wiz: Wiz }) {
-  // Dev mode with no Clerk key: sign-in is unavailable, show a notice.
-  if (wiz.signInRequired === false) {
+  // Dev mode with no Worker configured: email capture is unavailable, show a
+  // notice. Discovered reactively (see `Wiz.otpNotConfigured`'s doc) rather
+  // than known up front, so this only appears after a first attempt reports it.
+  if (wiz.otpNotConfigured) {
     return (
       <div className="flex flex-col items-center" style={{ width: '100%', maxWidth: 340, margin: '0 auto' }}>
         <div className="w-full flex flex-col items-center mer-pop" style={{
@@ -305,14 +310,14 @@ function SignInBody({ wiz }: { wiz: Wiz }) {
           <div>
             <p style={{ fontSize: 14.5, fontWeight: 600, color: 'var(--t-title)' }}>Sign-in disabled</p>
             <p style={{ fontSize: 12, color: 'var(--t-muted)', marginTop: 3 }}>
-              This is a source build with no Clerk publishable key configured.<br />
+              This is a source build with no OTP Worker configured.<br />
               {/* `var(--font-mono)`, not the browser's `monospace`: the wizard has ONE
                   voice (SF Pro, via `--font-sans`, which `--font-mono` aliases), and
                   these two `<code>`s were the only things in the whole setup flow
                   still rendering in a different typeface. Kept as `<code>` because
                   they name a literal env var and a literal filename - that is what
                   the element is for; only the family was wrong. */}
-              Set <code style={{ fontFamily: 'var(--font-mono)', fontSize: 11 }}>CLERK_PUBLISHABLE_KEY</code> in <code style={{ fontFamily: 'var(--font-mono)', fontSize: 11 }}>.env</code> to enable sign-in.
+              Set <code style={{ fontFamily: 'var(--font-mono)', fontSize: 11 }}>OTP_API_URL</code> in <code style={{ fontFamily: 'var(--font-mono)', fontSize: 11 }}>.env</code> to enable sign-in.
             </p>
           </div>
         </div>
@@ -341,7 +346,7 @@ function SignInBody({ wiz }: { wiz: Wiz }) {
       </div>
     )
   }
-  return <SignInWidget onSignedIn={wiz.onSignedIn} />
+  return <OtpForm onSignedIn={wiz.onSignedIn} onDevBypass={wiz.onDevBypass} />
 }
 
 // ── STEP 4 — Intelligence (which AI writes the summaries) ────────────────────
@@ -556,13 +561,13 @@ const WINDOWS_NOTIFICATIONS_STEP: StepMeta = {
   canNext: () => true,
 }
 
-const SIGNIN_STEP: StepMeta = {
-  id: 'signin', n: '01', label: 'Sign in', kicker: 'Account',
+const EMAIL_STEP: StepMeta = {
+  id: 'email', n: '01', label: 'Sign in', kicker: 'Account',
   title: 'Sign in to Meridian',
   subtitle: "So we know who's using Meridian.",
   Body: SignInBody,
-  status: (s) => s.signInRequired === false ? 'Disabled in dev' : (s.signedInEmail ?? 'Not signed in'),
-  canNext: (s) => s.signInRequired === false || !!s.signedInEmail,
+  status: (s) => s.otpNotConfigured ? 'Disabled in dev' : (s.signedInEmail ?? 'Not signed in'),
+  canNext: (s) => !!s.signedInEmail || s.otpNotConfigured,
 }
 
 // ── Steps the WIZARD no longer runs — owned by the post-setup walkthrough ─────
@@ -601,7 +606,7 @@ export const PROVIDER_STEP: StepMeta = {
 // The wizard proper: identity, then the grants capture cannot run without.
 // Everything else the user can decide once they have seen what Meridian does.
 const ALL_STEPS: StepMeta[] = [
-  SIGNIN_STEP,
+  EMAIL_STEP,
   PERMISSIONS_STEP,
 ]
 

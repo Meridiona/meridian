@@ -64,7 +64,7 @@ export function IntegrationsSection({ integrations, onChanged, gate = false, onD
               Connected to {connected.map(t => t.name).join(', ')}
             </p>
             <p className="text-[11.5px] font-semibold mt-0.5" style={{ color: 'color-mix(in srgb, var(--color-state-approved) 75%, var(--t-muted))' }}>
-              Syncing every hour
+              Kept in sync automatically
             </p>
           </div>
         </div>

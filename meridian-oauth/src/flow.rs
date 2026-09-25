@@ -255,6 +255,77 @@ fn truncate_body(text: &str) -> String {
     format!("{} (truncated, {} bytes total)", &text[..end], text.len())
 }
 
+/// Wall-clock ceiling for ONE token-endpoint attempt, in seconds.
+///
+/// Sits alongside `reqwest`'s own 8 s `.timeout()` rather than replacing it, and
+/// the two measure different things on purpose.
+const WALL_CLOCK_BUDGET_SECS: i64 = 20;
+
+/// Run `fut`, abandoning it if the WALL CLOCK advances past `budget_secs`.
+///
+/// # Why `reqwest`'s own timeout is not enough
+///
+/// Every `.timeout()` in this codebase - and every `tokio::time` primitive -
+/// measures `Instant`, which on macOS is `mach_absolute_time` and DOES NOT ADVANCE
+/// while the system is asleep. So a request in flight when the lid closes is not
+/// cancelled by its 8 s timeout: it hangs for the entire suspend, and on wake the
+/// retry goes out with a refresh token that the provider rotated (and stopped
+/// honouring) half an hour ago. That is the exact sequence that killed production
+/// grants; see [`crate::refresh_journal`]'s header for the measured case.
+///
+/// The watchdog below still SLEEPS on the monotonic clock - it has to, that is the
+/// only timer available - but every time it wakes it compares the WALL clock. A
+/// suspend freezes both clocks, so nothing fires mid-suspend; the instant the
+/// machine resumes, the first tick sees the wall clock has jumped and gives up
+/// immediately. Abandoning promptly on wake is the whole point: it is what leaves
+/// enough of the provider's reuse grace to replay the spend and recover the grant,
+/// instead of discovering the loss when the window has already closed.
+///
+/// Abandoning is classified TRANSIENT: an unanswered request says nothing about
+/// whether the grant is valid, and treating it as terminal is what turned a
+/// suspend into "re-authenticate".
+async fn with_wall_clock_deadline<F, T>(budget_secs: i64, fut: F) -> Result<T, TokenError>
+where
+    F: std::future::Future<Output = Result<T, TokenError>>,
+{
+    let started = wall_clock_unix();
+    // Boxed so the future can be polled repeatedly across successive `timeout`
+    // slices: `timeout` takes its future by value, but `&mut Pin<Box<F>>` is
+    // itself a future, so borrowing it preserves the in-flight request between
+    // slices instead of restarting it.
+    let mut fut = Box::pin(fut);
+    loop {
+        // The MONOTONIC slice is just a heartbeat, not the deadline. Deliberately
+        // short so that the wall-clock check below runs promptly after a resume.
+        match tokio::time::timeout(Duration::from_millis(500), &mut fut).await {
+            // The request answered. Checked before the clock on purpose: a
+            // response already in hand must never be discarded, because the
+            // refresh token it cost has already been spent.
+            Ok(out) => return out,
+            Err(_) => {
+                let elapsed = wall_clock_unix().saturating_sub(started);
+                if elapsed > budget_secs {
+                    return Err(TokenError::transient(format!(
+                        "token endpoint did not answer within {elapsed}s of wall-clock \
+                         time (a system suspend, or a stalled connection); abandoning \
+                         so the spend can be replayed while the provider still \
+                         honours the previous token"
+                    )));
+                }
+            }
+        }
+    }
+}
+
+/// Wall-clock unix seconds. `0` if the clock is before the epoch, which only
+/// happens on a badly misconfigured machine and would otherwise panic.
+fn wall_clock_unix() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs() as i64)
+        .unwrap_or(0)
+}
+
 /// [`post_token`] with bounded retry-with-backoff for transient failures. Only
 /// [`TokenFailure::Transient`] errors are retried; a terminal rejection returns
 /// immediately so a genuinely dead token isn't hidden behind seconds of backoff.
@@ -272,7 +343,9 @@ async fn post_token_retrying(
         .map_err(|e| TokenError::transient(format!("building HTTP client: {e}")))?;
     let mut backoff = Duration::from_millis(400);
     for attempt in 1..=TOKEN_POST_ATTEMPTS {
-        match post_token(&client, token_url, body).await {
+        match with_wall_clock_deadline(WALL_CLOCK_BUDGET_SECS, post_token(&client, token_url, body))
+            .await
+        {
             Ok(resp) => return Ok(resp),
             Err(e) if e.is_transient() && attempt < TOKEN_POST_ATTEMPTS => {
                 tracing::warn!(

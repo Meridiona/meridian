@@ -52,11 +52,13 @@ pub(super) async fn refresh_health(
     // (it also carries `daemon_running`, which the banner ignores).
     let _ = app.emit("health-update", &hr);
 
-    // db_ready and daemon_running both default true when absent (older schema compat).
+    // db_ready defaults unhealthy when unknown; daemon_running defaults healthy
+    // (older schema compat) — kept as locals for the log fields below, but the
+    // classification itself goes through `is_healthy` (see there for why).
     let db_ready = hr.database_ready.unwrap_or(false);
     let daemon_running = hr.daemon_running.unwrap_or(true);
 
-    let new_health = if db_ready && daemon_running {
+    let new_health = if crate::commands::health::is_healthy(&hr) {
         HealthStatus::Healthy
     } else {
         HealthStatus::Unhealthy

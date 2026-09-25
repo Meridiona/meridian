@@ -5,7 +5,7 @@
 // `session-summary` skill (same rules, in SKILL.md); Codex/Copilot/cursor-agent
 // get SUMMARY_INSTRUCTION as their prompt. All target SUMMARY_SCHEMA.
 
-use serde_json::json;
+use serde_json::{json, Value};
 
 /// Fingerprint of the summariser's own prompt. The source sweep refuses to
 /// ingest any conversation whose first user message carries this marker, so a
@@ -30,9 +30,10 @@ pub fn summary_instruction() -> String {
     )
 }
 
-/// Structured-output contract, serialized for `claude --json-schema` /
-/// `codex --output-schema`. `summary` is the prose we store.
-pub fn summary_schema_json() -> String {
+/// Structured-output contract, as a value - `codex --output-schema` needs the raw
+/// `Value` so `crate::llm::schema::strictify` can be applied to it before writing.
+/// `summary` is the prose we store.
+pub fn summary_schema_value() -> Value {
     json!({
         "type": "object",
         "properties": {
@@ -40,7 +41,14 @@ pub fn summary_schema_json() -> String {
         },
         "required": ["summary"],
     })
-    .to_string()
+}
+
+/// Structured-output contract, serialized for `claude --json-schema`. Claude's schema
+/// validation doesn't need OpenAI's strict dialect (unlike codex - see
+/// `crate::llm::claude::ClaudeBackend`, which also passes its schema through raw), so
+/// this stays the plain, un-strictified form.
+pub fn summary_schema_json() -> String {
+    summary_schema_value().to_string()
 }
 
 /// Substrings that mark a subscription usage/rate limit in CLI stderr/output —
