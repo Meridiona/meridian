@@ -310,6 +310,17 @@ JSON columns (`window_titles`, `ocr_samples`, `elements_samples`, `audio_snippet
 
 ## Before Making Changes
 
+### Use repowise (MCP) before editing code
+
+When the repowise MCP server is available, use it as part of every code change, not just when convenient:
+
+1. **Orient** — `get_overview` (new area) or `get_context` on the files you expect to touch.
+2. **Find the blast radius** — `get_symbol` for callers/callees of anything you change; read the `*_basis` field before concluding "nothing calls this".
+3. **Check risk** — `get_change_risk` / `get_risk` on each file before modifying it; `get_why` when the code looks odd, to learn the decision behind it before undoing it.
+4. **Verify freshness** — every response carries `_meta.indexed_commit`. Compare it with `git rev-parse HEAD`; if they differ, treat repowise answers as a lead and confirm against the live files.
+
+Repowise does not replace reading the file: it returns signatures and line ranges, never source bodies, so always read the real file before editing it.
+
 ### ETL logic, DB schema, or migrations
 
 Read `docs/testing.md` first. Integration tests live in `tests/integration_etl.rs` and use in-memory SQLite — they must continue to pass after any ETL or schema change. Run `cargo test` before committing.
