@@ -30,7 +30,7 @@ pub mod parents;
 pub mod statuses;
 pub mod trello;
 
-use anyhow::{bail, Result};
+use anyhow::{bail, Context, Result};
 
 use crate::config::{Config, PmProviderConfig};
 
@@ -173,6 +173,15 @@ pub async fn apply(
     field: &str,
     value: &str,
 ) -> Result<ApplyResult> {
+    // Freshservice is a plain `Config` field, not a `PmProviderConfig` variant
+    // (see `FreshserviceConfig`'s doc comment), so it can't go through the
+    // `resolve_provider`/exhaustive-match dispatch below. Handled here instead,
+    // and only for Close/Reopen — the two writes `plan_tasks::done` needs;
+    // anything else redirects to the tracker rather than erroring.
+    if provider == "freshservice" {
+        return apply_freshservice(config, key, field, value).await;
+    }
+
     let pcfg = resolve_provider(config, provider)?;
 
     let write = match WriteField::parse(field, value) {
@@ -196,6 +205,39 @@ pub async fn apply(
         PmProviderConfig::GitHub(cfg) => github::apply(cfg, key, &write).await,
         PmProviderConfig::Trello(cfg) => trello::apply(cfg, key, &write).await,
         PmProviderConfig::AzureDevOps(cfg) => azure_devops::apply(cfg, key, &write).await,
+    }
+}
+
+/// The Freshservice half of [`apply`] — see the doc comment at its call site.
+/// Close/Reopen transition the real ticket; every other field redirects (no
+/// edit-back for title/description/priority/etc. exists yet).
+async fn apply_freshservice(
+    config: &Config,
+    key: &str,
+    field: &str,
+    value: &str,
+) -> Result<ApplyResult> {
+    let fs = config
+        .freshservice
+        .as_ref()
+        .with_context(|| "provider \"freshservice\" is not configured")?;
+    let write = WriteField::parse(field, value);
+    match write {
+        Some(WriteField::Close) => {
+            crate::pm_worklog::freshservice::close(fs, key).await?;
+            Ok(ApplyResult::applied("freshservice", key, field))
+        }
+        Some(WriteField::Reopen) => {
+            crate::pm_worklog::freshservice::reopen(fs, key).await?;
+            Ok(ApplyResult::applied("freshservice", key, field))
+        }
+        _ => Ok(ApplyResult::redirected(
+            "freshservice",
+            key,
+            field,
+            format!("https://{}.freshservice.com/a/tickets/{key}", fs.domain),
+            "not wired for Freshservice yet — edit it directly in the tracker",
+        )),
     }
 }
 

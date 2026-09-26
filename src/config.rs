@@ -54,6 +54,20 @@ pub struct TrelloConfig {
     pub board_ids: Vec<String>,
 }
 
+/// Freshservice — API-key auth (Basic, key as username, any char as password),
+/// scoped to one account domain. Not yet a full [`PmProviderConfig`] variant
+/// (no candidate-fetch/sync adapter exists): held as a plain [`Config`] field so
+/// only the two write primitives that need it ([`crate::pm_worklog::freshservice`])
+/// have to know about it, without rippling through every exhaustive match over
+/// the other five synced providers.
+#[derive(Clone, Debug)]
+pub struct FreshserviceConfig {
+    /// e.g. "meridian" for "meridian.freshservice.com" (no scheme, no host suffix).
+    pub domain: String,
+    /// Basic-auth API key (used as `{api_key}:X`).
+    pub api_key: String,
+}
+
 #[derive(Clone, Debug)]
 pub struct AzureDevOpsConfig {
     /// Personal access token (PAT). Auth: Basic base64(":token").
@@ -113,6 +127,10 @@ pub struct Config {
     /// Hot-reloadable runtime settings loaded from the repo-local `settings.json`.
     /// Values here take precedence over the equivalent env-var defaults.
     pub runtime: RuntimeSettings,
+    /// Freshservice, when `FRESHSERVICE_DOMAIN`/`FRESHSERVICE_API_KEY` are set.
+    /// See [`FreshserviceConfig`] for why this is a plain field, not a
+    /// [`PmProviderConfig`] variant.
+    pub freshservice: Option<FreshserviceConfig>,
 }
 
 // ---------------------------------------------------------------------------
@@ -291,6 +309,19 @@ fn parse_azure_devops() -> Option<PmProviderConfig> {
     }))
 }
 
+fn parse_freshservice() -> Option<FreshserviceConfig> {
+    let domain = std::env::var("FRESHSERVICE_DOMAIN").ok()?;
+    let domain = domain.trim().to_owned();
+    if domain.is_empty() {
+        return None;
+    }
+    let api_key = std::env::var("FRESHSERVICE_API_KEY").ok()?;
+    if api_key.trim().is_empty() {
+        return None;
+    }
+    Some(FreshserviceConfig { domain, api_key })
+}
+
 fn parse_providers() -> Vec<PmProviderConfig> {
     [
         parse_jira(),
@@ -379,6 +410,7 @@ impl Config {
 
         let pm_providers = parse_providers();
         let provider_names: Vec<&str> = pm_providers.iter().map(|p| p.provider_name()).collect();
+        let freshservice = parse_freshservice();
 
         tracing::info!(
             meridian_db = %meridian_db,
@@ -396,6 +428,7 @@ impl Config {
             jira_office_start_hour,
             jira_office_end_hour,
             runtime,
+            freshservice,
         }
     }
 

@@ -1204,6 +1204,15 @@ pub fn hydrate_browse_url(config: &Config, draft: &mut DayTaskWorklogDraft) {
 /// (mirrors `intelligence::ticket_update::browse_url`). Empty → `None`.
 pub(crate) fn browse_url(config: &Config, provider: &str, key: &str) -> Option<String> {
     use crate::config::PmProviderConfig as P;
+    // Freshservice is a plain `Config` field, not a `PmProviderConfig` variant
+    // (see `FreshserviceConfig`'s doc comment) — handled before the
+    // `pm_providers` scan below, which would never see it.
+    if provider == "freshservice" {
+        return config
+            .freshservice
+            .as_ref()
+            .map(|c| format!("https://{}.freshservice.com/a/tickets/{key}", c.domain));
+    }
     let url = config
         .pm_providers
         .iter()

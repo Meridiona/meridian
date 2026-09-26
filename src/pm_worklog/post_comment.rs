@@ -38,6 +38,9 @@ pub async fn post_comment(
         "azure_devops" => {
             super::azure_devops::post_comment(azure_cfg(config)?, task_key, body).await
         }
+        "freshservice" => {
+            super::freshservice::post_comment(freshservice_cfg(config)?, task_key, body).await
+        }
         other => bail!("post_comment: unknown provider '{other}'"),
     }
 }
@@ -88,6 +91,11 @@ fn azure_cfg(c: &Config) -> Result<&AzureDevOpsConfig> {
             _ => None,
         })
         .context("Azure DevOps is not configured on this daemon")
+}
+fn freshservice_cfg(c: &Config) -> Result<&crate::config::FreshserviceConfig> {
+    c.freshservice
+        .as_ref()
+        .context("Freshservice is not configured on this daemon")
 }
 
 #[cfg(test)]

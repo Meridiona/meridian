@@ -256,6 +256,7 @@ mod tests {
             jira_office_start_hour: 9,
             jira_office_end_hour: 17,
             runtime: Default::default(),
+            freshservice: None,
         }
     }
 
