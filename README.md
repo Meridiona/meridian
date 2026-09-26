@@ -16,6 +16,18 @@
 
 </div>
 
+## Meridian for Freshworks
+
+Every organization runs differently — different tools, workflows, and culture. A single hardcoded AI workflow can't automate that away for every Freshservice customer at once. Meridian is the context layer that makes it possible: it runs locally on a support or IT agent's own machine, passively learns how that person and their org actually work, and writes the real thing — not garbage data — straight back into Freshservice as time entries, private notes, and resolution details, gated behind one-click human approval.
+
+That same captured context is what lets Freddy AI move from one generic playbook to genuinely understanding how each customer's team operates — and gives customers themselves visibility into their own bottlenecks along the way.
+
+<p align="center">
+  <img src="docs/images/freshworks-architecture.png" alt="Meridian's architecture: capturing on-device context on the agent's laptop, building a memory graph, and giving it back to Freshservice as a Marketplace app via the Freshservice APIs" width="900" />
+</p>
+
+Meridian ships as a **Freshservice Marketplace app**: each customer installs it via the Freshworks Developer Kit (FDK), runs it locally on their agents' machines, and it connects to their own Freshservice instance through the REST API — tickets, notes, time entries — with no separate infrastructure or data pipeline required.
+
 ## Watch how it works
 
 See how Meridian turns a day of screen activity into a timeline, a daily summary, and updated tickets, without anything typed in by hand.
