@@ -224,6 +224,15 @@ pub(crate) fn notifier(app: &tauri::AppHandle) -> Option<&Notifications<tauri::W
 /// Fire-and-forget: the plugin's `show()` is async, so delivery is spawned and
 /// a failure is logged, never surfaced — no caller has a meaningful recovery.
 /// Unbundled runs (no plugin) log at debug and drop the toast.
+///
+/// `#[cfg(not(target_os = "windows"))]`: its one remaining caller
+/// ([`notify_outbox_via_plugin`]'s oversized-id fallback) is itself gated the
+/// same way — Windows delivers outbox toasts through [`crate::win_toast`]
+/// instead (see [`notify_outbox`]'s doc) — so on Windows this became
+/// genuinely unreachable once the encryption-removal-key-orphan notice (its
+/// other caller) was removed from `lib.rs`, and `-D warnings` treats that as a
+/// hard error.
+#[cfg(not(target_os = "windows"))]
 pub fn notify(app: &tauri::AppHandle, title: &str, body: &str) {
     let Some(n) = notifier(app) else {
         tracing::debug!(
