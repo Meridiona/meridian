@@ -4,15 +4,16 @@
 //! # What this is
 //! The setup wizard's Email step and Settings → Account's control
 //! (`ui/app/setup/signin.tsx` / the `ui/app/setup/signin/` module — see
-//! `OtpForm.tsx`/`AccountAuthControl.tsx`) send/verify a one-time code via
-//! `crate::commands::otp` (a small Cloudflare Worker + AWS SES, no client-side
-//! auth library, no session). Once a code verifies, the frontend calls
-//! [`save_account_email`] to persist the address — there is no session to mirror;
-//! this file's `account.json` IS the whole record of who's signed in.
+//! `OtpForm.tsx`/`AccountAuthControl.tsx`) capture a typed email address with
+//! **no verification step** — [`save_account_email`] is called directly, and
+//! `crate::commands::otp::capture_account_email` fires alongside it purely as
+//! a best-effort internal notification (a small Cloudflare Worker → Resend),
+//! never a gate. There is no session to mirror; this file's `account.json` IS
+//! the whole record of who's signed in.
 //!
 //! # Who calls this
-//! - [`save_account_email`]: `ui/app/setup/signin/OtpForm.tsx` (on a verified
-//!   code) and `AccountAuthControl.tsx`'s "Change email" control.
+//! - [`save_account_email`]: `ui/app/setup/signin/OtpForm.tsx` (on every
+//!   capture) and `AccountAuthControl.tsx`'s "Change email" control.
 //! - [`read_account_email`]: `crate::analytics`, the identity gate — no
 //!   PostHog event is sent at all until this returns `Some` (the email
 //!   becomes the event's `distinct_id` directly, never an anonymous id).

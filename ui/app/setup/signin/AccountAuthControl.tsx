@@ -18,7 +18,7 @@ import { Btn, Spinner } from '../atoms'
 import { GateLoading, AccountIdentityRow } from './identity'
 import { OtpForm } from './OtpForm'
 
-const SIGNED_IN_CAPTION = 'Verified by a one-time email code'
+const SIGNED_IN_CAPTION = 'Captured via email'
 
 /** An identity row (avatar, email, how it was captured) with a Change email
  *  action, or the capture form if nothing has ever been saved — the standard
@@ -59,7 +59,7 @@ function AccountStatus({ onSignedIn }: { onSignedIn: (email: string) => void }) 
         <div>
           <p className="mt-body-sm font-medium" style={{ color: 'var(--t-title)' }}>You&apos;re not signed in</p>
           <p style={{ fontSize: 11, color: 'var(--t-faint)', marginTop: 2 }}>
-            Sign in to link this install to your account - we&apos;ll email you a one-time code, no password needed.
+            Sign in to link this install to your account - just enter your email, no password or code needed.
           </p>
         </div>
       )}

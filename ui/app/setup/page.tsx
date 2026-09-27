@@ -145,16 +145,9 @@ export default function SetupWizard() {
   // (get_integrations) so the rail status + completion summary stay accurate.
   const [integrations, setIntegrations] = useState<IntegrationsResponse | null>(null)
 
-  // Step 3 — email capture (one-time OTP — see ./signin.tsx). The form owns its
-  // own busy/error state; this just holds the result.
+  // Step 3 — email capture (plain, unverified — see ./signin.tsx). The form
+  // owns its own busy/error state; this just holds the result.
   const [signedInEmail, setSignedInEmail] = useState<string | null>(null)
-
-  // Whether the OTP Worker reported "not configured" — discovered reactively
-  // from a failed send/verify attempt (see `Wiz.otpNotConfigured`'s doc in
-  // steps.tsx), the fresh-clone contributor case with no `OTP_API_URL` set.
-  // Starts false and never resets once true.
-  const [otpNotConfigured, setOtpNotConfigured] = useState(false)
-  const onDevBypass = useCallback(() => setOtpNotConfigured(true), [])
 
   // Step 4 — intelligence. The provider the whole prose pipeline obeys. Persisted to
   // settings.json immediately on pick (not batched to Finish): if the user quits the
@@ -299,7 +292,7 @@ export default function SetupWizard() {
     platform,
     perms, openPane, grantScreen, grantNotifications,
     integrations, refetchIntegrations,
-    signedInEmail, onSignedIn, otpNotConfigured, onDevBypass,
+    signedInEmail, onSignedIn,
     provider, providerCustomId, setProvider, providers, scanningProviders,
     testingProviderIds, installingProviderIds, signingProviderIds,
     testProvider, installProvider, signInProvider, rescanProviders,

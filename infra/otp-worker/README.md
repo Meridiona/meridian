@@ -1,10 +1,19 @@
 # otp-worker
 
-Cloudflare Worker backing Meridian's one-time email+OTP capture step (the
-setup wizard's replacement for Clerk — see the parent plan,
-`giggly-jumping-hopcroft.md`, for the full "why"). Sends a 6-digit code to an
-email address via AWS SES and verifies it. No accounts, no sessions, no
-sign-out — ask once, verify once, store the email locally, never re-check.
+Cloudflare Worker backing Meridian's email capture step (the setup wizard's
+replacement for Clerk — see the parent plan, `giggly-jumping-hopcroft.md`, for
+the full "why"). No accounts, no sessions, no sign-out — capture the typed
+email once, store it locally, never re-check.
+
+**Verification is currently disabled.** AWS SES was never approved for
+production sending (still sandboxed to individually-verified recipient
+addresses), which meant `/otp/send`'s code delivery could fail outright for
+real users — blocking sign-up rather than adding delay. The desktop app now
+calls `/otp/capture` instead: no code generated, no SES call, just the same
+internal "someone signed up" notification `/otp/verify` used to fire on a
+verified code. `/otp/send`/`/otp/verify` (6-digit code via SES) are kept,
+still fully authed/rate-limited, for when SES gets approved and verification
+is reinstated — they have no current caller.
 
 This is the **first live Cloudflare Worker in this repo.** Read "Why this
 design" below before changing anything auth- or rate-limit-related — a prior
@@ -16,18 +25,28 @@ repeat it.
 
 ## Routes
 
-Exactly two exist. Everything else — wrong path, wrong method — gets a plain
-404. Both require `Authorization: Bearer <token>`.
+Exactly three exist. Everything else — wrong path, wrong method — gets a plain
+404. All three require `Authorization: Bearer <token>`.
 
 | Route | Body | Purpose |
 |---|---|---|
-| `POST /otp/send` | `{ email, turnstileToken? }` | Generate a code, email it via SES |
-| `POST /otp/verify` | `{ email, code, previousEmail? }` | Check a code against the live record |
+| `POST /otp/capture` | `{ email, previousEmail? }` | Current path — rate-limit + fire the account-event notification, no code |
+| `POST /otp/send` | `{ email, turnstileToken? }` | Generate a code, email it via SES — no current caller |
+| `POST /otp/verify` | `{ email, code, previousEmail? }` | Check a code against the live record — no current caller |
 
 `previousEmail` is optional and purely informational — the client's best
-knowledge of the address it had on file before this verify, used only to
+knowledge of the address it had on file before this call, used only to
 decide what (if anything) to tell `NOTIFY_EMAIL` about (see "Account-event
 notification" below). It is never used for any security decision.
+
+**`/otp/capture`**
+
+| Status | Body | Meaning |
+|---|---|---|
+| 200 | `{ ok: true }` | Rate limits passed; notification fired (or skipped if unconfigured) |
+| 400 | `{ error: "invalid_email" \| "invalid_json" }` | Malformed request |
+| 401 | `{ error: "unauthorized" }` | Missing/wrong bearer token |
+| 429 | `{ error: "rate_limited", scope: "email" \| "ip" \| "global" }` | One of the three capture caps tripped — its own KV keys, separate from `/otp/send`'s budget |
 
 ### Status codes
 

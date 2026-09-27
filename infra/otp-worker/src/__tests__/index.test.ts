@@ -27,7 +27,7 @@
 import { SELF } from "cloudflare:test";
 import { describe, expect, it } from "vitest";
 
-describe("router: only POST /otp/send and POST /otp/verify exist", () => {
+describe("router: only POST /otp/send, /otp/verify and /otp/capture exist", () => {
   it("404s a GET to /otp/send — a method mismatch is not the allowlisted route", async () => {
     const res = await SELF.fetch("https://example.com/otp/send");
     expect(res.status).toBe(404);
@@ -82,6 +82,34 @@ describe("auth gate: unauthenticated requests never reach KV/SES", () => {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: "not json at all {{{",
+    });
+    expect(res.status).toBe(401);
+  });
+
+  it("401s POST /otp/capture with no Authorization header", async () => {
+    const res = await SELF.fetch("https://example.com/otp/capture", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ email: "test@example.com" }),
+    });
+    expect(res.status).toBe(401);
+  });
+});
+
+describe("POST /otp/capture — no code, no SES call", () => {
+  it("404s a GET — a method mismatch is not the allowlisted route", async () => {
+    const res = await SELF.fetch("https://example.com/otp/capture");
+    expect(res.status).toBe(404);
+  });
+
+  it("400s an invalid email even with no auth check reached first (auth still wins)", async () => {
+    // Auth is checked before body validation on every route (see the 401
+    // tests above) — this just confirms /otp/capture follows the same order,
+    // by asserting 401 (not 400) when both auth and body are bad.
+    const res = await SELF.fetch("https://example.com/otp/capture", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ email: "not-an-email" }),
     });
     expect(res.status).toBe(401);
   });

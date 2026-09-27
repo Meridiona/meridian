@@ -14,14 +14,15 @@
 # deployed" and "the Worker deployed correctly" — a deploy that goes green
 # without these checks is exactly how that happened.
 #
-# Four probes, all against the SAME deployed Worker:
-#   1. POST /otp/send,   no Authorization header       -> 401
-#   2. POST /otp/send,   wrong bearer token             -> 401
-#   3. POST /otp/verify, real auth, never-sent email    -> 410
-#   4. POST /otp/send,   real auth, hammered past cap   -> 429
-# Probes 3 and 4 need real auth to even reach the gated logic being tested,
+# Five probes, all against the SAME deployed Worker:
+#   1. POST /otp/send,    no Authorization header       -> 401
+#   2. POST /otp/send,    wrong bearer token             -> 401
+#   3. POST /otp/capture, no Authorization header        -> 401
+#   4. POST /otp/verify,  real auth, never-sent email    -> 410
+#   5. POST /otp/send,    real auth, hammered past cap   -> 429
+# Probes 4 and 5 need real auth to even reach the gated logic being tested,
 # so they require OTP_CLIENT_TOKEN in the environment (the same value as the
-# `wrangler secret put OTP_CLIENT_TOKEN` on the target Worker) — probes 1-2
+# `wrangler secret put OTP_CLIENT_TOKEN` on the target Worker) — probes 1-3
 # run without it.
 #
 # A fifth check (--verify-only / the post-deploy step only) exercises the
@@ -169,6 +170,13 @@ run_required_probes() {
 		-H 'Content-Type: application/json' \
 		-H 'Authorization: Bearer deploy-otp-worker-probe-not-a-real-token' \
 		--data '{"email":"deploy-otp-worker-probe@example.com"}' || failed=1
+
+	# /otp/capture is the current desktop-app path (see README.md — SES was
+	# never approved for production sending, so verification is disabled and
+	# this route is what actually runs in production today). Same auth gate
+	# as /otp/send, checked the same unauthenticated way.
+	probe_expect "capture no credentials     " "${url}/otp/capture" 401 \
+		-H 'Content-Type: application/json' --data '{"email":"deploy-otp-worker-probe@example.com"}' || failed=1
 
 	if [ -z "${OTP_CLIENT_TOKEN:-}" ]; then
 		cat >&2 <<-EOF
