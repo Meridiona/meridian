@@ -277,7 +277,13 @@ async fn reload_with_pool_cycle(pool: &crate::db_pool::DbPool) -> Result<u32, St
 ///
 /// Generic over the work so the serialisation itself is testable without
 /// launchctl or a real pool - see `two_reload_cycles_never_interleave`.
-async fn with_reload_lock<F, Fut, T>(work: F) -> T
+///
+/// `pub(crate)`, not private: [`crate::poll::watchdog::run_daemon_watchdog`]
+/// shares this same lock around its own close/signal/reopen cycle (a third
+/// daemon-restart path, alongside `reload_daemon` and the installer's
+/// restage), so its cycle can never interleave with a concurrent manual
+/// reload on the same shared [`crate::db_pool::DbPool`] handle.
+pub(crate) async fn with_reload_lock<F, Fut, T>(work: F) -> T
 where
     F: FnOnce() -> Fut,
     Fut: std::future::Future<Output = T>,

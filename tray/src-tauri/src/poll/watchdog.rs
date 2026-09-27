@@ -64,6 +64,13 @@
 //! - [`crate::commands::daemon_control`] — [`probe`] and the launchd verbs.
 //! - [`super::refresh`] — the slower, user-facing went-quiet/back-online
 //!   notices. It reports; this module acts.
+//! - [`crate::db_pool::DbPool`] — closed/reopened around every [`Action::Start`],
+//!   for the same reason [`crate::commands::daemon::reload_daemon_with`] does it
+//!   around a manual reload: this loop is a THIRD path that can restart the
+//!   daemon process (alongside `reload_daemon` and the installer's restage),
+//!   and until this fix it was the one path that left the tray's own pool
+//!   spanning the restart — see that module's header for the corruption this
+//!   pattern exists to close off.
 
 use std::time::{Duration, Instant};
 use tracing::Instrument;
@@ -219,8 +226,9 @@ async fn daemon_process_alive() -> Option<bool> {
 /// Probe every [`TICK`]; act only when [`decide`] says to.
 ///
 /// See the module docs for why this is far more conservative than it looks like
-/// it should be.
-pub async fn run_daemon_watchdog() {
+/// it should be. `db_pool` is closed before, and reopened after, every
+/// [`Action::Start`] — see the module docs' "Related" section.
+pub async fn run_daemon_watchdog(db_pool: crate::db_pool::DbPool) {
     let mut consecutive_failures: u32 = 0;
     let mut cooldown_until: Option<Instant> = None;
     let mut window_started = Instant::now();
@@ -334,7 +342,29 @@ pub async fn run_daemon_watchdog() {
                 }
                 async {
                     tracing::info!("daemon watchdog: daemon not running, starting it");
-                    if let Err(e) = crate::commands::daemon_control::start_if_stopped().await {
+                    // Close the tray's `meridian.db` pool before asking the
+                    // service manager to start the daemon, and reopen it
+                    // (lazily — see `DbPool::reopen`'s doc) right after,
+                    // exactly like `reload_daemon_with`'s
+                    // `reload_with_pool_cycle` does around a manual reload.
+                    // This IS a daemon-restart path — the process comes back
+                    // as a new generation — so it needs the same guard, or
+                    // the tray's pool spans the boundary and reproduces the
+                    // #851 corruption class this watchdog was already
+                    // rewritten once to stop causing directly.
+                    //
+                    // Routed through `with_reload_lock` so this can never
+                    // interleave with a concurrent `reload_daemon` cycle on
+                    // the same shared handle — see that function's doc for
+                    // the specific two-callers-crossing hazard it closes.
+                    let result = crate::commands::daemon::with_reload_lock(|| async {
+                        db_pool.close().await;
+                        let result = crate::commands::daemon_control::start_if_stopped().await;
+                        db_pool.reopen().await;
+                        result
+                    })
+                    .await;
+                    if let Err(e) = result {
                         // Mark the span itself ERROR, not just the log line: a
                         // failed automatic recovery is the case worth finding in
                         // OpenObserve, and span status is what an error-only
@@ -486,6 +516,59 @@ mod tests {
         assert!(
             gate.contains("continue;"),
             "the re-read does not skip the start, so it only narrates the race"
+        );
+    }
+
+    /// **The regression test for this loop's own restart path spanning the
+    /// tray's `meridian.db` pool.**
+    ///
+    /// `Action::Start` restarts the daemon process, exactly like
+    /// `reload_daemon` and the installer's restage do — so it needs the same
+    /// close-before/reopen-after guard those two already carry (see
+    /// `crate::db_pool::DbPool`'s module header for the corruption incident
+    /// that pattern exists to close off). Before this fix, this loop was the
+    /// one restart path that left the tray's pool spanning the boundary.
+    ///
+    /// Source-scanned for the same reason as
+    /// `the_start_arm_re_reads_the_flag_before_acting`: there is no seam to
+    /// drive `run_daemon_watchdog`'s infinite loop through in a unit test, and
+    /// `with_reload_lock`'s own mutual-exclusion guarantee is already covered
+    /// generically by `two_reload_cycles_never_interleave` in
+    /// `commands::daemon` — what's specific to THIS call site, and what a
+    /// generic lock test cannot see, is that the Start arm actually calls
+    /// `close()` before `start_if_stopped()` and `reopen()` after, inside that
+    /// lock.
+    #[test]
+    fn the_start_arm_cycles_the_db_pool_around_the_restart() {
+        let whole = include_str!("watchdog.rs");
+        let src = &whole[..whole
+            .find("#[cfg(test)]")
+            .expect("watchdog.rs lost its test module marker")];
+        let arm = src
+            .split_once("Action::Start => {")
+            .expect("the Start arm is gone")
+            .1;
+        let arm = &arm[..arm.find("Action::GiveUp").unwrap_or(arm.len())];
+
+        assert!(
+            arm.contains("with_reload_lock"),
+            "the restart must be routed through the same lock `reload_daemon` uses, \
+             so this loop's cycle can never interleave with a concurrent manual reload"
+        );
+
+        let close_at = arm
+            .find("db_pool.close()")
+            .expect("the Start arm must close the pool before restarting the daemon");
+        let start_at = arm
+            .find("start_if_stopped()")
+            .expect("the Start arm must still start the daemon");
+        let reopen_at = arm
+            .find("db_pool.reopen()")
+            .expect("the Start arm must reopen the pool after restarting the daemon");
+        assert!(
+            close_at < start_at && start_at < reopen_at,
+            "the pool must close BEFORE the restart signal and reopen AFTER it, \
+             not in some other order that still leaves a connection spanning the boundary"
         );
     }
 

@@ -424,7 +424,11 @@ pub struct DisconnectBody {
 /// Strip every `key=…` line for `keys` from `path`, in place. Mirrors the
 /// route's `lines.filter(l => !keys.some(k => l.trimStart().startsWith(k + '=')))`
 /// — only an EXISTING file is edited (a missing file is a no-op, never created).
-fn strip_env_keys(path: &std::path::Path, keys: &[&str]) -> std::io::Result<()> {
+///
+/// `pub(crate)`: also used by [`crate::db_key`] to remove `MERIDIAN_DB_KEY`
+/// from `.env` once the decrypt-in-place migration has run, so the daemon
+/// stops looking for a key that no longer applies to anything.
+pub(crate) fn strip_env_keys(path: &std::path::Path, keys: &[&str]) -> std::io::Result<()> {
     if !path.exists() {
         return Ok(());
     }
