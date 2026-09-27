@@ -188,8 +188,15 @@ pub const SPECS: &[Spec] = &[
     },
     Spec {
         name: "plan-task-create",
-        flags: &["--title", "--description", "--issue-type"],
-        usage: "meridian plan-task-create --title T [--description D] [--issue-type Task|Bug]",
+        flags: &[
+            "--title",
+            "--description",
+            "--issue-type",
+            "--target",
+            "--day",
+        ],
+        usage: "meridian plan-task-create --title T [--description D] [--issue-type Task|Bug] \
+                [--target local|<provider>] [--day YYYY-MM-DD]",
     },
     Spec {
         name: "plan-task-edit",
