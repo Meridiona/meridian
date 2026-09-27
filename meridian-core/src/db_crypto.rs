@@ -5,9 +5,17 @@
 //! - [`open_pool_with_key`] backs both [`crate::db::open_existing`] (tray/dashboard,
 //!   no migrations) and the daemon's `setup_db` (`src/db/meridian.rs`), which also
 //!   runs migrations afterward through the same pool.
-//! - [`is_plaintext_sqlite`] / [`encrypt_in_place`] are called once by the tray on
-//!   startup, after it resolves an encryption key (`tray/src-tauri/src/db_key.rs`),
-//!   to transparently upgrade an existing plaintext `meridian.db` in place.
+//! - [`is_plaintext_sqlite`] / [`encrypt_in_place`] were called once by the tray on
+//!   startup (release builds only, now removed — new installs are never
+//!   encrypted) to transparently upgrade an existing plaintext `meridian.db` in
+//!   place. Kept for the reverse migration below to build on and because an
+//!   already-encrypted install's `meridian.db` still needs `open_pool_with_key`'s
+//!   `PRAGMA key` handling until [`decrypt_in_place`] has run for it.
+//! - [`decrypt_in_place`] is the one-way reverse: the tray runs it once on
+//!   startup for any install still carrying an encrypted `meridian.db` from
+//!   before encryption was removed (`tray/src-tauri/src/lib.rs`), then deletes
+//!   the keychain entry and `MERIDIAN_DB_KEY` from `.env` so the daemon opens
+//!   the now-plaintext file unencrypted from then on.
 //! - [`export_plaintext`] backs the `meridian db-export-plaintext` CLI command
 //!   (`src/main.rs`), which `packages/meridian-mcp` shells out to because its
 //!   `sql.js` reader (WASM, no SQLCipher support) cannot open an encrypted file
@@ -637,6 +645,96 @@ pub async fn encrypt_in_place(path: &Path, key_hex: &str) -> anyhow::Result<()> 
         db = %path.display(),
         backup = %backup_path.display(),
         "migrated meridian.db from plaintext to SQLCipher encryption at rest"
+    );
+    Ok(())
+}
+
+/// Migrate an existing SQLCipher-encrypted `meridian.db` back to plaintext, in
+/// place — the reverse of [`encrypt_in_place`]. No-op if `path` doesn't exist
+/// or is already plaintext.
+///
+/// Safety: same shape as [`encrypt_in_place`] — the encrypted original is
+/// never modified or removed until the plaintext export has been fully
+/// written, so a failure partway through leaves `path` exactly as it was
+/// ("still encrypted, retry next startup"). The encrypted original is kept
+/// alongside the result (renamed with a timestamped suffix), not deleted, so a
+/// bad migration is always recoverable by hand. Built from
+/// [`export_plaintext`]'s ATTACH pattern — the same `sqlcipher_export` call,
+/// writing to a real destination instead of a throwaway copy — plus
+/// [`swap_database_file`], the identical rename/backup swap [`encrypt_in_place`]
+/// uses (same Windows rename-handle-close handling, same rollback-on-failure
+/// guarantee).
+pub async fn decrypt_in_place(path: &Path, key_hex: &str) -> anyhow::Result<()> {
+    validate_key_hex(key_hex)?;
+    if !path.exists() {
+        return Ok(());
+    }
+    if is_plaintext_sqlite(path) {
+        return Ok(());
+    }
+
+    let uri = path.display().to_string();
+    // `create_if_missing(true)`: as in `encrypt_in_place`, ATTACH inherits the
+    // main connection's open flags, so the plaintext target ATTACHed below
+    // can't be created unless this connection itself was opened with the
+    // create flag set — even though `path` itself already exists.
+    let mut conn = SqliteConnectOptions::from_str(&uri)
+        .with_context(|| format!("invalid SQLite path: {uri}"))?
+        .create_if_missing(true)
+        .connect()
+        .await
+        .context("decrypt_in_place: failed to open existing encrypted database")?;
+
+    conn.execute(key_pragma(key_hex).as_str())
+        .await
+        .context("decrypt_in_place: PRAGMA key failed")?;
+    // A wrong key doesn't error on `PRAGMA key` itself — SQLCipher only
+    // discovers a bad key on the first real page read. Force that check now,
+    // same as `export_plaintext`, so a wrong key fails loudly here instead of
+    // corrupting the export.
+    conn.execute("SELECT count(*) FROM sqlite_master;")
+        .await
+        .context("decrypt_in_place: failed to read database — wrong encryption key?")?;
+
+    // Fold the WAL into the main file so the export below sees every
+    // committed write, same as `encrypt_in_place`.
+    conn.execute("PRAGMA wal_checkpoint(TRUNCATE);")
+        .await
+        .context("decrypt_in_place: WAL checkpoint failed")?;
+
+    let tmp_path = path.with_extension("db.decrypting-tmp");
+    let _ = std::fs::remove_file(&tmp_path); // best-effort cleanup of a prior interrupted attempt
+
+    let attach_sql = format!(
+        "ATTACH DATABASE {} AS plaintext_export KEY '';",
+        sql_quoted_path(&tmp_path)
+    );
+    conn.execute(attach_sql.as_str())
+        .await
+        .context("decrypt_in_place: ATTACH failed")?;
+    conn.execute("SELECT sqlcipher_export('plaintext_export');")
+        .await
+        .context("decrypt_in_place: sqlcipher_export failed")?;
+    conn.execute("DETACH DATABASE plaintext_export;")
+        .await
+        .context("decrypt_in_place: DETACH failed")?;
+    // See the identical comment in `encrypt_in_place`: a plain `drop(conn)`
+    // only queues the close on sqlx's worker thread, which loses the race
+    // against the rename below on Windows.
+    if let Err(e) = conn.close().await {
+        tracing::warn!(error = %e, "decrypt_in_place: connection close returned an error; continuing to the swap");
+    }
+
+    let backup_path = path.with_extension(format!(
+        "db.encrypted-backup-{}",
+        chrono::Utc::now().format("%Y%m%d%H%M%S")
+    ));
+    swap_database_file(path, &tmp_path, &backup_path, "decrypt_in_place")?;
+
+    tracing::info!(
+        db = %path.display(),
+        backup = %backup_path.display(),
+        "migrated meridian.db from SQLCipher encryption at rest back to plaintext"
     );
     Ok(())
 }
@@ -1324,6 +1422,118 @@ mod tests {
                 wrong.close().await;
             }
         }
+    }
+
+    /// The round trip the removal migration depends on: encrypt, then
+    /// decrypt, must land back on plaintext with the data intact — and the
+    /// encrypted intermediate must be preserved as a backup, never deleted,
+    /// mirroring `encrypt_in_place`'s own "never lose data" guarantee.
+    #[tokio::test]
+    async fn decrypt_in_place_reverses_encrypt_in_place_and_preserves_data() {
+        let dir = tempfile::tempdir().unwrap();
+        let db_path = dir.path().join("meridian.db");
+
+        let pool = open_pool_with_key(&db_path.display().to_string(), None, true, &[])
+            .await
+            .unwrap();
+        sqlx::query("CREATE TABLE t (x INTEGER)")
+            .execute(&pool)
+            .await
+            .unwrap();
+        sqlx::query("INSERT INTO t (x) VALUES (13)")
+            .execute(&pool)
+            .await
+            .unwrap();
+        pool.close().await;
+
+        encrypt_in_place(&db_path, TEST_KEY).await.unwrap();
+        assert!(!is_plaintext_sqlite(&db_path));
+
+        decrypt_in_place(&db_path, TEST_KEY).await.unwrap();
+        assert!(
+            is_plaintext_sqlite(&db_path),
+            "decrypt_in_place must leave a plaintext file behind"
+        );
+
+        // An encrypted backup was preserved (never deleted).
+        let has_backup = std::fs::read_dir(dir.path())
+            .unwrap()
+            .filter_map(|e| e.ok())
+            .any(|e| e.file_name().to_string_lossy().contains("encrypted-backup"));
+        assert!(has_backup, "expected a preserved encrypted backup file");
+
+        let pool = open_pool_with_key(&db_path.display().to_string(), None, false, &[])
+            .await
+            .unwrap();
+        let row = sqlx::query("SELECT x FROM t")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        assert_eq!(row.get::<i64, _>(0), 13, "data must survive the round trip");
+        pool.close().await;
+    }
+
+    /// No-ops the migration exists to be safe against: a missing file (nothing
+    /// to migrate — the caller's own `classify_existing_db` gate should have
+    /// skipped this, but the function must not misbehave if it doesn't) and an
+    /// already-plaintext file (re-running the migration, e.g. after a crash
+    /// between the swap and the keychain/`.env` cleanup, must not touch it
+    /// again).
+    #[tokio::test]
+    async fn decrypt_in_place_is_a_noop_on_missing_or_already_plaintext_files() {
+        let dir = tempfile::tempdir().unwrap();
+
+        let missing = dir.path().join("does-not-exist.db");
+        decrypt_in_place(&missing, TEST_KEY).await.unwrap();
+        assert!(
+            !missing.exists(),
+            "must not create a file that wasn't there"
+        );
+
+        let plain_path = dir.path().join("already-plain.db");
+        let pool = open_pool_with_key(&plain_path.display().to_string(), None, true, &[])
+            .await
+            .unwrap();
+        sqlx::query("CREATE TABLE t (x INTEGER)")
+            .execute(&pool)
+            .await
+            .unwrap();
+        pool.close().await;
+
+        decrypt_in_place(&plain_path, TEST_KEY).await.unwrap();
+        assert_eq!(
+            std::fs::read_dir(dir.path()).unwrap().count(),
+            1,
+            "an already-plaintext file must not gain a backup/tmp sibling"
+        );
+    }
+
+    /// The wrong key must fail loudly rather than silently exporting garbage —
+    /// same invariant `export_plaintext` (which this function's ATTACH pattern
+    /// is built from) already guards.
+    #[tokio::test]
+    async fn decrypt_in_place_fails_loudly_on_the_wrong_key() {
+        let dir = tempfile::tempdir().unwrap();
+        let db_path = dir.path().join("meridian.db");
+
+        let pool = open_pool_with_key(&db_path.display().to_string(), Some(TEST_KEY), true, &[])
+            .await
+            .unwrap();
+        sqlx::query("CREATE TABLE t (x INTEGER)")
+            .execute(&pool)
+            .await
+            .unwrap();
+        pool.close().await;
+
+        let err = decrypt_in_place(&db_path, OTHER_KEY).await.unwrap_err();
+        assert!(
+            format!("{err:#}").contains("wrong encryption key"),
+            "unexpected error: {err:#}"
+        );
+        assert!(
+            !is_plaintext_sqlite(&db_path),
+            "a failed decrypt must leave the encrypted original untouched"
+        );
     }
 
     /// The crash window in `encrypt_in_place` briefly unlinks `meridian.db`.
