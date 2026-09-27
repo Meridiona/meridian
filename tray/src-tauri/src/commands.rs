@@ -18,7 +18,7 @@
 //!   module and its dashboard consumer are both gone).
 //! - [`integrations`] — which trackers are connected (`/api/integrations`).
 //! - [`notices`]   — clear a fault banner (`/api/notices/[id]` DELETE).
-//! - [`otp`]       — send/verify a one-time email code via the OTP Worker.
+//! - [`otp`]       — best-effort account-event notification via the OTP Worker.
 //! - [`notifications`] — the in-app banner dismiss write.
 //! - [`parents`]   — valid parent tickets for the hygiene "link a parent" fix.
 //! - [`pm_tool_request`] — "I don't see my tool" on `ConnectTrackers`: local

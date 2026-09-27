@@ -4,10 +4,21 @@
  * one-time email capture step (see the parent plan,
  * `giggly-jumping-hopcroft.md`, Part 1).
  *
- * Exactly two routes exist; everything else 404s:
- *   `POST /otp/send`   `{ email, turnstileToken? }`
- *   `POST /otp/verify` `{ email, code }`
- * Both require `Authorization: Bearer <token>` — see `auth.ts`.
+ * Exactly three routes exist; everything else 404s:
+ *   `POST /otp/send`    `{ email, turnstileToken? }`
+ *   `POST /otp/verify`  `{ email, code }`
+ *   `POST /otp/capture` `{ email, previousEmail? }`
+ * All three require `Authorization: Bearer <token>` — see `auth.ts`.
+ *
+ * `/otp/capture` is the current desktop-app path (AWS SES was never approved
+ * for production sending, so the `/otp/send` code-delivery step could fail
+ * outright for real users' arbitrary addresses — blocking sign-up rather than
+ * just adding delay). It skips code generation/verification entirely and
+ * only fires the same internal "someone signed up" notification `/otp/verify`
+ * used to fire on a verified code — see `handleCapture` and `resend.ts`.
+ * `/otp/send` and `/otp/verify` are kept, still fully authed/rate-limited, in
+ * case OTP verification is reinstated once SES is approved; they have no
+ * current caller in this repo.
  *
  * This file is intentionally thin: routing, request-body validation, and
  * gate ordering only. Every gate below (`auth.ts`, `turnstile.ts`,
@@ -17,7 +28,7 @@
  *
  * # Who calls this
  * - `tray/src-tauri/src/commands/otp.rs` (Part 2 of the plan, out of this
- *   Worker's scope) — `request_account_otp` / `confirm_account_otp`.
+ *   Worker's scope) — `capture_account_email`.
  *
  * # Related
  * - README.md — design rationale, KV schema, status-code mapping, manual
@@ -254,6 +265,74 @@ async function handleVerify(request: Request, env: Env, ctx: ExecutionContext): 
   }
 }
 
+/**
+ * `/otp/capture`: no code, no SES call — just rate-limit (same email/IP/global
+ * caps as `/otp/send`, own KV keys so capture traffic never eats the send
+ * budget) and fire the internal "signed up / changed email" notification,
+ * exactly like `/otp/verify`'s `verified` branch does. Always returns `ok()`
+ * once past rate-limiting: there is nothing further to verify, and a failed
+ * notification (`sendAccountEventEmail` never throws, see `resend.ts`) must
+ * never turn into a failed capture from the caller's point of view.
+ */
+async function handleCapture(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
+  const auth = checkBearerAuth(request.headers.get("Authorization"), env);
+  if (!auth.ok) return unauthorized();
+
+  const body = await readJsonBody(request);
+  if (!body) return badRequest("invalid_json");
+
+  const email = normalizeEmail(body.email);
+  if (!email) return badRequest("invalid_email");
+
+  // Optional, client-supplied, purely informational — see resolveAccountEvent's
+  // doc. An absent or unparseable value just reads as "no prior email".
+  const previousEmail = normalizeEmail(body.previousEmail);
+
+  const ip = clientIp(request);
+  const now = Date.now();
+  const hash = await emailHash(email);
+  const dateKey = `global:captures:${utcDateString(now)}`;
+
+  const [emailCounter, ipCounter, globalCounter] = await Promise.all([
+    getCounter(env.OTP_KV, `rl:capture:email:${hash}`),
+    getCounter(env.OTP_KV, `rl:capture:ip:${ip}`),
+    getCounter(env.OTP_KV, dateKey),
+  ]);
+
+  const decision = evaluateRateLimits({
+    emailRecord: emailCounter,
+    ipRecord: ipCounter,
+    globalRecord: globalCounter,
+    now,
+    caps: {
+      email: Number(env.RL_EMAIL_PER_DAY),
+      ip: Number(env.RL_IP_PER_HOUR),
+      global: Number(env.RL_GLOBAL_PER_DAY),
+    },
+  });
+  if (!decision.allowed) {
+    const scope: RateLimitScope = decision.scope ?? "global";
+    console.warn("otp-worker: capture rate limited", { scope, emailHashPrefix: hash.slice(0, 8) });
+    return rateLimited(scope);
+  }
+
+  await Promise.all([
+    putCounter(env.OTP_KV, `rl:capture:email:${hash}`, incrementCounter(emailCounter, now, DAY_MS), now),
+    putCounter(env.OTP_KV, `rl:capture:ip:${ip}`, incrementCounter(ipCounter, now, HOUR_MS), now),
+    putCounter(env.OTP_KV, dateKey, incrementCounter(globalCounter, now, DAY_MS), now, GLOBAL_COUNTER_KV_TTL_S),
+  ]);
+
+  const event = resolveAccountEvent(email, previousEmail);
+  if (event && env.NOTIFY_EMAIL) {
+    ctx.waitUntil(
+      sendAccountEventEmail(event, env).then((sent) => {
+        if (!sent) console.error("otp-worker: account-event notification failed to send", { kind: event.kind });
+      }),
+    );
+  }
+  return ok();
+}
+
 export default {
   async fetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
     const url = new URL(request.url);
@@ -263,6 +342,9 @@ export default {
       }
       if (request.method === "POST" && url.pathname === "/otp/verify") {
         return await handleVerify(request, env, ctx);
+      }
+      if (request.method === "POST" && url.pathname === "/otp/capture") {
+        return await handleCapture(request, env, ctx);
       }
       return notFound();
     } catch (err) {

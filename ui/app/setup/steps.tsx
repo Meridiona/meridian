@@ -33,16 +33,11 @@ export interface Wiz {
   // Step 2 — integrations (live connected-state from get_integrations)
   integrations: IntegrationsResponse | null
   refetchIntegrations: () => void
-  // Whether the OTP Worker reported "not configured" on the first send/verify
-  // attempt — the fresh-clone dev case (no `OTP_API_URL` baked in or set).
-  // Starts `false`; flips to `true` via `OtpForm`'s `onDevBypass` and never
-  // resets. When `true`, the Email step's Next button unblocks even with no
-  // captured email — see `EMAIL_STEP.canNext`.
-  otpNotConfigured: boolean
-  onDevBypass: () => void
-  // Step 3 — email capture (one-time OTP — see ui/app/setup/signin.tsx). The
-  // step body owns its own form/busy/error state; `onSignedIn` is just how it
-  // reports a completed capture back up to the wizard.
+  // Step 3 — email capture (plain, unverified — see ui/app/setup/signin.tsx).
+  // The step body owns its own form/busy/error state; `onSignedIn` is just how
+  // it reports a completed capture back up to the wizard. Capture is a local
+  // write (`save_account_email`) with no external dependency, so it never
+  // fails to configuration and needs no dev-bypass path.
   signedInEmail: string | null
   onSignedIn: (email: string) => void
   // Step 4 — intelligence. The one AI choice everything downstream obeys
@@ -285,46 +280,14 @@ function IntegrationsBody({ wiz }: { wiz: Wiz }) {
 }
 
 // ── STEP 3 — Email ────────────────────────────────────────────────────────────
-// One-time email + code, sent/verified through a small Cloudflare Worker
-// (tray/src-tauri/src/commands/otp.rs) — no client auth library, no session.
-// <OtpForm> is a thin next/dynamic boundary around the actual form (the
-// signin/ module — see OtpForm.tsx) — importing it here stays safe for the
-// static-export build (see signin.tsx's module doc).
-//
-// When the Worker isn't configured (a fresh clone with no `OTP_API_URL`), the
-// first send/verify attempt reports that via `onDevBypass` (see `Wiz.otpNotConfigured`),
-// and this shows a notice instead of the form — the wizard can proceed past
-// this step without an email captured.
+// Plain email capture, no verification — saved locally via `save_account_email`
+// (tray/src-tauri/src/commands/account.rs), with a best-effort notify to the
+// team through a small Cloudflare Worker (tray/src-tauri/src/commands/otp.rs) —
+// no client auth library, no session, no external dependency on the capture
+// path itself. <OtpForm> is a thin next/dynamic boundary around the actual
+// form (the signin/ module — see OtpForm.tsx) — importing it here stays safe
+// for the static-export build (see signin.tsx's module doc).
 function SignInBody({ wiz }: { wiz: Wiz }) {
-  // Dev mode with no Worker configured: email capture is unavailable, show a
-  // notice. Discovered reactively (see `Wiz.otpNotConfigured`'s doc) rather
-  // than known up front, so this only appears after a first attempt reports it.
-  if (wiz.otpNotConfigured) {
-    return (
-      <div className="flex flex-col items-center" style={{ width: '100%', maxWidth: 340, margin: '0 auto' }}>
-        <div className="w-full flex flex-col items-center mer-pop" style={{
-          gap: 10, borderRadius: 16, padding: '26px 26px 22px', textAlign: 'center',
-          border: '0.5px solid var(--t-card-border)',
-          background: 'color-mix(in srgb, var(--t-warning) 4%, var(--t-card))',
-        }}>
-          <div>
-            <p style={{ fontSize: 14.5, fontWeight: 600, color: 'var(--t-title)' }}>Sign-in disabled</p>
-            <p style={{ fontSize: 12, color: 'var(--t-muted)', marginTop: 3 }}>
-              This is a source build with no OTP Worker configured.<br />
-              {/* `var(--font-mono)`, not the browser's `monospace`: the wizard has ONE
-                  voice (SF Pro, via `--font-sans`, which `--font-mono` aliases), and
-                  these two `<code>`s were the only things in the whole setup flow
-                  still rendering in a different typeface. Kept as `<code>` because
-                  they name a literal env var and a literal filename - that is what
-                  the element is for; only the family was wrong. */}
-              Set <code style={{ fontFamily: 'var(--font-mono)', fontSize: 11 }}>OTP_API_URL</code> in <code style={{ fontFamily: 'var(--font-mono)', fontSize: 11 }}>.env</code> to enable sign-in.
-            </p>
-          </div>
-        </div>
-      </div>
-    )
-  }
-
   if (wiz.signedInEmail) {
     return (
       <div className="flex flex-col items-center" style={{ width: '100%', maxWidth: 340, margin: '0 auto' }}>
@@ -346,7 +309,7 @@ function SignInBody({ wiz }: { wiz: Wiz }) {
       </div>
     )
   }
-  return <OtpForm onSignedIn={wiz.onSignedIn} onDevBypass={wiz.onDevBypass} />
+  return <OtpForm onSignedIn={wiz.onSignedIn} />
 }
 
 // ── STEP 4 — Intelligence (which AI writes the summaries) ────────────────────
@@ -566,8 +529,8 @@ const EMAIL_STEP: StepMeta = {
   title: 'Sign in to Meridian',
   subtitle: "So we know who's using Meridian.",
   Body: SignInBody,
-  status: (s) => s.otpNotConfigured ? 'Disabled in dev' : (s.signedInEmail ?? 'Not signed in'),
-  canNext: (s) => !!s.signedInEmail || s.otpNotConfigured,
+  status: (s) => s.signedInEmail ?? 'Not signed in',
+  canNext: (s) => !!s.signedInEmail,
 }
 
 // ── Steps the WIZARD no longer runs — owned by the post-setup walkthrough ─────

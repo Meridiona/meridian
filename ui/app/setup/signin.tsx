@@ -41,16 +41,14 @@ const RequireEmailCaptureImpl = dynamic(() => import('./signin/RequireEmailCaptu
   loading: () => null,
 })
 
-/** The setup wizard's Email step body. Calls `onSignedIn(email)` once a code
- *  verifies (fresh capture, or `onDevBypass` when no Worker is configured) —
- *  never gates or hides anything itself; the wizard's `SignInBody`
- *  (steps.tsx) decides what to render based on that callback's result
- *  (`wiz.signedInEmail`). */
-export function OtpForm({ onSignedIn, onDevBypass }: {
+/** The setup wizard's Email step body. Calls `onSignedIn(email)` once the
+ *  typed address is captured (a local write, no verification) — never gates
+ *  or hides anything itself; the wizard's `SignInBody` (steps.tsx) decides
+ *  what to render based on that callback's result (`wiz.signedInEmail`). */
+export function OtpForm({ onSignedIn }: {
   onSignedIn: (email: string) => void
-  onDevBypass?: () => void
 }) {
-  return <OtpFormImpl onSignedIn={onSignedIn} onDevBypass={onDevBypass} />
+  return <OtpFormImpl onSignedIn={onSignedIn} />
 }
 
 /** Settings → Account's account control (see AccountSection.tsx) — shows the
