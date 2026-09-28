@@ -1180,34 +1180,29 @@ pub fn run() {
                 });
             }
 
-            // Re-assert Screen Recording on an already-onboarded launch, if the
-            // OS currently reads it as ungranted.
+            // Re-assert Screen Recording + Accessibility on an already-onboarded
+            // launch, if the OS currently reads either as ungranted.
             //
-            // Onboarding requests this exactly once and never again — see
+            // Onboarding requests these exactly once and never again — see
             // `poll::permissions`'s module doc. That is normally fine: a grant
             // made for a Developer-ID-signed build's code identity is supposed
             // to survive a plain reinstall of the same signed app. In practice
-            // Screen Recording specifically has a well-documented macOS quirk
-            // where WindowServer caches which *process* is authorized
-            // independently of the TCC database, and doesn't always notice a
-            // replaced binary until the Mac reboots or the grant is toggled
-            // off/on by hand — so a user who deletes `Meridian.app` (never
-            // running the in-app uninstall wizard, see `src/uninstall.rs`) and
-            // reinstalls can end up with a stale, non-functional grant and no
-            // onboarding flow left to fix it.
+            // both permissions have documented macOS quirks that can leave a
+            // grant stale without the OS ever telling this process so —
+            // Screen Recording via WindowServer's own authorization cache,
+            // which trails the TCC database and doesn't always notice a
+            // replaced binary until reboot or a manual toggle. A user who
+            // deletes `Meridian.app` (never running the in-app uninstall
+            // wizard, see `src/uninstall.rs`) and reinstalls can end up with a
+            // stale, non-functional grant and no onboarding flow left to fix
+            // it.
             //
-            // `request_screen_recording` (`CGRequestScreenCaptureAccess`) is a
-            // harmless no-op when the grant is already good — it only surfaces
-            // the system dialog when the OS genuinely doesn't consider this
-            // process authorized, which is exactly the case worth re-asserting.
-            //
-            // Deliberately Screen Recording only. Accessibility has no
-            // equivalent safe "request" primitive already in this codebase —
-            // `AXIsProcessTrustedWithOptions`'s prompt option needs a
-            // CoreFoundation dictionary this crate doesn't otherwise build, and
-            // getting that wrong would run on every launch for every user. The
-            // existing `poll::permissions` notice (which deep-links to Settings)
-            // is the remedy path for a stale Accessibility grant.
+            // Both `request_screen_recording` (`CGRequestScreenCaptureAccess`)
+            // and `sys::request_accessibility_prompt`
+            // (`AXIsProcessTrustedWithOptions`) are harmless no-ops when their
+            // grant is already good — each only surfaces its system dialog
+            // when the OS genuinely doesn't consider this process authorized,
+            // which is exactly the case worth re-asserting.
             #[cfg(target_os = "macos")]
             if onboarding_complete() {
                 tauri::async_runtime::spawn(async move {
@@ -1217,6 +1212,13 @@ pub fn run() {
                         tracing::info!(
                             granted,
                             "lib: re-asserted Screen Recording on an already-onboarded launch"
+                        );
+                    }
+                    if !crate::sys::accessibility_trusted() {
+                        let granted = crate::sys::request_accessibility_prompt();
+                        tracing::info!(
+                            granted,
+                            "lib: re-asserted Accessibility on an already-onboarded launch"
                         );
                     }
                 });

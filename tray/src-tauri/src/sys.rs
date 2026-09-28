@@ -575,6 +575,57 @@ pub fn screen_recording_trusted() -> bool {
     true
 }
 
+/// Re-issue the macOS Accessibility trust prompt — the `AXIsProcessTrusted`
+/// equivalent of [`crate::commands::setup::request_screen_recording`]'s
+/// `CGRequestScreenCaptureAccess` call. Surfaces the OS "would like to
+/// control this computer" dialog when the process is not currently trusted;
+/// a harmless no-op (returns `true` immediately, no dialog) when it already
+/// is. See `lib.rs`'s already-onboarded-relaunch check for why this needs to
+/// exist at all: onboarding only asks once, ever, and a grant can go stale
+/// without macOS ever telling this process so.
+///
+/// Builds the `{ kAXTrustedCheckOptionPrompt: true }` options dictionary
+/// `AXIsProcessTrustedWithOptions` expects via `objc2`/`objc2-foundation`
+/// (already a dependency here for the login-item and app-icon bindings)
+/// rather than hand-rolled CoreFoundation pointer arithmetic — object
+/// construction and reference counting are the maintained crate's job, not
+/// ours, which is the whole reason it's used instead of raw FFI.
+pub fn request_accessibility_prompt() -> bool {
+    #[cfg(target_os = "macos")]
+    {
+        use objc2::rc::Retained;
+        use objc2_foundation::{NSDictionary, NSNumber, NSString};
+        use std::ffi::c_void;
+
+        #[link(name = "ApplicationServices", kind = "framework")]
+        extern "C" {
+            /// `CFStringRef` constant, toll-free bridged with `NSString *` —
+            /// the standard way to reference an exported CF constant from a
+            /// non-Swift binding.
+            static kAXTrustedCheckOptionPrompt: *const NSString;
+            fn AXIsProcessTrustedWithOptions(options: *const c_void) -> bool;
+        }
+
+        // Safety: `kAXTrustedCheckOptionPrompt` is a framework-exported
+        // constant pointer, guaranteed non-null and valid for the process
+        // lifetime by ApplicationServices; reading it as `&NSString` is the
+        // documented toll-free-bridge access pattern.
+        let key: &NSString = unsafe { &*kAXTrustedCheckOptionPrompt };
+        let value = NSNumber::new_bool(true);
+        let options = NSDictionary::from_slices(&[key], &[&*value]);
+
+        // Safety: `options` stays alive (owned by this stack frame) for the
+        // duration of the call below, which is the only place its pointer
+        // escapes to. `NSDictionary`/`CFDictionaryRef` are toll-free
+        // bridged, so passing the raw retained-object pointer where the C
+        // signature expects a `CFDictionaryRef` is the standard interop
+        // pattern — not a cast between unrelated types.
+        unsafe { AXIsProcessTrustedWithOptions(Retained::as_ptr(&options) as *const c_void) }
+    }
+    #[cfg(not(target_os = "macos"))]
+    true
+}
+
 /// Register the fixed interactive-category set (`meridian_core`'s
 /// [`meridian_core::notifications::categories`]) with the OS. Called once at
 /// startup from `lib.rs` on bundled runs; a failure downgrades every
