@@ -1,14 +1,14 @@
 //ambient dev tool that watches what you do and updates your PM tickets automatically, boosting developer productivity
 /**
  * Wiring-level tests for `index.ts`'s router and auth gate — every gate
- * module (`auth.ts`, `otp.ts`, `ratelimit.ts`, `turnstile.ts`) has its own
- * thorough unit tests, but until this file nothing ever exercised the actual
- * exported `fetch` handler that composes them. That left CLAUDE.md's Hard
- * Rules #1 ("authenticate every request") and #3 ("allowlist the paths it
- * serves") — the two properties this Worker exists specifically to get
- * right, per README.md's "Why this design" — asserted by NOTHING: the
- * deploy script's mock-server exercise (see scripts/deploy-otp-worker.sh)
- * only ever tests the SCRIPT, not this Worker.
+ * module (`auth.ts`, `ratelimit.ts`) has its own thorough unit tests, but
+ * until this file nothing ever exercised the actual exported `fetch` handler
+ * that composes them. That left CLAUDE.md's Hard Rules #1 ("authenticate
+ * every request") and #3 ("allowlist the paths it serves") — the two
+ * properties this Worker exists specifically to get right, per README.md's
+ * "Why this design" — asserted by NOTHING: the deploy script's mock-server
+ * exercise (see scripts/deploy-otp-worker.sh) only ever tests the SCRIPT, not
+ * this Worker.
  *
  * Deliberately scoped to what needs no secrets: there is no `.dev.vars` here
  * (and shouldn't be — that would mean committing a bearer token, even a fake
@@ -27,9 +27,9 @@
 import { SELF } from "cloudflare:test";
 import { describe, expect, it } from "vitest";
 
-describe("router: only POST /otp/send, /otp/verify and /otp/capture exist", () => {
-  it("404s a GET to /otp/send — a method mismatch is not the allowlisted route", async () => {
-    const res = await SELF.fetch("https://example.com/otp/send");
+describe("router: only POST /otp/capture exists", () => {
+  it("404s a GET to /otp/capture — a method mismatch is not the allowlisted route", async () => {
+    const res = await SELF.fetch("https://example.com/otp/capture");
     expect(res.status).toBe(404);
     expect(await res.json()).toEqual({ error: "not_found" });
   });
@@ -45,9 +45,9 @@ describe("router: only POST /otp/send, /otp/verify and /otp/capture exist", () =
   });
 });
 
-describe("auth gate: unauthenticated requests never reach KV/SES", () => {
-  it("401s POST /otp/send with no Authorization header", async () => {
-    const res = await SELF.fetch("https://example.com/otp/send", {
+describe("auth gate: unauthenticated requests never reach KV", () => {
+  it("401s POST /otp/capture with no Authorization header", async () => {
+    const res = await SELF.fetch("https://example.com/otp/capture", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ email: "test@example.com" }),
@@ -56,20 +56,11 @@ describe("auth gate: unauthenticated requests never reach KV/SES", () => {
     expect(await res.json()).toEqual({ error: "unauthorized" });
   });
 
-  it("401s POST /otp/verify with no Authorization header", async () => {
-    const res = await SELF.fetch("https://example.com/otp/verify", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ email: "test@example.com", code: "123456" }),
-    });
-    expect(res.status).toBe(401);
-  });
-
-  it("401s POST /otp/send with a bearer token, since no OTP_CLIENT_TOKEN secret is configured here", async () => {
+  it("401s POST /otp/capture with a bearer token, since no OTP_CLIENT_TOKEN secret is configured here", async () => {
     // This is the empty-secret-never-passes guarantee (auth.test.ts) proven
     // at the real handler: an unconfigured secret must reject EVERY token,
     // not just requests with none at all.
-    const res = await SELF.fetch("https://example.com/otp/send", {
+    const res = await SELF.fetch("https://example.com/otp/capture", {
       method: "POST",
       headers: { "Content-Type": "application/json", Authorization: "Bearer anything-at-all" },
       body: JSON.stringify({ email: "test@example.com" }),
@@ -78,19 +69,10 @@ describe("auth gate: unauthenticated requests never reach KV/SES", () => {
   });
 
   it("auth is checked before body parsing — malformed JSON with no auth still 401s, not 400", async () => {
-    const res = await SELF.fetch("https://example.com/otp/send", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: "not json at all {{{",
-    });
-    expect(res.status).toBe(401);
-  });
-
-  it("401s POST /otp/capture with no Authorization header", async () => {
     const res = await SELF.fetch("https://example.com/otp/capture", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ email: "test@example.com" }),
+      body: "not json at all {{{",
     });
     expect(res.status).toBe(401);
   });
