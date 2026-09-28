@@ -206,7 +206,7 @@ block2 = "0.6"
 # Typed NSWorkspace/NSImage/NSBitmapImageRep bindings for real per-app icon
 # extraction (commands/app_icons.rs) — same generation family as objc2 0.6.
 objc2-app-kit = { version = "0.3", default-features = false, features = ["std", "NSWorkspace", "NSImage", "NSImageRep", "NSBitmapImageRep", "NSRunningApplication"] }
-objc2-foundation = { version = "0.3", default-features = false, features = ["std", "NSString", "NSData", "NSDictionary", "NSGeometry", "NSProcessInfo", "NSError"] }
+objc2-foundation = { version = "0.3", default-features = false, features = ["std", "NSString", "NSData", "NSDictionary", "NSGeometry", "NSProcessInfo", "NSError", "NSObject", "NSValue"] }
 # SMAppService — the sanctioned way to register a login item since macOS 13, and
 # the only one that puts a NAMED, user-togglable "Meridian" entry in System
 # Settings → General → Login Items & Extensions. Same objc2 generation (0.3.x)

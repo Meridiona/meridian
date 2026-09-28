@@ -16,9 +16,15 @@
 //!   alongside this one, not called from inside it) that repaints the
 //!   displayed health status the moment the daemon+DB are ready, instead of
 //!   waiting for this loop's next 30/60 s-cadenced health tick.
+//! - [`permissions`] — re-checks the OS TCC grants (input side of "is
+//!   capture working").
+//! - [`capture_health`] — re-checks that `capture_frames` is actually
+//!   getting new rows (output side of the same question) — catches a stale
+//!   grant that still reads "granted" per the OS but isn't producing data.
 //!
 //! The tray-sync helpers (emit / tooltip / menu) stay here, coupled to the loop.
 
+mod capture_health;
 mod live;
 mod notifications;
 mod permissions;
@@ -54,6 +60,10 @@ pub async fn run_poll_loop(app: tauri::AppHandle, state: Arc<Mutex<AppState>>) {
     // starts with an empty map, which is what gives every launch its grace
     // period (see `permissions`' module docs).
     let mut permission_debounce = permissions::PermissionDebounce::default();
+    // When this loop started — `capture_health`'s startup grace period is
+    // measured against this, not a static, for the same "dies with the
+    // process" reasoning as the debounce above.
+    let loop_started = Instant::now();
 
     loop {
         // Tick 0, 1, 2… every 30s.
@@ -113,6 +123,8 @@ pub async fn run_poll_loop(app: tauri::AppHandle, state: Arc<Mutex<AppState>>) {
             }
             if do_health {
                 permissions::check_permissions(&app, pool, &mut permission_debounce).await;
+                let paused = state.lock().unwrap().pause_source.is_some();
+                capture_health::check_capture_health(pool, loop_started, paused).await;
             }
         }
         // Disk-space guard: auto-pause capture when free disk space on the
