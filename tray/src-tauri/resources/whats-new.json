@@ -1,6 +1,24 @@
 {
   "releases": [
     {
+      "version": "1.91.0",
+      "date": "2026-09-28",
+      "items": [
+        {
+          "title": "Simpler sign-in",
+          "body": "Sign-in is now a single email entry - no verification code or extra screens to get through."
+        },
+        {
+          "title": "Tougher against corruption",
+          "body": "A stronger single-instance lock and a restart fix reduce the risk of database corruption."
+        },
+        {
+          "title": "Tasks sync faster",
+          "body": "Opening the dashboard or connecting a tracker now syncs your tasks immediately, not on the clock."
+        }
+      ]
+    },
+    {
       "version": "1.90.0",
       "date": "2026-08-24",
       "items": [
