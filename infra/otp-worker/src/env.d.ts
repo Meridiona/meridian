@@ -21,30 +21,12 @@ declare global {
   interface Env {
     /** Bearer token the tray binary sends — see `auth.ts`. */
     OTP_CLIENT_TOKEN: string;
-    /** HMAC pepper for OTP code hashing — see `otp.ts`. Never the bare code. */
-    OTP_CODE_PEPPER: string;
-    AWS_ACCESS_KEY_ID: string;
-    AWS_SECRET_ACCESS_KEY: string;
-    AWS_REGION: string;
     /**
-     * Resend sending key for the team sign-up notification only — see
-     * `resend.ts` for why that one email is not on SES. Scoped in the Resend
-     * dashboard to sending-access on the `meridiona.com` domain, so it cannot
-     * manage the account or send as `mail.meridiona.com`.
+     * Resend sending key for the account-event notification (sign-up /
+     * email changed) — see `resend.ts`. Scoped in the Resend dashboard to
+     * sending-access on the `meridiona.com` domain, so it cannot manage the
+     * account or send as `mail.meridiona.com`.
      */
     RESEND_API_KEY: string;
-    /**
-     * Staging-only bearer token that also unlocks the `/otp/send` code-echo
-     * (see `auth.ts`). Never set outside `env.staging` — its mere presence on
-     * production would still be inert there (see `auth.ts`'s `ENVIRONMENT`
-     * check), but it should never be set there in the first place.
-     */
-    CI_TEST_TOKEN?: string;
-    /**
-     * Cloudflare Turnstile secret key. Unset until/unless the frontend
-     * feasibility spike (see plan) lands and a Turnstile site is
-     * provisioned — see `turnstile.ts` for the unconfigured-secret behaviour.
-     */
-    TURNSTILE_SECRET_KEY?: string;
   }
 }

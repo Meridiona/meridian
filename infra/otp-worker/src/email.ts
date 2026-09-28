@@ -18,9 +18,8 @@ const MAX_EMAIL_LENGTH = 320;
  * Normalize a raw email for hashing/delivery: trim, lowercase, and a
  * deliberately permissive syntactic check.
  *
- * Full RFC 5322 validation is not this Worker's job — SES will bounce
- * anything it can't deliver. This only needs to reject obviously-malformed
- * input before it becomes a KV key or an SES recipient.
+ * Full RFC 5322 validation is not this Worker's job. This only needs to
+ * reject obviously-malformed input before it becomes a KV key.
  *
  * Returns `null` for anything that doesn't look like an email at all.
  */

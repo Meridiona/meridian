@@ -1,6 +1,6 @@
 //ambient dev tool that watches what you do and updates your PM tickets automatically, boosting developer productivity
 import { describe, expect, it } from "vitest";
-import { hmacSha256Hex, sha256Hex, timingSafeEqualStrings } from "../crypto-utils";
+import { sha256Hex, timingSafeEqualStrings } from "../crypto-utils";
 
 describe("timingSafeEqualStrings", () => {
   it("returns true for identical strings", () => {
@@ -35,27 +35,6 @@ describe("sha256Hex", () => {
   it("differs for different input", async () => {
     const a = await sha256Hex("a@example.com");
     const b = await sha256Hex("b@example.com");
-    expect(a).not.toBe(b);
-  });
-});
-
-describe("hmacSha256Hex", () => {
-  it("is deterministic for the same key and message", async () => {
-    const a = await hmacSha256Hex("pepper", "123456");
-    const b = await hmacSha256Hex("pepper", "123456");
-    expect(a).toBe(b);
-    expect(a).toMatch(/^[0-9a-f]{64}$/);
-  });
-
-  it("differs when the pepper differs — a code hash from one pepper must not verify under another", async () => {
-    const a = await hmacSha256Hex("pepper-one", "123456");
-    const b = await hmacSha256Hex("pepper-two", "123456");
-    expect(a).not.toBe(b);
-  });
-
-  it("differs when the code differs", async () => {
-    const a = await hmacSha256Hex("pepper", "123456");
-    const b = await hmacSha256Hex("pepper", "654321");
     expect(a).not.toBe(b);
   });
 });
