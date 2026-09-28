@@ -1180,6 +1180,48 @@ pub fn run() {
                 });
             }
 
+            // Re-assert Screen Recording on an already-onboarded launch, if the
+            // OS currently reads it as ungranted.
+            //
+            // Onboarding requests this exactly once and never again — see
+            // `poll::permissions`'s module doc. That is normally fine: a grant
+            // made for a Developer-ID-signed build's code identity is supposed
+            // to survive a plain reinstall of the same signed app. In practice
+            // Screen Recording specifically has a well-documented macOS quirk
+            // where WindowServer caches which *process* is authorized
+            // independently of the TCC database, and doesn't always notice a
+            // replaced binary until the Mac reboots or the grant is toggled
+            // off/on by hand — so a user who deletes `Meridian.app` (never
+            // running the in-app uninstall wizard, see `src/uninstall.rs`) and
+            // reinstalls can end up with a stale, non-functional grant and no
+            // onboarding flow left to fix it.
+            //
+            // `request_screen_recording` (`CGRequestScreenCaptureAccess`) is a
+            // harmless no-op when the grant is already good — it only surfaces
+            // the system dialog when the OS genuinely doesn't consider this
+            // process authorized, which is exactly the case worth re-asserting.
+            //
+            // Deliberately Screen Recording only. Accessibility has no
+            // equivalent safe "request" primitive already in this codebase —
+            // `AXIsProcessTrustedWithOptions`'s prompt option needs a
+            // CoreFoundation dictionary this crate doesn't otherwise build, and
+            // getting that wrong would run on every launch for every user. The
+            // existing `poll::permissions` notice (which deep-links to Settings)
+            // is the remedy path for a stale Accessibility grant.
+            #[cfg(target_os = "macos")]
+            if onboarding_complete() {
+                tauri::async_runtime::spawn(async move {
+                    tokio::time::sleep(tokio::time::Duration::from_millis(1500)).await;
+                    if !crate::sys::screen_recording_trusted() {
+                        let granted = commands::request_screen_recording().await;
+                        tracing::info!(
+                            granted,
+                            "lib: re-asserted Screen Recording on an already-onboarded launch"
+                        );
+                    }
+                });
+            }
+
             // No silent auto-install on launch: the DMG update surfaces as an
             // in-app banner (sidebar + popover) that checks on open via the
             // `check_update` command, so the user sees + consents to the update
