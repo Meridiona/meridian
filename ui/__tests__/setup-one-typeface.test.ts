@@ -56,7 +56,7 @@ describe('the setup wizard uses one typeface', () => {
 
   it('never hard-codes a font family', () => {
     // `fontFamily: 'inherit'` is allowed and is not a family - it is the opposite,
-    // an explicit refusal to pick one (EmailCodeForm's input uses it so the OTP
+    // an explicit refusal to pick one (OtpForm's input uses it so the OTP
     // boxes match the surrounding card).
     const offenders: string[] = []
     for (const f of files) {

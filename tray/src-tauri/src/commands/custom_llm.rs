@@ -255,14 +255,27 @@ fn make_id(name: &str, existing: &[CustomLlmProvider]) -> String {
 /// drift — a rule enforced on the add path but not the listing path would be a rule with a
 /// hole in it.
 fn validate_transport_inputs(base_url: &str, api_key: &str) -> Result<(), String> {
-    if api_key.trim().is_empty() {
-        return Err("API key is required".into());
-    }
+    // NO EMPTY-KEY REJECTION, deliberately. A self-hosted OpenAI-compatible server (Ollama,
+    // LM Studio, llama.cpp, vLLM) usually has no auth at all, and there is no key for the
+    // user to invent - requiring one made every local endpoint unconfigurable, which is the
+    // gap this allowance exists to close. A blank key sends no `Authorization` header (see
+    // `openai_compat::with_auth`), so nothing is leaked by permitting it.
+    //
+    // A blank key against an endpoint that DOES require one is not silently accepted either:
+    // it fails at `list_models` or at the probe, both of which run during setup with the user
+    // watching, and both of which report a 401 in the vendor's own words. That is the right
+    // place to find out - unlike a wrong MODEL, which would only surface hours later.
+    //
+    // The reachability rule that was considered and rejected: allowing a blank key only for
+    // loopback/RFC1918 hosts. It would have refused Tailscale (100.64/10), Docker host
+    // aliases and reverse-proxied local models, all of them legitimate, in exchange for
+    // approximately no security - an EMPTY credential discloses nothing wherever it is sent.
     if !base_url.starts_with("http://") && !base_url.starts_with("https://") {
         return Err("base URL must start with http:// or https://".into());
     }
     // The key becomes an Authorization header and the URL becomes a request line: a newline
     // in either is header injection, exactly as `oo_email`/`oo_password` guard against.
+    // Still checked for a BLANK key: blank is allowed, whitespace-with-a-newline is not.
     for (field, v) in [("API key", api_key), ("base URL", base_url)] {
         if v.contains('\n') || v.contains('\r') {
             return Err(format!("{field} contains invalid characters"));
@@ -876,10 +889,31 @@ mod tests {
         assert!(validate("n", "https://x.test/v1", "m", "k").is_ok());
         assert!(validate("", "https://x.test/v1", "m", "k").is_err());
         assert!(validate("n", "https://x.test/v1", "", "k").is_err());
-        assert!(validate("n", "https://x.test/v1", "m", "").is_err());
         assert!(validate("n", "ftp://x.test", "m", "k").is_err());
         assert!(validate("n", "https://x.test/v1", "m", "k\nX-Evil: 1").is_err());
         assert!(validate("n", "https://x.test/v1\r\nHost: evil", "m", "k").is_err());
+    }
+
+    /// A KEYLESS endpoint is a supported configuration, not a half-filled form.
+    ///
+    /// This assertion used to read `is_err()` - "API key is required" - and that single line
+    /// was the whole reason no self-hosted server could be configured: Ollama, LM Studio,
+    /// llama.cpp and vLLM serve the OpenAI protocol with no auth, so there is no key for the
+    /// user to type. Both doors are pinned here because they are separate call sites of the
+    /// shared validator, and the listing one runs FIRST in the setup flow - leaving it strict
+    /// would have failed the flow at "ask the endpoint what it serves", before the add.
+    #[test]
+    fn a_keyless_endpoint_is_allowed_at_both_doors() {
+        assert!(validate("local", "http://localhost:11434/v1", "llama3", "").is_ok());
+        assert!(validate_transport_inputs("http://localhost:1234/v1", "").is_ok());
+        // Plain http is what a local server actually speaks - the scheme check must not have
+        // quietly become https-only while the key rule was being relaxed.
+        assert!(validate_transport_inputs("http://127.0.0.1:8000/v1", "").is_ok());
+        // Blank is allowed; blank-with-a-newline is still header injection.
+        assert!(validate_transport_inputs("http://localhost:11434/v1", " \n ").is_err());
+        // Relaxing the key must not have relaxed anything else on the same path.
+        assert!(validate("local", "localhost:11434", "llama3", "").is_err());
+        assert!(validate("local", "http://localhost:11434/v1", "", "").is_err());
     }
 
     /// One unreadable row must not cost the user every other endpoint.

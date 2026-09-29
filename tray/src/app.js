@@ -535,11 +535,13 @@ async function armNotificationActions() {
 
 // ── Sign-in gate ────────────────────────────────────────────────────────────
 // The popover is locked until an account email is persisted Rust-side
-// (get_account_email) — the mirror of the dashboard window's Clerk session.
-// Signing in itself happens in the dashboard (its inline sign-in screen), since
-// this vanilla-JS popover can't host Clerk (React); the lock's CTA just routes
-// there. Re-checked on focus so a sign-in / sign-out in the dashboard is
-// reflected here the next time the popover is shown.
+// (get_account_email) — the mirror of the dashboard window's email-capture
+// gate (RequireEmailCapture). Signing in itself happens in the dashboard (its
+// inline capture screen), since this vanilla-JS popover can't host the OTP
+// form (React); the lock's CTA just routes there. Re-checked on focus so a
+// capture completed in the dashboard is reflected here the next time the
+// popover is shown. There is no sign-out anymore, so this only ever
+// transitions locked → unlocked, never back.
 const signinLock = $('signin-lock')
 let signedInKnown = null // last applied state; avoids redundant re-renders
 let liveStarted = false // the live popover machinery (below) runs at most once
@@ -594,7 +596,7 @@ async function checkAuth() {
     applyAuthGate(!!email)
   } catch {
     // A transient read failure must not lock the user out of their own app —
-    // fail open (the dashboard's Clerk gate is the authoritative check).
+    // fail open (the dashboard's email-capture gate is the authoritative check).
     applyAuthGate(true)
   }
 }

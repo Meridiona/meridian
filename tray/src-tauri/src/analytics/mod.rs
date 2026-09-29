@@ -16,10 +16,9 @@
 //! Nothing else: a single raw HTTP POST to PostHog's `/i/v0/e/`
 //! capture endpoint, no `posthog-js`, so session replay / autocapture /
 //! surveys / feature flags never activate — that's client-SDK behaviour this
-//! code never touches. `$geoip_disable` is set on every event since the
-//! request originates from the user's own machine, not a backend relay (the
-//! default GeoIP enrichment would otherwise resolve each user's real
-//! location).
+//! code never touches. GeoIP enrichment is left on PostHog's default (no
+//! `$geoip_disable`), so events resolve each user's location from their
+//! request IP.
 //!
 //! **Consent.** Everything here is gated on
 //! [`meridian_core::settings::RuntimeSettings::product_analytics_enabled`]
@@ -208,7 +207,7 @@ fn posthog_api_key() -> String {
 pub(crate) async fn capture(
     event: &str,
     distinct_id: &str,
-    mut properties: serde_json::Map<String, serde_json::Value>,
+    properties: serde_json::Map<String, serde_json::Value>,
 ) -> bool {
     let api_key = posthog_api_key();
     if api_key.is_empty() {
@@ -223,7 +222,6 @@ pub(crate) async fn capture(
         );
         return false;
     }
-    properties.insert("$geoip_disable".to_string(), serde_json::Value::Bool(true));
     let body = serde_json::json!({
         "api_key": api_key,
         "event": event,

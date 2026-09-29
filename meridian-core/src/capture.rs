@@ -99,6 +99,36 @@ pub async fn insert_capture_frame(pool: &SqlitePool, frame: &CaptureFrameInsert)
     }
 }
 
+/// Timestamp of the newest row in `capture_frames`, if any.
+///
+/// The one read this module exposes — everything else about `capture_frames`
+/// is read by the daemon's ETL (`src/db/screenpipe.rs`), not the tray. This
+/// exists for the tray's own output-side health check
+/// (`tray/src-tauri/src/poll/capture_health.rs`): "is capture actually
+/// producing frames" is a question about this table's freshness, and that
+/// check has no other reason to touch raw SQL — see this crate's `lib.rs`
+/// doc on why direct `sqlx` access from the tray binary is otherwise avoided.
+///
+/// `None` covers both "no frames yet" and "table missing" identically —
+/// callers that only care about freshness have no different action for
+/// either case.
+pub async fn last_frame_timestamp(pool: &SqlitePool) -> Result<Option<DateTime<Utc>>> {
+    let raw: Option<String> = match sqlx::query_scalar("SELECT MAX(timestamp) FROM capture_frames")
+        .fetch_one(pool)
+        .await
+    {
+        Ok(v) => v,
+        Err(e) if is_missing_table(&e) => return Ok(None),
+        Err(e) => return Err(e).context("last_frame_timestamp"),
+    };
+    let Some(raw) = raw else {
+        return Ok(None);
+    };
+    let ts = DateTime::parse_from_rfc3339(&raw)
+        .with_context(|| format!("last_frame_timestamp: could not parse '{raw}'"))?;
+    Ok(Some(ts.with_timezone(&Utc)))
+}
+
 /// One OCR'd sample from a monitor OTHER than the one holding the
 /// currently-focused window (multi-screen capture, context-only — see
 /// `tray/src-tauri/src/capture/screenpipe.rs`'s secondary-monitor sweep).

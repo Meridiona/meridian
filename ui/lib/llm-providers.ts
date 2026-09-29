@@ -408,6 +408,15 @@ export const LLM_RANK_SUBSCRIPTION: LlmRank = {
 }
 export const LLM_RANK_FREE: LlmRank = { badge: 'FREE', note: 'GOOD ACCURACY' }
 
+/** The self-configured endpoint's rank - deliberately NOT `LLM_RANK_FREE`.
+ *
+ *  Both of that badge's claims would be false here. "FREE" is a fact about a curated
+ *  preset's published tier, and an endpoint the user brings may be a metered cloud key;
+ *  "GOOD ACCURACY" is a claim about a model we picked, and here the model is theirs. So this
+ *  states what IS known - whose endpoint it is and where it can live - and claims nothing
+ *  about price or quality that only the user can know. */
+export const LLM_RANK_CUSTOM: LlmRank = { badge: 'YOUR OWN', note: 'LOCAL OR CLOUD' }
+
 export const LLM_GATE_TITLE = 'Do you have a Claude, ChatGPT or Cursor subscription?'
 export const LLM_GATE_BODY =
   'Meridian writes your summaries with an AI engine. It can use a subscription you already pay for, or set you up with a free one.'
@@ -476,11 +485,21 @@ export const USAGE_FOOTPRINT_NOTE =
  * the "+ Add a custom endpoint" tile advertised it on the settings screen as though it were a
  * capability rather than a leftover.
  *
- * The cost, stated plainly: an arbitrary OpenAI-compatible endpoint can no longer be added
- * from the UI - only the two curated presets below can. The registry underneath is
- * untouched - `add_custom_llm_provider` still exists, `<CloudKeySetup>` still calls it, and
- * an endpoint added by an older build (or a third vendor added by hand) still loads, runs
- * and can be selected. Only the way to CREATE one from the UI narrowed to these presets.
+ * The cost that used to be stated here - "an arbitrary OpenAI-compatible endpoint can no
+ * longer be added from the UI" - is PAID BACK by `<CustomEndpointSetup>` and
+ * `CUSTOM_ENDPOINT_DISPLAY` below, without reopening what this note was protecting.
+ *
+ * The two are not the same surface and that is the whole point. What made the old form wrong
+ * was WHERE it stood: on the no-subscription path, handing a questionnaire to the one person
+ * who arrived precisely to avoid one. So the free path still gets `<CloudKeySetup>` and only
+ * that, the gate never offers a form, and the free-key tiles still come from `CLOUD_PRESETS`.
+ * The base-URL form lives on the chooser grid behind `!gate` - the same condition those tiles
+ * already use - where it is reached only by someone who went looking for it.
+ *
+ * It is also not the old form rebuilt. There is no vendor dropdown (the vendor is always
+ * `custom`) and no pair of hand-guessed rate-limit fields; what is left is the three things
+ * only the user can know - base URL, key if their server wants one, and which model - and the
+ * model still comes from the endpoint's own `/models` rather than being typed blind.
  */
 
 /**
@@ -706,6 +725,100 @@ export const ALL_KNOWN_PRESETS: CloudKeyPreset[] = [GROQ, OLLAMA]
  *  Rust before its frontend data lands). See `ALL_KNOWN_PRESETS`. */
 export function presetForVendor(vendor: string): CloudKeyPreset | undefined {
   return ALL_KNOWN_PRESETS.find((p) => p.vendor === vendor)
+}
+
+/**
+ * The vendor string every self-configured endpoint is stored under.
+ *
+ * A single literal, not a per-service value, because there is nothing to choose FROM: the
+ * user brings a URL, and "which vendor is behind it" is a question neither they nor we can
+ * answer usefully (an OpenAI-compatible URL may be Ollama, LM Studio, vLLM, a proxy, or a
+ * service nobody here has heard of). The old form asked it anyway via a dropdown, which is
+ * exactly the field that made it a questionnaire - see the note above `CloudKeyPreset`.
+ *
+ * Deliberately NOT a member of `CLOUD_PRESETS` or `ALL_KNOWN_PRESETS`: it is not a curated
+ * free-key vendor and has no key URL, sign-up copy or published limits to put in one. It is
+ * routed by `vendorDisplay`, and rendering it is `<CustomEndpointSetup>`'s job.
+ */
+export const CUSTOM_ENDPOINT_VENDOR = 'custom'
+
+/** The display half of a vendor - the only fields the registry screens actually render.
+ *
+ *  `CustomDetail` used to take a whole `CloudKeyPreset` for two reads (`.name`, `.vendor`),
+ *  which is why a self-configured endpoint could not use it: satisfying that type would have
+ *  meant inventing a key URL, a free badge and privacy copy for an endpoint that has none,
+ *  and invented trust copy is worse than absent trust copy. */
+export interface VendorDisplay {
+  vendor: string
+  name: string
+  blurb: string
+  /** Heading for the registry screen. Defaults to `Your <name> key`, which is right for a
+   *  curated preset and wrong for a self-configured endpoint that may have no key at all. */
+  detailHeading?: string
+  /** The line under that heading. OVERRIDABLE because the default ends in a claim -
+   *  "Nothing is charged" - that is true of every free-tier preset and false of an endpoint
+   *  the user brought, which may be a metered cloud key. */
+  detailBlurb?: string
+  /** The "add another" control's label. Defaults to `Add another <name> key`. */
+  addAnotherLabel?: string
+}
+
+/** How a self-configured endpoint names itself before the user has named it.
+ *
+ *  No FREE badge and no privacy claims, unlike every `CloudKeyPreset`: what this endpoint
+ *  costs and what it does with the data are facts about a server we know nothing about, and
+ *  the presets can make those claims only because each one links the vendor's own policy. */
+export const CUSTOM_ENDPOINT_DISPLAY: VendorDisplay = {
+  vendor: CUSTOM_ENDPOINT_VENDOR,
+  name: 'Custom endpoint',
+  blurb: 'Any OpenAI-compatible API - a local model or your own cloud key.',
+  // "Your Custom endpoint key" is both clumsy and wrong - a local endpoint has no key - so
+  // all three strings are stated rather than derived from `name`.
+  detailHeading: 'Your endpoints',
+  // No cost claim, in either direction. What this endpoint charges is a fact about a server
+  // we know nothing about, and the presets can only promise "nothing is charged" because
+  // each one names a published free tier.
+  detailBlurb: 'Meridian writes your summaries on the endpoint you connected.',
+  addAnotherLabel: 'Add another endpoint',
+}
+
+/** Name and blurb for `vendor`, whether it is a curated preset or a self-configured endpoint.
+ *
+ *  The single display lookup for every registry surface. `presetForVendor` still answers for
+ *  the preset-only questions (which wizard, which key URL) - this one answers "what do I call
+ *  it on screen", which is the question `custom` can also answer. */
+export function vendorDisplay(vendor: string): VendorDisplay | undefined {
+  if (vendor === CUSTOM_ENDPOINT_VENDOR) return CUSTOM_ENDPOINT_DISPLAY
+  return presetForVendor(vendor)
+}
+
+/**
+ * Model-name fragments that cannot answer a chat completion - speech, embeddings, rerankers,
+ * safety classifiers - filtered out of the model list a self-configured endpoint offers.
+ *
+ * The union of what the presets filter, plus the families a LOCAL server characteristically
+ * serves alongside its chat models (`nomic`, `bge`, `minilm`, `rerank`): a local Ollama or
+ * LM Studio install commonly has an embedding model pulled next to a chat one, and offering
+ * it as a chat model produces an endpoint that fails every hour rather than at setup.
+ *
+ * A FILTER, never a ranking. Unlike a preset there is no `modelPreference` to apply: nobody
+ * here can rank the models on a server they have never seen, so the user chooses and this
+ * only removes what provably cannot work.
+ */
+export const NON_CHAT_MODEL_FRAGMENTS: string[] = [
+  'whisper', 'tts', 'embed', 'embedding', 'bge', 'nomic', 'minilm',
+  'rerank', 'guard', 'prompt-guard', 'moderation', 'clip', 'stable-diffusion',
+]
+
+/** The chat-capable subset of what an endpoint reported, in the endpoint's own order.
+ *
+ *  Order is preserved rather than sorted: a server lists its models in an order it chose, and
+ *  alphabetising it would bury the one the user just pulled under whatever starts with an
+ *  early letter. */
+export function chatCapableModels(available: string[]): string[] {
+  return available.filter(
+    (m) => !NON_CHAT_MODEL_FRAGMENTS.some((bad) => m.toLowerCase().includes(bad)),
+  )
 }
 
 /**

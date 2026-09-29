@@ -50,6 +50,22 @@ pub struct HealthResponse {
     pub llm_provider_detail: Option<String>,
 }
 
+/// Whether a [`HealthResponse`] counts as a healthy tray: the DB is open and
+/// the daemon process is running (the two signals the popover's
+/// online/offline banner is actually gated on — LLM-provider availability is
+/// a separate, softer banner and does not factor in here).
+///
+/// Shared between the poll loop's notice-owning
+/// [`crate::poll::refresh_health`] and the startup fast-poll
+/// ([`crate::poll::startup_health`]) so the two can never disagree about what
+/// "healthy" means — this is the one place that decides it.
+///
+/// `database_ready` defaults to unhealthy when unknown; `daemon_running`
+/// defaults to healthy (older schema compat).
+pub fn is_healthy(hr: &HealthResponse) -> bool {
+    hr.database_ready.unwrap_or(false) && hr.daemon_running.unwrap_or(true)
+}
+
 /// Run all three health checks in parallel and return the combined result.
 /// Called by both `get_health` (Tauri command) and `poll::refresh_health` (internal).
 pub async fn check_health() -> HealthResponse {
@@ -247,4 +263,53 @@ pub async fn get_health() -> Result<HealthResponse, String> {
         "health checked"
     );
     Ok(result)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn hr(database_ready: Option<bool>, daemon_running: Option<bool>) -> HealthResponse {
+        HealthResponse {
+            database_ready,
+            daemon_running,
+            a11y_helper_trusted: None,
+            error: None,
+            llm_provider_ok: None,
+            llm_provider_rate_limited: None,
+            llm_provider_name: None,
+            llm_provider_detail: None,
+        }
+    }
+
+    #[test]
+    fn healthy_when_both_signals_are_true() {
+        assert!(is_healthy(&hr(Some(true), Some(true))));
+    }
+
+    #[test]
+    fn unhealthy_when_the_db_is_not_ready() {
+        assert!(!is_healthy(&hr(Some(false), Some(true))));
+    }
+
+    #[test]
+    fn unhealthy_when_the_daemon_is_not_running() {
+        assert!(!is_healthy(&hr(Some(true), Some(false))));
+    }
+
+    /// `database_ready: None` must read as unhealthy - an unknown DB state is
+    /// never treated as "fine". Older-schema compat only applies to
+    /// `daemon_running` (below), not this field.
+    #[test]
+    fn an_unknown_db_state_is_treated_as_unhealthy() {
+        assert!(!is_healthy(&hr(None, Some(true))));
+    }
+
+    /// `daemon_running: None` defaults to healthy (older schema compat) - the
+    /// mirror image of the DB default, and the one place the two signals
+    /// disagree on how to treat "unknown".
+    #[test]
+    fn an_unknown_daemon_state_defaults_to_healthy() {
+        assert!(is_healthy(&hr(Some(true), None)));
+    }
 }

@@ -798,11 +798,16 @@ export interface UpdateError {
 
 // ── What's New (`get_whats_new`) ───────────────────────────────────────────────
 
+/** A headline plus one sentence — see `whats_new.rs`'s `ReleaseItem`. */
+export interface ReleaseItem {
+  title: string
+  body: string
+}
+
 export interface ReleaseNote {
   version: string
   date: string
-  highlights: string[]
-  fixes: string[]
+  items: ReleaseItem[]
 }
 
 export interface RoadmapItem {

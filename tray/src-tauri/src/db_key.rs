@@ -1,42 +1,46 @@
 //ambient dev tool that watches what you do and updates your PM tickets automatically, boosting developer productivity
-//! Resolves (or first-run generates) the local SQLCipher encryption key for
-//! `meridian.db`, and mirrors it into the canonical `.env` the daemon reads.
+//! Looks up (never mints) the local SQLCipher encryption key for an
+//! already-encrypted `meridian.db`, for the one-way decrypt-back-to-plaintext
+//! migration — and removes it from the OS keychain and `.env` once that
+//! migration has run.
+//!
+//! # New installs are never encrypted
+//! This module used to also GENERATE a fresh key and mirror it into `.env` so
+//! a brand-new install's `meridian.db` would be created encrypted
+//! (`resolve_or_create_key`, removed). Encryption at rest has been removed —
+//! see `meridian_core::db_crypto`'s module doc — so a missing keychain entry
+//! now means exactly what it says: nothing to migrate, not "generate one".
+//! What remains here exists only to find and retire a key that ALREADY
+//! encrypted an install before that change.
 //!
 //! # Who calls this
-//! `lib.rs`'s app-setup path, once, before opening the shared DB pool — the
-//! resolved key is used both to open the pool there and (via the `.env`
-//! mirror written here) by the daemon's own `setup_db`
-//! (`src/db/meridian.rs`), which reads `MERIDIAN_DB_KEY` from its process env.
+//! `lib.rs`'s app-setup path, once, before opening the shared DB pool: if
+//! [`classify_existing_db`] reports [`ExistingDb::LooksEncrypted`] and
+//! [`resolve_existing_key`] finds a key, it runs
+//! [`meridian_core::db_crypto::decrypt_in_place`] and then
+//! [`remove_key_from_keychain`] + [`crate::commands::integrations::strip_env_keys`]
+//! (for `MERIDIAN_DB_KEY`) so no future launch goes looking for it again.
 //!
 //! # Storage model
 //! Source of truth is the OS keychain (`keyring` crate — macOS Keychain /
-//! Windows Credential Manager), matching how the OS already protects other
-//! app secrets on this machine. It is mirrored into the `.env` the tray
-//! resolves via [`crate::install::InstallMode::env_path`] /
-//! [`crate::install::canonical_env_path`] as `MERIDIAN_DB_KEY=<hex>`, using the
-//! exact same [`crate::commands::integrations::upsert_env`] mechanism this
-//! tray already uses for tracker credentials — because the daemon is a
-//! separate, headless launchd process that cannot prompt for Keychain access,
-//! it reads the mirrored file instead, exactly like it already does for
-//! `MERIDIAN_DB` itself (see `install.rs`'s module doc).
+//! Windows Credential Manager), mirrored into the `.env` the tray resolves via
+//! [`crate::install::InstallMode::env_path`] / [`crate::install::canonical_env_path`]
+//! as `MERIDIAN_DB_KEY=<hex>` — because the daemon is a separate, headless
+//! launchd process that cannot prompt for Keychain access, it reads the
+//! mirrored file instead, exactly like it already does for `MERIDIAN_DB`
+//! itself (see `install.rs`'s module doc).
 //!
 //! # Related
 //! - [`meridian_core::db_crypto`] — key format/validation and the migration
 //!   this key is used for.
 //! - [`crate::install`] — `.env` path resolution this module writes into.
 
-use anyhow::Context;
-use rand::RngCore;
-
 const SERVICE: &str = "Meridian";
 const ACCOUNT: &str = "db-encryption-key";
-const ENV_KEY: &str = "MERIDIAN_DB_KEY";
-
-fn generate_key_hex() -> String {
-    let mut bytes = [0u8; 32];
-    rand::rngs::OsRng.fill_bytes(&mut bytes);
-    hex::encode(bytes)
-}
+/// `.env` key mirroring the keychain entry — `pub(crate)` so `lib.rs` can pass
+/// it to [`crate::commands::integrations::strip_env_keys`] once the decrypt
+/// migration has run.
+pub(crate) const ENV_KEY: &str = "MERIDIAN_DB_KEY";
 
 /// Length of the SQLite file-header magic. A file shorter than this cannot be
 /// probed for it at all — see [`ExistingDb::TooSmallToBeADatabase`].
@@ -91,31 +95,6 @@ pub(crate) fn classify_existing_db(db_path: &std::path::Path) -> ExistingDb {
     }
 }
 
-/// Would minting a brand-new key orphan an already-encrypted `meridian.db`?
-/// True only for [`ExistingDb::LooksEncrypted`] — a file that exists, is long
-/// enough to be a real database, and is not plaintext, i.e. ciphertext under a
-/// key this install can no longer find. A missing file, a confirmed-plaintext
-/// file, and an empty/truncated stub are all safe to proceed on.
-pub(crate) fn would_orphan_existing_db(db_path: &std::path::Path) -> bool {
-    matches!(classify_existing_db(db_path), ExistingDb::LooksEncrypted)
-}
-
-/// Get-or-create this machine's `meridian.db` encryption key from the OS
-/// keychain, and ensure it is mirrored into `env_path` as
-/// `MERIDIAN_DB_KEY=<hex>` so the daemon can read it. Returns the key hex.
-///
-/// Idempotent and safe to call on every tray startup: an existing keychain
-/// entry is reused as-is (never regenerated), and re-mirroring the same value
-/// into `.env` is a no-op write via `upsert_env`.
-///
-/// `db_path` exists solely so a missing keychain entry can be checked against
-/// `meridian.db` before minting a replacement — see [`would_orphan_existing_db`].
-/// Without that check, a keychain entry lost for any reason (a keychain
-/// reset, a migration to a new machine, `.env` and the keychain falling out
-/// of sync) silently mints and stores a fresh key while the real data stays
-/// encrypted under the old, now-unreachable one: every future open then fails
-/// with SQLCipher "wrong key" errors (`file is not a database` / `database
-/// disk image is malformed`) instead of a clear, actionable one.
 /// Is `key_hex` the key this machine's OS keychain holds for `meridian.db`?
 ///
 /// Read-only and non-minting - deliberately NOT [`resolve_or_create_key`],
@@ -159,58 +138,61 @@ pub(crate) fn key_matches_keychain(key_hex: &str) -> bool {
     }
 }
 
-pub fn resolve_or_create_key(
-    env_path: &std::path::Path,
-    db_path: &std::path::Path,
-) -> anyhow::Result<String> {
-    let entry =
-        keyring::Entry::new(SERVICE, ACCOUNT).context("db_key: failed to access OS keychain")?;
-
-    let key_hex = match entry.get_password() {
-        Ok(existing) => existing,
-        Err(keyring::Error::NoEntry) => {
-            match classify_existing_db(db_path) {
-                ExistingDb::LooksEncrypted => anyhow::bail!(
-                    "no DB encryption key found in the OS keychain, but {} already exists and \
-                     does not look like a plaintext SQLite file - it looks encrypted under a \
-                     key this install can no longer find. Refusing to generate a replacement \
-                     key, which would silently make that data permanently unreadable instead \
-                     of surfacing the problem. If this file is known-safe to discard, remove \
-                     it and restart.",
-                    db_path.display()
-                ),
-                // Distinct from the bail above on purpose: this file is too
-                // short to hold encrypted data, so it is a leftover stub
-                // rather than orphaned user data. Proceed (a fresh database
-                // gets keyed over it), but say so — silently stepping over a
-                // corrupt file is how the original bug stayed invisible.
-                ExistingDb::TooSmallToBeADatabase { bytes } => {
-                    tracing::warn!(
-                        db_bytes = bytes,
-                        "keying a fresh database over an empty or truncated meridian.db stub - too short to hold encrypted data, so nothing recoverable is being replaced"
-                    );
-                }
-                ExistingDb::Absent | ExistingDb::Plaintext => {}
-            }
-            let generated = generate_key_hex();
-            entry
-                .set_password(&generated)
-                .context("db_key: failed to store new key in OS keychain")?;
-            tracing::info!("generated new local database encryption key");
-            generated
+/// Look up this machine's `meridian.db` encryption key WITHOUT minting one.
+///
+/// Returns `None` when the keychain has no entry, cannot be reached, or holds
+/// a malformed value — every one of those means the same thing to the caller:
+/// there is no key to run the decrypt migration with, either because this
+/// install was never encrypted or because it already went through the
+/// migration and had its key removed (see [`remove_key_from_keychain`]).
+/// Unlike the retired `resolve_or_create_key`, nothing here ever calls
+/// `set_password` — a missing entry is not an occasion to generate one.
+pub fn resolve_existing_key() -> Option<String> {
+    let entry = match keyring::Entry::new(SERVICE, ACCOUNT) {
+        Ok(e) => e,
+        Err(e) => {
+            tracing::warn!(error = %e, "db_key: could not reach the OS keychain to look up the database key");
+            return None;
         }
-        Err(e) => return Err(e).context("db_key: failed to read key from OS keychain"),
     };
+    match entry.get_password() {
+        Ok(key_hex) => match meridian_core::db_crypto::validate_key_hex(&key_hex) {
+            Ok(()) => Some(key_hex),
+            Err(e) => {
+                tracing::warn!(error = %e, "db_key: key stored in the OS keychain is malformed - ignoring it");
+                None
+            }
+        },
+        Err(keyring::Error::NoEntry) => None,
+        Err(e) => {
+            tracing::warn!(error = %e, "db_key: could not read the stored database key from the OS keychain");
+            None
+        }
+    }
+}
 
-    meridian_core::db_crypto::validate_key_hex(&key_hex)
-        .context("db_key: key stored in keychain is malformed")?;
-
-    let mut updates = std::collections::BTreeMap::new();
-    updates.insert(ENV_KEY.to_string(), key_hex.clone());
-    crate::commands::integrations::upsert_env(env_path, &updates)
-        .context("db_key: failed to mirror key into .env")?;
-
-    Ok(key_hex)
+/// Remove this machine's `meridian.db` encryption key from the OS keychain.
+///
+/// Called once [`meridian_core::db_crypto::decrypt_in_place`] has finished, so
+/// no later launch finds a key for a file that is plaintext again. Best-effort
+/// and idempotent: a missing entry is not an error, and a failure to reach the
+/// keychain just leaves a harmless orphaned entry — nothing reads it once
+/// `MERIDIAN_DB_KEY` is also gone from `.env` (the caller's job, via
+/// [`crate::commands::integrations::strip_env_keys`]).
+pub fn remove_key_from_keychain() {
+    let entry = match keyring::Entry::new(SERVICE, ACCOUNT) {
+        Ok(e) => e,
+        Err(e) => {
+            tracing::warn!(error = %e, "db_key: could not reach the OS keychain to remove the database key");
+            return;
+        }
+    };
+    match entry.delete_credential() {
+        Ok(()) | Err(keyring::Error::NoEntry) => {}
+        Err(e) => {
+            tracing::warn!(error = %e, "db_key: failed to remove the database key from the OS keychain");
+        }
+    }
 }
 
 #[cfg(test)]
@@ -218,40 +200,28 @@ mod tests {
     use super::*;
 
     #[test]
-    fn generate_key_hex_produces_valid_keys() {
-        let a = generate_key_hex();
-        let b = generate_key_hex();
-        meridian_core::db_crypto::validate_key_hex(&a).unwrap();
-        meridian_core::db_crypto::validate_key_hex(&b).unwrap();
-        assert_ne!(a, b, "two generated keys should not collide");
-    }
-
-    #[test]
-    fn would_orphan_existing_db_is_false_when_missing() {
+    fn classify_existing_db_is_absent_when_missing() {
         let dir = tempfile::tempdir().unwrap();
         let db_path = dir.path().join("meridian.db");
         assert!(!db_path.exists());
         assert_eq!(classify_existing_db(&db_path), ExistingDb::Absent);
-        assert!(!would_orphan_existing_db(&db_path));
     }
 
     #[test]
-    fn would_orphan_existing_db_is_false_when_plaintext() {
+    fn classify_existing_db_is_plaintext_when_plaintext() {
         let dir = tempfile::tempdir().unwrap();
         let db_path = dir.path().join("meridian.db");
         std::fs::write(&db_path, b"SQLite format 3\0rest-of-a-plaintext-file").unwrap();
         assert_eq!(classify_existing_db(&db_path), ExistingDb::Plaintext);
-        assert!(!would_orphan_existing_db(&db_path));
     }
 
     #[test]
-    fn would_orphan_existing_db_is_true_when_not_plaintext() {
+    fn classify_existing_db_looks_encrypted_when_not_plaintext() {
         let dir = tempfile::tempdir().unwrap();
         let db_path = dir.path().join("meridian.db");
         // No recognizable SQLite header - stands in for SQLCipher ciphertext.
         std::fs::write(&db_path, b"not-a-sqlite-header-at-all-just-ciphertext").unwrap();
         assert_eq!(classify_existing_db(&db_path), ExistingDb::LooksEncrypted);
-        assert!(would_orphan_existing_db(&db_path));
     }
 
     /// A zero-byte `meridian.db` — the shape a torn write or a disk-full stub
@@ -268,7 +238,6 @@ mod tests {
             classify_existing_db(&db_path),
             ExistingDb::TooSmallToBeADatabase { bytes: 0 }
         );
-        assert!(!would_orphan_existing_db(&db_path));
     }
 
     /// Truncated part-way through the magic — same reasoning as the empty stub:
@@ -282,7 +251,6 @@ mod tests {
             classify_existing_db(&db_path),
             ExistingDb::TooSmallToBeADatabase { bytes: 8 }
         );
-        assert!(!would_orphan_existing_db(&db_path));
     }
 
     /// The boundary itself: exactly `SQLITE_MAGIC_LEN` bytes of non-header
@@ -294,6 +262,5 @@ mod tests {
         let contents = vec![0xABu8; SQLITE_MAGIC_LEN as usize];
         std::fs::write(&db_path, &contents).unwrap();
         assert_eq!(classify_existing_db(&db_path), ExistingDb::LooksEncrypted);
-        assert!(would_orphan_existing_db(&db_path));
     }
 }

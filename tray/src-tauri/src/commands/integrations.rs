@@ -424,7 +424,11 @@ pub struct DisconnectBody {
 /// Strip every `key=…` line for `keys` from `path`, in place. Mirrors the
 /// route's `lines.filter(l => !keys.some(k => l.trimStart().startsWith(k + '=')))`
 /// — only an EXISTING file is edited (a missing file is a no-op, never created).
-fn strip_env_keys(path: &std::path::Path, keys: &[&str]) -> std::io::Result<()> {
+///
+/// `pub(crate)`: also used by [`crate::db_key`] to remove `MERIDIAN_DB_KEY`
+/// from `.env` once the decrypt-in-place migration has run, so the daemon
+/// stops looking for a key that no longer applies to anything.
+pub(crate) fn strip_env_keys(path: &std::path::Path, keys: &[&str]) -> std::io::Result<()> {
     if !path.exists() {
         return Ok(());
     }
@@ -680,6 +684,17 @@ pub async fn save_integration_token(
     if !reloaded {
         tracing::debug!("daemon reload after token save (non-fatal — will pick up on next start)");
     }
+
+    // POPULATE THE BOARD NOW. Nothing syncs on a timer any more (see
+    // `commands::tasks`'s header for why that timer was destroying OAuth
+    // grants), so without this a freshly connected tracker showed an empty
+    // board until the user happened to reopen the dashboard.
+    //
+    // FORCED, not gated: `pm_sync_state` can say "synced 2 minutes ago" from
+    // a previous account or provider while `pm_tasks` still holds that other
+    // board's tickets, and the staleness gate would wrongly skip. Connecting
+    // is rare and user-initiated, so a guaranteed fetch is the right cost.
+    crate::commands::tasks::trigger_background_pm_force_sync("token_connected");
 
     Ok(serde_json::json!({ "ok": true, "reloaded": reloaded }))
 }
@@ -1343,7 +1358,19 @@ fn start_oauth_in_process(provider: String) -> Result<StartOAuthResponse, String
         // Always clear the in-flight flag before returning, regardless of outcome.
         in_flight.store(false, Ordering::SeqCst);
         match result {
-            Ok(()) => tracing::info!(provider = %task_provider, "in-process OAuth login succeeded"),
+            Ok(()) => {
+                tracing::info!(provider = %task_provider, "in-process OAuth login succeeded");
+                // POPULATE THE BOARD NOW. Nothing syncs on a timer any more (see
+                // `commands::tasks`'s header for why that timer was destroying OAuth
+                // grants), so without this a freshly connected tracker showed an empty
+                // board until the user happened to reopen the dashboard.
+                //
+                // FORCED, not gated: `pm_sync_state` can say "synced 2 minutes ago" from
+                // a previous account or provider while `pm_tasks` still holds that other
+                // board's tickets, and the staleness gate would wrongly skip. Connecting
+                // is rare and user-initiated, so a guaranteed fetch is the right cost.
+                crate::commands::tasks::trigger_background_pm_force_sync("oauth_connected");
+            }
             Err(e) => {
                 let msg = format!("{e:#}");
                 tracing::warn!(provider = %task_provider, error = %msg, "in-process OAuth login failed");
@@ -1461,6 +1488,16 @@ async fn start_oauth_github_device(
                 if let Err(e) = crate::commands::daemon::reload_daemon_with(db_pool).await {
                     tracing::debug!(error = %e, "daemon reload after GitHub connect (non-fatal)");
                 }
+                // POPULATE THE BOARD NOW. Nothing syncs on a timer any more (see
+                // `commands::tasks`'s header for why that timer was destroying OAuth
+                // grants), so without this a freshly connected tracker showed an empty
+                // board until the user happened to reopen the dashboard.
+                //
+                // FORCED, not gated: `pm_sync_state` can say "synced 2 minutes ago" from
+                // a previous account or provider while `pm_tasks` still holds that other
+                // board's tickets, and the staleness gate would wrongly skip. Connecting
+                // is rare and user-initiated, so a guaranteed fetch is the right cost.
+                crate::commands::tasks::trigger_background_pm_force_sync("oauth_connected");
             }
             Err(e) => {
                 let msg = format!("{e:#}");

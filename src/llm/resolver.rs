@@ -554,7 +554,13 @@ async fn complete_inner(req: &PromptRequest) -> Result<(LlmOutput, LlmProvider),
             return Err(refusal);
         }
         probing = true;
-        tracing::info!(
+        // WARN, not INFO: this is the ONLY record that the 15-minute exemption
+        // (`HEALTH_PROBE_INTERVAL`) ever fired at all. Redaction ships WARN+ logs
+        // only (see CLAUDE.md's Observability section), so at INFO this line never
+        // reaches central OO - which is exactly what made a live-in-the-field
+        // "is the exemption even running?" question undiagnosable from telemetry
+        // alone (github.com/Meridiona/meridian/issues/805).
+        tracing::warn!(
             provider = chosen.as_str(),
             label = %req.label,
             error = %refusal,
@@ -663,6 +669,16 @@ async fn complete_inner(req: &PromptRequest) -> Result<(LlmOutput, LlmProvider),
             // which that check cannot see - so it would write nothing and the next call
             // would be refused again by the verdict this one just disproved.
             if probing {
+                // The other half of the exemption's story - see the WARN above where
+                // `probing` was set. Without this, a successful re-check is invisible:
+                // the outage just silently stops appearing in the next refusal log,
+                // which reads identically to "the exemption never got another chance to
+                // fire" from telemetry alone.
+                tracing::warn!(
+                    provider = chosen.as_str(),
+                    label = %req.label,
+                    "llm: provider re-check succeeded - clearing the unavailable verdict"
+                );
                 super::runtime_health::record_probe_success(&key);
             } else {
                 super::runtime_health::record_success(&key);

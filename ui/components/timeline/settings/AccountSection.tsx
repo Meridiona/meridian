@@ -72,9 +72,6 @@ export function AccountSection({ onReplayTour, onReplayTourFromDay }: {
           onSignedIn={(email) => {
             invoke('save_account_email', { email }).catch(() => {})
           }}
-          onSignedOut={() => {
-            invoke('clear_account_email').catch(() => {})
-          }}
         />
       </SectionCard>
 

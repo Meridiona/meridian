@@ -12,9 +12,6 @@ use crate::intelligence::oauth::{jira as oauth_jira, store as oauth_store};
 use sqlx::SqlitePool;
 use std::time::Duration;
 
-/// Cache older than this (2× the 30-min sync interval) ⇒ fetch likely failing.
-const SYNC_STALE_SECS: f64 = 3600.0;
-
 pub async fn checks(_cfg: &Config, pool: Option<&SqlitePool>) -> Vec<Check> {
     let mut out = Vec::new();
 
@@ -132,28 +129,58 @@ async fn classify_auth(send: reqwest::Result<reqwest::Response>) -> Check {
     }
 }
 
+/// Report whether the last Jira sync FAILED, not whether it was long ago.
+///
+/// This used to warn purely on elapsed time (`age > 3600s` => "fetch may be
+/// failing silently"), which was a reasonable proxy only while a background
+/// timer synced every few minutes no matter what. PM sync is on-demand now (see
+/// [`crate::intelligence::run_pm_sync`]): a machine that was shut all weekend,
+/// or a user who has not opened the dashboard since Friday, has a legitimately
+/// old cache and nothing is wrong. Warning on that is a false alarm nobody can
+/// act on - and a check that cries wolf during normal operation is worse than no
+/// check, because it teaches people to ignore the one that matters.
+///
+/// So the signal is the OUTCOME instead: `pm_sync_state.last_error`, written by
+/// `providers::record_sync_failure` and cleared by `clear_sync_error`. A recorded
+/// failure warns and carries the provider's own message; anything else reports
+/// elapsed time as context only, never as a fault.
 async fn sync_freshness(pool: &SqlitePool) -> Check {
-    match sqlx::query_scalar::<_, Option<f64>>(
-        "SELECT (julianday('now') - julianday(MAX(last_synced_at))) * 86400.0
+    // `last_synced_at` is NOT always a real success timestamp: `stamp_sync_error`
+    // inserts the epoch sentinel when it creates a row for a provider that has
+    // never synced. Reporting an age off that renders as "last synced 29799360m
+    // ago", so the sentinel is detected and reported as never-synced instead of
+    // being arithmetic'd into a nonsense duration.
+    match sqlx::query_as::<_, (Option<f64>, Option<String>, Option<String>)>(
+        "SELECT (julianday('now') - julianday(last_synced_at)) * 86400.0,
+                last_error,
+                last_synced_at
          FROM pm_sync_state WHERE provider = 'jira'",
     )
-    .fetch_one(pool)
+    .fetch_optional(pool)
     .await
     {
-        Ok(Some(age)) if age > SYNC_STALE_SECS => Check::warn(
+        // A recorded failure is the ONLY thing that warns. `last_error` is set by
+        // the provider itself, so the text is the real cause rather than this
+        // check's guess at one.
+        Ok(Some((_, Some(err), _))) if !err.trim().is_empty() => {
+            Check::warn("ticket sync", "L3", format!("last sync failed: {err}")).with_remedy(
+                "check the auth row above; a sync retries on the next on-demand trigger",
+            )
+        }
+        // The epoch sentinel means "a row exists but no sync ever succeeded".
+        Ok(Some((_, _, Some(stamp)))) if stamp.starts_with("1970") => {
+            Check::info("ticket sync", "L3", "no successful Jira sync recorded yet")
+        }
+        // Elapsed time as context. An old cache is normal when nothing asked for a sync.
+        Ok(Some((Some(age), _, _))) => Check::ok(
             "ticket sync",
             "L3",
-            format!(
-                "cache {:.0}m stale — fetch may be failing silently",
-                age / 60.0
-            ),
-        )
-        .with_remedy("check the auth row above; the daemon refreshes every 30m"),
-        Ok(Some(age)) => Check::ok(
-            "ticket sync",
-            "L3",
-            format!("fresh ({:.0}m ago)", age / 60.0),
+            format!("last synced {:.0}m ago, no errors", age / 60.0),
         ),
+        // A row with neither a parseable timestamp nor an error: nothing to report.
+        Ok(Some((None, _, _))) => {
+            Check::info("ticket sync", "L3", "no successful Jira sync recorded yet")
+        }
         Ok(None) => Check::info("ticket sync", "L3", "no Jira sync recorded yet"),
         Err(e) => Check::warn(
             "ticket sync",
@@ -186,5 +213,124 @@ async fn candidate_count(pool: &SqlitePool) -> Check {
             "L3",
             format!("could not count pm_tasks ({e})"),
         ),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::health::Severity;
+    use sqlx::sqlite::SqlitePoolOptions;
+
+    async fn db() -> SqlitePool {
+        let pool = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .unwrap();
+        sqlx::migrate!("src/migrations").run(&pool).await.unwrap();
+        pool
+    }
+
+    /// Seed `pm_sync_state` with a sync `days_ago` in the past and an optional
+    /// recorded error.
+    async fn seed(pool: &SqlitePool, days_ago: f64, last_error: Option<&str>) {
+        sqlx::query(
+            "INSERT INTO pm_sync_state (provider, last_synced_at, last_error)
+             VALUES ('jira', strftime('%Y-%m-%dT%H:%M:%SZ', 'now', ?), ?)",
+        )
+        .bind(format!("-{days_ago} days"))
+        .bind(last_error)
+        .execute(pool)
+        .await
+        .unwrap();
+    }
+
+    /// THE REGRESSION THIS EXISTS FOR. A three-day-old cache with no recorded
+    /// failure is normal once syncing is on-demand - the machine was shut, or
+    /// nobody opened the dashboard. The old elapsed-time rule warned at one hour,
+    /// which would now fire on healthy installs every Monday morning.
+    #[tokio::test]
+    async fn a_long_quiet_period_with_no_error_is_not_a_fault() {
+        let pool = db().await;
+        seed(&pool, 3.0, None).await;
+        let check = sync_freshness(&pool).await;
+        assert_eq!(
+            check.severity,
+            Severity::Ok,
+            "a stale-but-successful sync must not warn, got {check:?}"
+        );
+    }
+
+    /// A recorded failure warns and carries the provider's own message, so the
+    /// user sees the real cause rather than this check's guess at one.
+    #[tokio::test]
+    async fn a_recorded_failure_warns_with_the_providers_own_message() {
+        let pool = db().await;
+        seed(&pool, 0.01, Some("refresh_token is invalid")).await;
+        let check = sync_freshness(&pool).await;
+        assert_eq!(
+            check.severity,
+            Severity::Warn,
+            "a recorded failure must warn"
+        );
+        assert!(
+            check.detail.contains("refresh_token is invalid"),
+            "the provider's message must survive into the detail, got {:?}",
+            check.detail
+        );
+    }
+
+    /// An empty string is not a failure. `clear_sync_error` blanks the column on
+    /// success on some paths, and treating `''` as an error would leave a
+    /// permanent warn on a perfectly healthy install.
+    #[tokio::test]
+    async fn a_blank_last_error_is_not_a_failure() {
+        let pool = db().await;
+        seed(&pool, 0.5, Some("   ")).await;
+        let check = sync_freshness(&pool).await;
+        assert_eq!(
+            check.severity,
+            Severity::Ok,
+            "a blank last_error must not warn, got {check:?}"
+        );
+    }
+
+    /// No row at all - a tracker that has never synced. Informational, never a
+    /// fault: this is every fresh install for its first few minutes.
+    #[tokio::test]
+    async fn never_synced_is_informational() {
+        let pool = db().await;
+        let check = sync_freshness(&pool).await;
+        assert_eq!(
+            check.severity,
+            Severity::Info,
+            "never-synced must be info, got {check:?}"
+        );
+    }
+
+    /// The epoch sentinel must not be rendered as an age.
+    ///
+    /// `stamp_sync_error` inserts `1970-01-01T00:00:00Z` when it creates a row for
+    /// a provider that never synced. Doing the arithmetic on that produced "last
+    /// synced 29799360m ago" - a real string this would have shown a user.
+    #[tokio::test]
+    async fn the_epoch_sentinel_is_not_reported_as_an_age() {
+        let pool = db().await;
+        sqlx::query(
+            "INSERT INTO pm_sync_state (provider, last_synced_at, last_error)
+             VALUES ('jira', '1970-01-01T00:00:00Z', NULL)",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        let check = sync_freshness(&pool).await;
+        assert_eq!(check.severity, Severity::Info, "got {check:?}");
+        assert!(
+            !check.detail.contains('m'),
+            "the sentinel must not be turned into a minutes figure, got {:?}",
+            check.detail
+        );
     }
 }

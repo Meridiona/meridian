@@ -181,9 +181,8 @@ pub fn daemon_service() -> Vec<Check> {
     use crate::platform::ServiceStatus;
     let run_check = match crate::platform::service_status(LABEL_DAEMON) {
         ServiceStatus::Running(pid) => Check::ok("daemon running", "system", format!("pid {pid}")),
-        ServiceStatus::NotRunning => {
-            Check::critical("daemon running", "system", "not loaded").with_remedy("meridian start")
-        }
+        ServiceStatus::NotRunning => Check::critical("daemon running", "system", "not loaded")
+            .with_remedy("meridian restart"),
         // Not "not running" — we have not looked. See ServiceStatus's docs.
         ServiceStatus::Unknown => Check::info(
             "daemon running",

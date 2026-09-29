@@ -97,6 +97,48 @@ pub fn spawn_health_listener() -> anyhow::Result<()> {
     Ok(())
 }
 
+/// Take an exclusive, non-blocking advisory lock on an already-open file.
+///
+/// `flock` associates the lock with the **open file description**, not with the
+/// process and not with the path. Three consequences this design leans on:
+///
+/// - The kernel releases it when the descriptor closes, including on `SIGKILL`,
+///   a panic, or a power loss. No stale-lock problem, so nothing has to decide
+///   whether a leftover lock is real.
+/// - Two `open()` calls produce two descriptions, so a second acquire conflicts
+///   even inside the same process. That is what makes this testable in-process
+///   rather than needing two real daemons.
+/// - It is *advisory*: it constrains other `flock` callers only, and never
+///   blocks an unrelated tool from reading or writing the file. The lock file
+///   holds no content, so that costs nothing.
+///
+/// `EWOULDBLOCK`/`EAGAIN` is the ONLY errno that means contention. Everything
+/// else — `EBADF`, `EINVAL`, `ENOLCK`, or anything a network filesystem
+/// invents — is reported as [`super::LockError::Other`] so the caller proceeds
+/// unlocked instead of standing down. Treating a blanket "flock failed" as
+/// "another daemon owns this" is the version of this that bricks installs.
+pub(crate) fn lock_file_exclusive(file: &std::fs::File) -> Result<(), super::LockError> {
+    use std::os::unix::io::AsRawFd as _;
+
+    // SAFETY: `file` is a live `File` borrowed for the whole call, so its
+    // descriptor is open and valid. `flock` has no other precondition, and
+    // LOCK_NB guarantees it does not block.
+    let rc = unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) };
+    if rc == 0 {
+        return Ok(());
+    }
+    let err = std::io::Error::last_os_error();
+    let code = err.raw_os_error().unwrap_or(0);
+    // Compared with `if` rather than matched: EAGAIN and EWOULDBLOCK are the
+    // same value on Linux and macOS, and two match arms with equal values is an
+    // unreachable-pattern error. They are separate constants on some targets.
+    if code == libc::EWOULDBLOCK || code == libc::EAGAIN {
+        Err(super::LockError::Held)
+    } else {
+        Err(super::LockError::Other(format!("flock failed: {err}")))
+    }
+}
+
 /// Unlink the socket file on clean shutdown.
 ///
 /// Best-effort: a leftover file is harmless — the next start's probe finds no
@@ -210,10 +252,20 @@ pub async fn wait_for_shutdown() {
     let mut sigterm = signal(SignalKind::terminate()).expect("register SIGTERM handler");
     let mut sighup = signal(SignalKind::hangup()).expect("register SIGHUP handler");
 
+    // `pid` on every arm: these lines are the record of WHICH daemon generation
+    // was asked to stop, and during an update or a quit-then-relaunch there are
+    // several within seconds of each other. Without it the signal cannot be
+    // matched to the "meridian daemon starting" line it belongs to, and the
+    // shutdown sequence — the window where the tray and the daemon can overlap
+    // on meridian.db — is unreconstructable after the fact.
+    //
+    // `as i64` deliberately; see the same cast at the startup log in `main.rs`
+    // for why a `u32` would ship as a string, or not at all.
+    let pid = std::process::id() as i64;
     tokio::select! {
-        _ = sigint.recv()  => tracing::info!("SIGINT received"),
-        _ = sigterm.recv() => tracing::info!("SIGTERM received"),
-        _ = sighup.recv()  => tracing::info!("SIGHUP received — reloading (graceful restart)"),
+        _ = sigint.recv()  => tracing::info!(pid, "SIGINT received"),
+        _ = sigterm.recv() => tracing::info!(pid, "SIGTERM received"),
+        _ = sighup.recv()  => tracing::info!(pid, "SIGHUP received — reloading (graceful restart)"),
     }
 }
 

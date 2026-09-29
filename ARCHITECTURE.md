@@ -65,10 +65,7 @@ listens on no port.
 | **MCP server** | `packages/meridian-mcp/` | TypeScript. Exposes the same data to AI clients over the Model Context Protocol. |
 | **OAuth** | `meridian-oauth/` | Browser-based OAuth flows for Jira and Trello. |
 
-The Rust workspace is `[".", "meridian-core", "meridian-oauth", "tray/src-tauri",
-"tray/src-tauri/vendor/tauri-plugin-clerk"]`. That last one is a patched copy of a
-third-party crate, and it is a member rather than excluded precisely so its regression
-tests run - see `tray/src-tauri/vendor/tauri-plugin-clerk/README.md`.
+The Rust workspace is `[".", "meridian-core", "meridian-oauth", "tray/src-tauri"]`.
 
 Because the repo root is itself a package, **`cargo test` and `cargo clippy` must be
 run with `--workspace`** or they silently test only the daemon. This is the single

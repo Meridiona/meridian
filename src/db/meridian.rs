@@ -128,6 +128,51 @@ pub async fn setup_db(uri: &str) -> anyhow::Result<SqlitePool> {
     Ok(pool)
 }
 
+/// The migration version in `err` that this binary does not carry, when the
+/// database has been migrated **ahead** of it — otherwise `None`.
+///
+/// # Why this is worth classifying
+///
+/// [`setup_db`] fails for several unrelated reasons and they were all reported
+/// with one sentence naming three of them: a wrong or absent encryption key, a
+/// locked file, corruption. This is a fourth, it is not on that list, and it is
+/// the only one where the database is **perfectly healthy** — the binary is
+/// simply older than the schema. Sending an operator at the database when the
+/// answer is the binary costs hours; it cost several here.
+///
+/// It is also the only one that never resolves on its own. A daemon under
+/// launchd `KeepAlive` retries forever: measured 2026-09-01, a v1.86.0 daemon
+/// carrying 79 migrations against a database at 83 failed **13,306 times over
+/// eight days** (~2,800/day), each attempt opening the database and running
+/// migrations against it.
+///
+/// # What counts
+///
+/// - [`sqlx::migrate::MigrateError::VersionMissing`] — `_sqlx_migrations` has a row for a
+///   migration this build does not carry. This is the observed shape.
+/// - [`sqlx::migrate::MigrateError::VersionTooNew`] — the same condition as sqlx reports it
+///   when it can name the newest applied version.
+///
+/// Deliberately NOT [`sqlx::migrate::MigrateError::VersionMismatch`] (a checksum drift, which
+/// [`reconcile_migration_checksums`] repairs) or [`sqlx::migrate::MigrateError::Dirty`] (a
+/// half-applied migration, which is a genuine repair case). Both are recoverable
+/// in place; neither means the binary is out of date.
+///
+/// `MigrateError` is `#[non_exhaustive]`, so an unrecognised variant falls
+/// through to `None` and keeps the general message. Failing to classify costs a
+/// vaguer log line; misclassifying would tell someone to update a daemon that is
+/// already current.
+pub fn schema_ahead_of_binary(err: &anyhow::Error) -> Option<i64> {
+    use sqlx::migrate::MigrateError;
+    err.chain()
+        .filter_map(|c| c.downcast_ref::<MigrateError>())
+        .find_map(|m| match m {
+            MigrateError::VersionMissing(v) => Some(*v),
+            MigrateError::VersionTooNew(v, _) => Some(*v),
+            _ => None,
+        })
+}
+
 /// Forces the WAL fully into the main database file and truncates it.
 ///
 /// Called from `main.rs`'s shutdown sequence, right before closing the pool.
@@ -634,6 +679,131 @@ mod tests {
             .run(&pool)
             .await
             .expect("migrate after reconcile must succeed");
+    }
+
+    /// A daemon OLDER than the database must say so, in the error a human reads.
+    ///
+    /// # The condition
+    /// Two daemon builds share one `meridian.db` and the newer one migrates the
+    /// schema forward. The older binary then finds rows in `_sqlx_migrations`
+    /// for migrations it does not carry, and sqlx correctly refuses to run —
+    /// `MigrateError::VersionMissing`. It is correct to refuse: an old binary
+    /// against a new schema would write rows the current code cannot read.
+    ///
+    /// # Why this is a test and not a comment
+    /// Measured on a dev machine 2026-09-01: a v1.86.0 daemon (79 migrations)
+    /// against a database at 83 crash-looped **13,306 times over eight days**
+    /// under launchd `KeepAlive`, at ~2,800/day. Every one of those attempts
+    /// opened the database and tried to migrate it. The only diagnostic it left
+    /// was `error=failed to run migrations` — the outer `.context` with no
+    /// cause — beside a message offering three explanations
+    /// (`wrong/absent encryption key, a locked file, or corruption`), none of
+    /// which was the real one. That sent the investigation at the database
+    /// rather than at the binary.
+    ///
+    /// So this pins the property that actually matters: **the version number
+    /// survives into `errors::chain`**. Without it there is nothing in
+    /// telemetry that distinguishes this from corruption, and it is not
+    /// reproducible on demand — it needs two binaries and a shared database.
+    #[tokio::test]
+    async fn an_applied_migration_the_binary_lacks_names_itself_in_the_error() {
+        let pool = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .expect("open in-memory db");
+        let migrator = sqlx::migrate!("src/migrations");
+        migrator.run(&pool).await.expect("initial migrate");
+
+        // Stand in for "a newer daemon applied migration 999999 here". The
+        // version is deliberately far above any real one so this never collides
+        // with a migration added later.
+        sqlx::query(
+            "INSERT INTO _sqlx_migrations \
+             (version, description, installed_on, success, checksum, execution_time) \
+             VALUES (999999, 'from a newer daemon', CURRENT_TIMESTAMP, 1, X'00', 0)",
+        )
+        .execute(&pool)
+        .await
+        .expect("insert phantom applied migration");
+
+        // Reconcile must NOT paper over this: it realigns checksums for
+        // migrations this binary HAS, and has nothing to say about one it does
+        // not. Silently deleting the row would let an old daemon run against a
+        // schema it cannot understand, which is the failure sqlx is preventing.
+        reconcile_migration_checksums(&pool, &migrator)
+            .await
+            .expect("reconcile must tolerate an unknown applied migration");
+
+        let err = migrator
+            .run(&pool)
+            .await
+            .context("failed to run migrations")
+            .expect_err("sqlx must refuse to run against a schema ahead of this binary");
+        let rendered = crate::errors::chain(&err);
+
+        assert!(
+            rendered.contains("999999"),
+            "the offending migration version must reach the log - without it the \
+             operator cannot tell this apart from corruption. got: {rendered}"
+        );
+        assert!(
+            rendered.contains("failed to run migrations"),
+            "the outer context must survive too. got: {rendered}"
+        );
+
+        // ...and it must be CLASSIFIED, not just rendered. The log site picks a
+        // different message on this, so a `None` here means an operator is told
+        // to look at their encryption key and their disk for a healthy database.
+        assert_eq!(
+            schema_ahead_of_binary(&err),
+            Some(999_999),
+            "an applied-but-unknown migration must classify as schema-ahead, and \
+             must name the version"
+        );
+    }
+
+    /// The classifier must stay narrow: only "this binary is out of date".
+    ///
+    /// A checksum drift is repaired in place by [`reconcile_migration_checksums`]
+    /// and a plain open failure has nothing to do with versions. Reporting either
+    /// as "your daemon is older than the database" would send someone to update a
+    /// binary that is already current, which is worse than the vague message it
+    /// replaced.
+    #[test]
+    fn only_an_out_of_date_binary_classifies_as_schema_ahead() {
+        use sqlx::migrate::MigrateError;
+
+        for (label, err) in [
+            (
+                "a drifted checksum",
+                anyhow::Error::new(MigrateError::VersionMismatch(7)),
+            ),
+            (
+                "a half-applied migration",
+                anyhow::Error::new(MigrateError::Dirty(7)),
+            ),
+            (
+                "an unrelated open failure",
+                anyhow::anyhow!("file is not a database"),
+            ),
+        ] {
+            assert_eq!(
+                schema_ahead_of_binary(&err.context("failed to run migrations")),
+                None,
+                "{label} must NOT classify as an out-of-date binary"
+            );
+        }
+
+        // And the positive case still classifies through a context layer, which
+        // is how it always arrives from `setup_db`.
+        assert_eq!(
+            schema_ahead_of_binary(
+                &anyhow::Error::new(MigrateError::VersionMissing(84))
+                    .context("failed to run migrations")
+            ),
+            Some(84),
+        );
     }
 
     /// A fresh database (no `_sqlx_migrations` table yet) is a clean no-op.

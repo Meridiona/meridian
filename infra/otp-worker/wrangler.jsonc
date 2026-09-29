@@ -1,0 +1,74 @@
+{
+  "$schema": "./node_modules/wrangler/config-schema.json",
+  // First live Cloudflare Worker in this repo (infra/hf-proxy, the prior one,
+  // was deleted after shipping unauthenticated with no rate limit and taking
+  // the whole Cloudflare account down — see README.md "Why this design"
+  // before changing anything auth- or rate-limit-related here).
+  "name": "meridian-otp-worker",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-08-25",
+  "compatibility_flags": ["nodejs_compat"],
+  "observability": {
+    "enabled": true,
+    "head_sampling_rate": 1
+  },
+
+  // ── Durable Object (rate-limit counters) ───────────────────────────────────
+  // One instance per email hash / IP / UTC date, so concurrent requests
+  // against the SAME counter are serialized (closing a TOCTOU race the
+  // previous plain-KV counters had) while different counters still process
+  // fully in parallel. See src/rate-limiter.ts's module header.
+  "durable_objects": {
+    "bindings": [{ "name": "RATE_LIMITER", "class_name": "RateLimitCounter" }]
+  },
+  // SQLite-backed storage (not the older key-value DO storage backend) - the
+  // default and recommended backend for new Durable Object classes.
+  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["RateLimitCounter"] }],
+
+  // ── Non-secret tunables ───────────────────────────────────────────────────
+  // Real credentials (OTP_CLIENT_TOKEN, RESEND_API_KEY) are
+  // `wrangler secret put` ONLY — never here. See README.md's secrets table.
+  "vars": {
+    "RL_EMAIL_PER_DAY": 3,
+    "RL_IP_PER_HOUR": 10,
+    "RL_GLOBAL_PER_DAY": 2000,
+    // Fires once per successful /otp/capture (sign-up or a changed email) —
+    // see resend.ts. No once-per-day dedup: every capture here is a genuine
+    // one-time capture or a deliberate "Change email" action, never a
+    // routine re-login (this app has no session/sign-in-again concept), so
+    // there's no repeat-noise case to suppress.
+    //
+    // Recipient and sender deliberately MATCH the marketing site's existing
+    // sign-up notification, so web and desktop sign-ups thread together in
+    // one inbox rather than landing in two places. Delivered via Resend -
+    // see resend.ts's module header.
+    "NOTIFY_EMAIL": "adithya@meridiona.com",
+    "NOTIFY_FROM": "Meridian Sign-ins <notify@meridiona.com>"
+  },
+
+  "env": {
+    "staging": {
+      "name": "meridian-otp-worker-staging",
+      "durable_objects": {
+        "bindings": [{ "name": "RATE_LIMITER", "class_name": "RateLimitCounter" }]
+      },
+      "vars": {
+        // RL_IP_PER_HOUR is deliberately HIGHER here than the per-email cap
+        // needs, not lower — scripts/deploy-otp-worker.sh's capture
+        // rate-limit-trip probe sends RL_EMAIL_PER_DAY+1 requests from one IP
+        // per run. A cap sized close to RL_EMAIL_PER_DAY means a SECOND
+        // `--verify-only` run against the same staging deployment within the
+        // hour trips the IP cap and fails with a misleading "429" — reading
+        // as a regression rather than the smoke test having rate-limited
+        // itself. Sized well above one run's worst-case spend so re-running
+        // the script repeatedly while debugging a real failure doesn't
+        // itself become a source of failures.
+        "RL_EMAIL_PER_DAY": 3,
+        "RL_IP_PER_HOUR": 30,
+        "RL_GLOBAL_PER_DAY": 500,
+        "NOTIFY_EMAIL": "adithya@meridiona.com",
+        "NOTIFY_FROM": "Meridian Sign-ins (staging) <notify@meridiona.com>"
+      }
+    }
+  }
+}

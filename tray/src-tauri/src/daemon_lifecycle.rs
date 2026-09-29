@@ -86,6 +86,16 @@ use tracing::Instrument;
 /// the next launch reconciles the daemon regardless.
 const QUIT_STOP_BUDGET: Duration = Duration::from_secs(5);
 
+/// How long a quit waits for the telemetry flush before exiting anyway.
+///
+/// Shorter than [`QUIT_STOP_BUDGET`] on purpose: the flush is a local disk
+/// write that normally completes in milliseconds, and the thing it protects is
+/// a diagnostic record, not the user's data. Losing that record is a bad
+/// outcome; a Quit that never completes is a worse one, and `ExitPhase::Stopping`
+/// holds every subsequent `ExitRequested` - so an unbounded wait here leaves
+/// the app with no path out at all.
+pub(crate) const QUIT_FLUSH_BUDGET: Duration = Duration::from_secs(2);
+
 /// Where the app is in its exit sequence.
 ///
 /// The quit path is not atomic - the daemon stop is async and the exit is not -
@@ -921,6 +931,57 @@ mod tests {
             "the spawned stop task must BIND a daemon_lifecycle::HeldExitGuard \
              INSIDE the task, or a panic mid-stop leaves the exit held forever \
              and the app cannot be quit at all; found: {spawn_body:?}"
+        );
+
+        // `stop_for_quit`'s verdict must be FLUSHED before the process exits.
+        //
+        // `handle.exit` is `std::process::exit`: no destructors, and whatever
+        // the OTel batch processors are still holding dies with the process.
+        // What they are holding at that moment is the line describing how
+        // stopping the daemon went - `daemon stopped for quit`, `could not stop
+        // the daemon on quit`, or `exceeded its budget`. Those are the most
+        // useful records that exist for a corruption report, because quit is
+        // when the tray and the daemon are most likely to overlap on
+        // meridian.db, and every one of them was being discarded microseconds
+        // after being emitted.
+        //
+        // Ordering is asserted, not mere presence: a flush placed BEFORE
+        // `stop_for_quit` compiles, runs, logs nothing unusual, and preserves
+        // exactly the records that were never in danger while still losing the
+        // one that was.
+        let stop_pos = spawn_body
+            .find("stop_for_quit().await")
+            .expect("the spawned task must call stop_for_quit");
+        // Matched WITHOUT `.await` attached: the call is wrapped in a
+        // `tokio::time::timeout`, so the await belongs to the timeout rather
+        // than to `force_flush` itself. The over-specific needle failed the
+        // moment that bound was added - the test doing its job, but it was the
+        // needle that needed correcting, not the code.
+        let flush_pos = spawn_body.find("observability::force_flush(").expect(
+            "the spawned stop task must flush telemetry before exiting, or \
+                 stop_for_quit's outcome never reaches the spool",
+        );
+        let exit_pos = spawn_body
+            .find("handle.exit(")
+            .expect("the spawned task must exit the app");
+        assert!(
+            stop_pos < flush_pos && flush_pos < exit_pos,
+            "the telemetry flush must sit BETWEEN stop_for_quit and \
+             handle.exit: before the stop it flushes a verdict that has not \
+             been reached yet, and after the exit it does not run at all. \
+             Found stop at {stop_pos}, flush at {flush_pos}, exit at {exit_pos}."
+        );
+
+        // And it must be BOUNDED. `force_flush` awaits blocking exporter work
+        // and the spool does synchronous filesystem writes, so an unbounded
+        // await here can hang the quit indefinitely - and `ExitPhase::Stopping`
+        // holds every later `ExitRequested`, leaving the app unquittable with
+        // no way back. That is the failure mode `HeldExitGuard` exists to
+        // prevent, reached again through a different door.
+        assert!(
+            spawn_body[..exit_pos].contains("QUIT_FLUSH_BUDGET"),
+            "the telemetry flush on quit must be bounded by QUIT_FLUSH_BUDGET; \
+             an unbounded await leaves no path out of ExitPhase::Stopping"
         );
     }
 }
