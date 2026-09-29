@@ -173,6 +173,23 @@ export function AccountSection({ onReplayTour, onReplayTourFromDay }: {
           <span className="text-[12px]" style={{ color: 'var(--color-state-pending)' }}>{exportError ?? 'Export failed'}</span>
         )}
       </SectionCard>
+
+      <SectionCard>
+        <SectionHeader>Danger Zone</SectionHeader>
+        <FieldRow
+          label="Uninstall Meridian"
+          description="Opens the uninstall wizard to remove Meridian's background agents, staged binaries, and (optionally) your local data. Quitting the app or dragging it to the Trash does not do this - some background processes stay running otherwise."
+        >
+          <SettingsButton
+            variant="outline"
+            onClick={() => {
+              mutate('/api/uninstall', 'open_uninstall', {}).catch(err => console.error('Failed to open uninstall wizard', err))
+            }}
+          >
+            Uninstall…
+          </SettingsButton>
+        </FieldRow>
+      </SectionCard>
     </div>
   )
 }
