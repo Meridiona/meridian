@@ -123,6 +123,18 @@ pub async fn open_setup(app: tauri::AppHandle) -> Result<(), String> {
     Ok(())
 }
 
+/// Open (or focus) the in-app uninstall wizard window. Loads the Next
+/// `/uninstall` route; same window [`crate::tray::open_uninstall_window`]
+/// opens from the native tray-menu "Uninstall Meridian…" item, so Settings →
+/// Account's "Uninstall…" button and the tray menu are two openers of one
+/// window rather than two separate flows.
+#[tracing::instrument(skip(app))]
+#[tauri::command]
+pub async fn open_uninstall(app: tauri::AppHandle) -> Result<(), String> {
+    crate::tray::open_uninstall_window(&app);
+    Ok(())
+}
+
 /// Resize the setup wizard window's client area (a no-op if the window isn't
 /// open). The wizard's card is a different fixed height on the Welcome screen
 /// than in the step flow (see `ui/app/setup/page.tsx`) - the window was
