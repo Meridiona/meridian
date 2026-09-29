@@ -1,5 +1,15 @@
 # Changelog
 
+## [1.92.0](https://github.com/Meridiona/meridian/compare/v1.91.0...v1.92.0) (2026-09-29)
+
+### 🚀 Features
+
+* **settings:** add an Uninstall button to Settings → Account ([879e669](https://github.com/Meridiona/meridian/commit/879e6691cfe471c36afdfef14cfc9e33d6c5c239))
+
+### 🐛 Bug Fixes
+
+* **tray:** propagate window-build errors from the setup/uninstall openers ([93a3085](https://github.com/Meridiona/meridian/commit/93a3085e2a8ec019d2f931c7ef8078f08dd63be5))
+
 ## [1.91.0](https://github.com/Meridiona/meridian/compare/v1.90.0...v1.91.0) (2026-09-29)
 
 ### 🚀 Features
