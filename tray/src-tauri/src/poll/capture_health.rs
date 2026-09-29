@@ -75,11 +75,14 @@ const STARTUP_GRACE: Duration = Duration::from_secs(3 * 60);
 /// `loop_started` and `paused` are passed in rather than read from a shared
 /// state so the decision stays a pure function of its inputs — mirrors
 /// [`super::permissions::PermissionDebounce::observe`]'s own reasoning.
+/// `loop_started.elapsed()` is computed here, in the one production call
+/// site — never in a test — for the same reason described on
+/// [`check_capture_health_inner`]'s `since_launch` parameter.
 pub(super) async fn check_capture_health(pool: &SqlitePool, loop_started: Instant, paused: bool) {
     if !crate::sys::is_bundled() {
         return;
     }
-    check_capture_health_inner(pool, loop_started, paused).await;
+    check_capture_health_inner(pool, loop_started.elapsed(), paused).await;
 }
 
 /// The `is_bundled()`-gated body of [`check_capture_health`], split out so
@@ -87,7 +90,20 @@ pub(super) async fn check_capture_health(pool: &SqlitePool, loop_started: Instan
 /// `.app` bundle, so a test calling the outer function would always hit that
 /// gate and silently exercise nothing (same reasoning as
 /// [`super::permissions`]'s pure-function split).
-async fn check_capture_health_inner(pool: &SqlitePool, loop_started: Instant, paused: bool) {
+///
+/// Takes `since_launch` as an already-computed [`Duration`], not an
+/// [`Instant`] to call `.elapsed()` on internally. `Instant` only ever
+/// counts forward safely when every value in play was itself produced by
+/// `Instant::now()` on the same clock; a test that backdates one by
+/// subtracting hours (`Instant::now() - Duration::from_secs(3600)`) can
+/// underflow and panic on Windows, where `Instant` counts from system boot —
+/// a CI runner up for less than that duration cannot represent an instant
+/// that far in the past. This bit `poll::watchdog`'s throttle test once
+/// already (see `d1baab3b`'s fix). Taking a plain `Duration` here removes
+/// the hazard at its root instead of re-guarding it with `checked_sub`:
+/// tests construct arbitrary durations directly, with no `Instant`
+/// arithmetic anywhere in this module's test suite.
+async fn check_capture_health_inner(pool: &SqlitePool, since_launch: Duration, paused: bool) {
     // Capture is legitimately silent for a pause the user or a schedule
     // chose — that is not "stalled", and clearing here would be wrong too:
     // a genuine stall discovered just before a pause starts should still
@@ -95,7 +111,7 @@ async fn check_capture_health_inner(pool: &SqlitePool, loop_started: Instant, pa
     if paused {
         return;
     }
-    if loop_started.elapsed() < STARTUP_GRACE {
+    if since_launch < STARTUP_GRACE {
         return;
     }
 
@@ -182,16 +198,15 @@ mod tests {
         pool
     }
 
-    fn long_ago() -> Instant {
-        // `Instant` cannot be constructed in the past directly; subtracting
-        // from `now()` is the standard way to backdate one in a test.
-        Instant::now() - Duration::from_secs(3600)
-    }
+    /// Well past [`STARTUP_GRACE`] — a plain [`Duration`], never an
+    /// [`Instant`], so no test in this module can hit the Windows
+    /// boot-epoch underflow described on [`check_capture_health_inner`].
+    const LONG_AGO: Duration = Duration::from_secs(3600);
 
     #[tokio::test]
     async fn a_stalled_pipeline_past_the_grace_period_raises() {
         let pool = seeded_pool(Some(chrono::Duration::hours(1))).await;
-        check_capture_health_inner(&pool, long_ago(), false).await;
+        check_capture_health_inner(&pool, LONG_AGO, false).await;
         let raised: i64 =
             sqlx::query_scalar("SELECT COUNT(*) FROM system_notices WHERE notice_id = ?1")
                 .bind(NOTICE_ID)
@@ -220,7 +235,7 @@ mod tests {
         .await
         .unwrap();
 
-        check_capture_health_inner(&pool, long_ago(), false).await;
+        check_capture_health_inner(&pool, LONG_AGO, false).await;
         let raised: i64 =
             sqlx::query_scalar("SELECT COUNT(*) FROM system_notices WHERE notice_id = ?1")
                 .bind(NOTICE_ID)
@@ -236,7 +251,7 @@ mod tests {
         // frame is from a prior session (hours old), but the process itself
         // just started — capture hasn't had a chance to write yet.
         let pool = seeded_pool(Some(chrono::Duration::hours(6))).await;
-        check_capture_health_inner(&pool, Instant::now(), false).await;
+        check_capture_health_inner(&pool, Duration::ZERO, false).await;
         let raised: i64 =
             sqlx::query_scalar("SELECT COUNT(*) FROM system_notices WHERE notice_id = ?1")
                 .bind(NOTICE_ID)
@@ -252,7 +267,7 @@ mod tests {
     #[tokio::test]
     async fn a_stalled_pipeline_while_paused_does_not_raise() {
         let pool = seeded_pool(Some(chrono::Duration::hours(1))).await;
-        check_capture_health_inner(&pool, long_ago(), true).await;
+        check_capture_health_inner(&pool, LONG_AGO, true).await;
         let raised: i64 =
             sqlx::query_scalar("SELECT COUNT(*) FROM system_notices WHERE notice_id = ?1")
                 .bind(NOTICE_ID)
@@ -265,7 +280,7 @@ mod tests {
     #[tokio::test]
     async fn no_frames_ever_written_does_not_raise() {
         let pool = seeded_pool(None).await;
-        check_capture_health_inner(&pool, long_ago(), false).await;
+        check_capture_health_inner(&pool, LONG_AGO, false).await;
         let raised: i64 =
             sqlx::query_scalar("SELECT COUNT(*) FROM system_notices WHERE notice_id = ?1")
                 .bind(NOTICE_ID)
