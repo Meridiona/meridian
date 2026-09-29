@@ -1247,6 +1247,7 @@ pub fn run() {
             commands::open_dashboard,
             commands::open_worklogs,
             commands::open_setup,
+            commands::open_uninstall,
             commands::restart_daemon,
             commands::toggle_daemon,
             commands::pause_for_duration,
