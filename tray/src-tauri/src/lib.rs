@@ -1175,7 +1175,9 @@ pub fn run() {
                     // out inline here, which is how it and the dashboard paths
                     // could have drifted apart.
                     if !onboarding_complete() {
-                        tray::open_wizard_window(&wizard_handle);
+                        if let Err(e) = tray::open_wizard_window(&wizard_handle) {
+                            tracing::warn!(error = %e, "lib: failed to auto-open the setup wizard");
+                        }
                     }
                 });
             }
@@ -1511,7 +1513,11 @@ pub fn run() {
                 tracing::info!(onboarded, "app.reopen: routing external activation");
                 match reopen_target(onboarded) {
                     ReopenTarget::Dashboard => tray::open_native_dashboard(app),
-                    ReopenTarget::Wizard => tray::open_wizard_window(app),
+                    ReopenTarget::Wizard => {
+                        if let Err(e) = tray::open_wizard_window(app) {
+                            tracing::warn!(error = %e, "lib: failed to open wizard on reopen");
+                        }
+                    }
                 }
             }
         });
