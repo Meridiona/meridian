@@ -1,5 +1,93 @@
 # Changelog
 
+## [1.91.0](https://github.com/Meridiona/meridian/compare/v1.90.0...v1.91.0) (2026-09-29)
+
+### 🚀 Features
+
+* **auth:** add the OTP Cloudflare Worker (send/verify email codes via SES) ([01550c1](https://github.com/Meridiona/meridian/commit/01550c11d8f22e2889d0ecf1660e794151b16dad))
+* **llm:** connect any OpenAI-compatible endpoint, local or cloud ([b30e789](https://github.com/Meridiona/meridian/commit/b30e789498d373b6b6bfa7376569c97c9aa0ceed))
+* **llm:** warn that a custom endpoint's usage is billed to the user ([473654f](https://github.com/Meridiona/meridian/commit/473654fffa9e8756f3586a77ebf2e64c359b4b5a))
+* **observability:** make a daemon generation identifiable and its quit survivable ([1f46407](https://github.com/Meridiona/meridian/commit/1f46407f8bc37d0f5bc0e2e5f6947e085c9fa194)), closes [#886](https://github.com/Meridiona/meridian/issues/886) [#894](https://github.com/Meridiona/meridian/issues/894) [#861](https://github.com/Meridiona/meridian/issues/861) [#861](https://github.com/Meridiona/meridian/issues/861)
+* **otp-worker:** notify company@meridiona.com on sign-up or email change ([a9255c1](https://github.com/Meridiona/meridian/commit/a9255c119d3cfa0e577d2caa957dc67ee93c0a57))
+* **otp-worker:** styled HTML verification email, and a daily-cap alert ([486c98f](https://github.com/Meridiona/meridian/commit/486c98f9dee5608083b003de50c3fb3af85f9e4c))
+
+### 🐛 Bug Fixes
+
+* **analytics:** stop disabling GeoIP on PostHog events ([20b4385](https://github.com/Meridiona/meridian/commit/20b4385648a98ca26df6f522122c6e82a42b439b))
+* **auth:** replace Clerk with a one-time email+OTP capture ([c9f1559](https://github.com/Meridiona/meridian/commit/c9f155969d8b93ee3d8ab4fc6dec3a894700fb10)), closes [#892](https://github.com/Meridiona/meridian/issues/892) [#727](https://github.com/Meridiona/meridian/issues/727)
+* **clerk:** retry sign-in init on a network failure instead of a dead-end error ([4566c6d](https://github.com/Meridiona/meridian/commit/4566c6d22b49081c6690e8667f4ee99a4e6fc44f))
+* **cli:** a flag's value that begins with a hyphen is not an unknown flag ([aaabffa](https://github.com/Meridiona/meridian/commit/aaabffa25e92ede34ecfd990414074ae2774197c))
+* **cli:** add the restart subcommand five remedies already recommend ([b64b780](https://github.com/Meridiona/meridian/commit/b64b780ee0ae9ef1c8ef83c250f398c2e0594636))
+* **cli:** register --target and --day for plan-task-create ([1f03b93](https://github.com/Meridiona/meridian/commit/1f03b9302a7d26e11be1575b8335a73e8c0bbd27))
+* **cli:** reject unrecognised flags instead of running the command bare ([0dc9bf4](https://github.com/Meridiona/meridian/commit/0dc9bf4346ed0dd28cbc7148067949ca0794eb4d))
+* **coding-agent:** move the summariser's codex/claude prompt off argv onto stdin ([31730fb](https://github.com/Meridiona/meridian/commit/31730fba1e46f76e8b5815e2f9e5a3acc363cffe))
+* **coding-agent:** move the summariser's cursor-agent prompt off argv onto stdin ([215f99a](https://github.com/Meridiona/meridian/commit/215f99ab30f24d5939b6e6036875ce2449f10fae)), closes [#901](https://github.com/Meridiona/meridian/issues/901) [#901](https://github.com/Meridiona/meridian/issues/901) [#841](https://github.com/Meridiona/meridian/issues/841)
+* **daemon:** bound background-task shutdown and stop dev tray false-installing over itself ([f8ef28c](https://github.com/Meridiona/meridian/commit/f8ef28cdfe566375d524d0d37077f7320f37266c))
+* **daemon:** make single-instance acquisition atomic with an OS lock ([a4715fa](https://github.com/Meridiona/meridian/commit/a4715fa8a0b21c6c0dceef7c89e7e0428001714b)), closes [#862](https://github.com/Meridiona/meridian/issues/862) [#861](https://github.com/Meridiona/meridian/issues/861)
+* **daemon:** put a pid on the three stand-down WARNs ([bd048b5](https://github.com/Meridiona/meridian/commit/bd048b5269d8f97af0bfd19d2f645b6a5efafd1f))
+* **db:** close watchdog restart gap and remove SQLCipher encryption ([b58f7a1](https://github.com/Meridiona/meridian/commit/b58f7a1c364b055c3738e404bf1c9203f52c2ae1)), closes [#851](https://github.com/Meridiona/meridian/issues/851)
+* **etl:** recover from the corruption latch instead of stopping forever ([8eb4205](https://github.com/Meridiona/meridian/commit/8eb42055c9998c77f9362f4e8ebf7a5dc54d8f56))
+* **infra:** assert the gateway's 401 instead of printing a reminder about it ([6230666](https://github.com/Meridiona/meridian/commit/6230666c1452a51993aeba05d932903ff9ed0dad)), closes [#864](https://github.com/Meridiona/meridian/issues/864)
+* **infra:** stop an unknown argument from triggering a production deploy ([cd296a9](https://github.com/Meridiona/meridian/commit/cd296a9dfc02bcbfb5fdca5483ddb5101440d3f6)), closes [#902](https://github.com/Meridiona/meridian/issues/902)
+* **install:** scope the staging stop to the daemon binary, not the database ([cea459b](https://github.com/Meridiona/meridian/commit/cea459bb921e66e2d2e66aafc121e5ca290a65ee))
+* **intelligence:** sync PM tasks on demand instead of on a timer ([97284c3](https://github.com/Meridiona/meridian/commit/97284c30de54bb02752803d3797712673b0b5667)), closes [909/#910](https://github.com/909/meridian/issues/910)
+* **llm:** drop "Optional" from the API key placeholder ([b0ba1d6](https://github.com/Meridiona/meridian/commit/b0ba1d67e19e2182eeb984b2044e9184a111c582))
+* **llm:** make the health-gate exemption's outcome visible in shipped telemetry ([02657c3](https://github.com/Meridiona/meridian/commit/02657c32bd47d7d977774e4dca1a13ee0bce2ee0))
+* **llm:** never overwrite a typed model id when listing models ([fca4f08](https://github.com/Meridiona/meridian/commit/fca4f08567f5cf44bd1166cb003127f5a1140e1f))
+* **llm:** say plainly that the key never reaches Meridian ([9394293](https://github.com/Meridiona/meridian/commit/9394293292ab204f57f61aa7f9e5eeb5f47b84d6))
+* **llm:** shell-quote resolved paths in the installer command builder ([d92131e](https://github.com/Meridiona/meridian/commit/d92131eecac588c51b08e58274cd30591be17d61))
+* **llm:** show an actionable message when a sign-in CLI crashes at Node startup ([94f7982](https://github.com/Meridiona/meridian/commit/94f79825428acabb4ac941fa83f64052060213a6))
+* **oauth:** make the Jira refresh-token exchange crash- and suspend-safe ([4a0a2fc](https://github.com/Meridiona/meridian/commit/4a0a2fc4e44a193a978161937c83634460ca3707))
+* **otp-worker:** point staging's sign-up notification at the engineer ([65654a5](https://github.com/Meridiona/meridian/commit/65654a5498b30908b4d3dab34d79e8d0feb994a2))
+* **otp:** capture email without waiting on unapproved-SES verification ([b2f53c2](https://github.com/Meridiona/meridian/commit/b2f53c2bcb9136ed25b3a79e39b41f25167ab4d6))
+* **release:** a revert must be able to cut a release ([0e4c505](https://github.com/Meridiona/meridian/commit/0e4c505162c6ae406c438372954c492d63a45626)), closes [#909](https://github.com/Meridiona/meridian/issues/909) [#910](https://github.com/Meridiona/meridian/issues/910) [#910](https://github.com/Meridiona/meridian/issues/910)
+* **review:** resolve the still-valid review findings on the v1.91.0 release PR ([01bdc17](https://github.com/Meridiona/meridian/commit/01bdc17c15af12598fa6583be66bd18daa95bece))
+* **summariser:** bound rate-limited retries and pace a failing queue ([3fe39c4](https://github.com/Meridiona/meridian/commit/3fe39c4983c76673abd7e6c4b3d31fd3a678d809))
+* **summariser:** merge pre-main, and fix a vacuous test and an inverted backoff ([e3dc9ac](https://github.com/Meridiona/meridian/commit/e3dc9ac9489d130726bb586c0579c3539436c50e)), closes [#918](https://github.com/Meridiona/meridian/issues/918)
+* **sync:** explain the update window instead of leaking a SQL error ([9b5057f](https://github.com/Meridiona/meridian/commit/9b5057f89eab3980e13d947a70c8abbc185c411c))
+* **sync:** make the daemon the sole owner of the rotating Jira OAuth token ([e4e8e59](https://github.com/Meridiona/meridian/commit/e4e8e59954df73941721737779fea6a1bcfd947e))
+* **sync:** report sync outcomes by sequence and stop caching db pools ([d6eec94](https://github.com/Meridiona/meridian/commit/d6eec94c4ef85e0cfcc3dfef021730dbbb90eb5f))
+* **telemetry:** batch the spool and bound sent/ and quarantine/ ([1c39edf](https://github.com/Meridiona/meridian/commit/1c39edfb6771db78b582db284cc89317bd5f2bd8))
+* **telemetry:** close three coverage holes in the log-body lint ([e5dc92f](https://github.com/Meridiona/meridian/commit/e5dc92fa272f0330b363f58ede0e2d8e32578036))
+* **telemetry:** stop subprocess stderr reaching central OO through the log body ([b4f33de](https://github.com/Meridiona/meridian/commit/b4f33de7f9c1e59ba9110f28cdaceb5b3c27ee81)), closes [#872](https://github.com/Meridiona/meridian/issues/872) [#867](https://github.com/Meridiona/meridian/issues/867)
+* **telemetry:** widen the batch queue to match the 30s export delay ([5e755bc](https://github.com/Meridiona/meridian/commit/5e755bcb466eae5ba1e73f6763ef67c9da2fc461))
+* **test:** capture_health must not construct a backdated Instant ([5409730](https://github.com/Meridiona/meridian/commit/540973030065ff0f2c56eaf85e8a473f30b4b6db))
+* **test:** stop the sent-cap tests exporting an env var into their siblings ([41911b5](https://github.com/Meridiona/meridian/commit/41911b522adb93312497b8d2cf68168158503b0f))
+* **test:** the recheck-throttle test must not underflow Instant on Windows ([d1baab3](https://github.com/Meridiona/meridian/commit/d1baab3b1d62c38b73827cb3a7f9edcf226db8e7))
+* the CodeRabbit findings on [#899](https://github.com/Meridiona/meridian/issues/899), all of them in code I wrote ([e8c4245](https://github.com/Meridiona/meridian/commit/e8c4245fa58c094902907427ff196fb97652c2af))
+* **tray:** detect a stalled capture pipeline and re-assert Screen Recording on relaunch ([76cc6c2](https://github.com/Meridiona/meridian/commit/76cc6c2fe3216458db02d1c610f647fc7d91fe9a))
+* **tray:** gate request_accessibility_prompt to macOS, fixing Windows CI ([d4bb963](https://github.com/Meridiona/meridian/commit/d4bb963e5cd1f3e20e915a853027d622b91858cf))
+* **tray:** gate sys::notify to non-Windows, its only remaining caller ([1f144b1](https://github.com/Meridiona/meridian/commit/1f144b1b679d7427ff85bce6544d4a8a920cf18d))
+* **tray:** quiesce the database pool across a daemon restage ([c3c25c1](https://github.com/Meridiona/meridian/commit/c3c25c129ba2ee0a5a96b20cde5d89b5a1dea558))
+* **tray:** re-assert Accessibility too, not just Screen Recording ([8a0677e](https://github.com/Meridiona/meridian/commit/8a0677e458494e39480cf26dee8e1cf90ab46a36)), closes [#949](https://github.com/Meridiona/meridian/issues/949)
+* **tray:** repaint the offline banner as soon as the daemon+DB are ready ([790954a](https://github.com/Meridiona/meridian/commit/790954a6f837eb7f33424e6a41f869ee1fb20b29))
+* **ui:** cut What's New down to a title and one sentence per entry ([23b4a66](https://github.com/Meridiona/meridian/commit/23b4a6604e9335c693f6dd975fb022695cf207f9))
+
+### ♻️ Refactoring
+
+* **otp-worker:** send the sign-up notification via Resend, not SES ([50a62ed](https://github.com/Meridiona/meridian/commit/50a62ed9ad857e728b08695e6557a7e4af2fffb9))
+
+### 🤖 CI
+
+* **release:** pin the Windows runner and make a cold build loud ([41f8a60](https://github.com/Meridiona/meridian/commit/41f8a60353cef9821f9f87804c5f1ea5d2da904a))
+* **release:** wire OTP worker secrets into release-build.yml ([ac43f39](https://github.com/Meridiona/meridian/commit/ac43f39414966bfd9cb1255b9107633dc9d8684a))
+
+### 📝 Documentation
+
+* **claude:** require repowise checks before editing code ([fe3762d](https://github.com/Meridiona/meridian/commit/fe3762d588560074c09297c4e21c0f24ab03f1fe))
+
+### 🔧 Chores
+
+* **otp-worker:** remove dead /otp/send and /otp/verify code ([c8cd952](https://github.com/Meridiona/meridian/commit/c8cd95232aec5f37c6234e4b2719ef72a9141374))
+* **otp-worker:** route both the alert and the notification to adithya ([61602c3](https://github.com/Meridiona/meridian/commit/61602c37d7ba24312e1007db0fbdb6a298db7307))
+* **release:** back-merge main into pre-main, dropping the dead Clerk key ([824d954](https://github.com/Meridiona/meridian/commit/824d9543cd4e5f5760e111bfc5c1f2c1550d8ef7)), closes [#899](https://github.com/Meridiona/meridian/issues/899) [#931](https://github.com/Meridiona/meridian/issues/931) [#899](https://github.com/Meridiona/meridian/issues/899)
+* **release:** set v1.91.0 as the minimum version, add its What's New entry ([961162c](https://github.com/Meridiona/meridian/commit/961162c4ebc8385a80951a04e5b2613aef9a2239))
+* revert copilot.rs comment, leave file untouched ([a212ccf](https://github.com/Meridiona/meridian/commit/a212ccf28e1353d562752ce7a4d4f2d7830f5f5f))
+
+### ⏪ Reverts
+
+* keep migrations 082 and 083 after backing out the outbox ([99799af](https://github.com/Meridiona/meridian/commit/99799af6559f5ba6ade2b03ec5ee686225514faa))
+
 ## [1.90.0](https://github.com/Meridiona/meridian/compare/v1.89.0...v1.90.0) (2026-08-25)
 
 ### 🚀 Features
