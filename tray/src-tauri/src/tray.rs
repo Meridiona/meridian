@@ -73,13 +73,21 @@ pub(crate) fn build_tray_menu<R: Runtime>(
 pub(crate) fn handle_menu_event(app: &tauri::AppHandle, id: &str) {
     match id {
         "open_dashboard" => open_native_dashboard(app),
-        "open_setup" => open_wizard_window(app),
+        "open_setup" => {
+            if let Err(e) = open_wizard_window(app) {
+                tracing::warn!(error = %e, "tray menu: failed to open setup wizard");
+            }
+        }
         // Review Drafts: open the dashboard (user navigates to Worklogs from there).
         "open_worklogs" => open_native_dashboard(app),
         "toggle_daemon" => toggle_from_menu(app),
         "restart_daemon" => restart_from_menu(),
         "check_updates" => crate::update::check_for_updates(app),
-        "open_uninstall" => open_uninstall_window(app),
+        "open_uninstall" => {
+            if let Err(e) = open_uninstall_window(app) {
+                tracing::warn!(error = %e, "tray menu: failed to open uninstall wizard");
+            }
+        }
         "quit" => app.exit(0),
         _ => {}
     }
@@ -113,7 +121,10 @@ pub(crate) fn open_native_dashboard(app: &tauri::AppHandle) {
     // read as the app being broken instead.
     if !crate::onboarding_complete() {
         tracing::info!("dashboard requested before onboarding finished; opening the wizard");
-        open_wizard_window(app);
+        let result = open_wizard_window(app);
+        if let Err(e) = result {
+            tracing::warn!(error = %e, "tray: failed to open wizard from dashboard redirect");
+        }
         return;
     }
     // ON-DEMAND PM SYNC. The daemon no longer syncs the board on a timer (see
@@ -206,12 +217,12 @@ fn restart_from_menu() {
 /// — the single implementation shared by the popover's "Setup…" button, the
 /// native tray-menu "Setup…" item, and the first-run auto-open, so every
 /// caller gets the fix without repeating the call itself.
-pub(crate) fn open_wizard_window(app: &tauri::AppHandle) {
+pub(crate) fn open_wizard_window(app: &tauri::AppHandle) -> Result<(), String> {
     crate::commands::system::dismiss_popover(app);
     if let Some(win) = app.get_webview_window("setup") {
         let _ = win.show();
         let _ = win.set_focus();
-        return;
+        return Ok(());
     }
     // The wizard's first screen (Welcome) renders a shorter 948×520 card than
     // the step flow's 948×628 (`ui/app/setup/page.tsx`) — open the window
@@ -267,8 +278,12 @@ pub(crate) fn open_wizard_window(app: &tauri::AppHandle) {
             // doc comment (clicking back into an already-open setup window
             // wouldn't otherwise dismiss a popover reopened on top of it).
             crate::commands::system::dismiss_popover_on_focus(app, &win);
+            Ok(())
         }
-        Err(e) => eprintln!("tray: failed to open setup wizard: {e}"),
+        Err(e) => {
+            eprintln!("tray: failed to open setup wizard: {e}");
+            Err(e.to_string())
+        }
     }
 }
 
@@ -313,20 +328,24 @@ fn make_fullscreenable(win: &tauri::WebviewWindow) {
 /// "Uninstall Meridian…" item is currently this window's only opener, but it
 /// follows the same convention as every other opener in this file so a future
 /// caller (a Settings-page "Uninstall…" button) gets the fix for free.
-pub(crate) fn open_uninstall_window(app: &tauri::AppHandle) {
+pub(crate) fn open_uninstall_window(app: &tauri::AppHandle) -> Result<(), String> {
     crate::commands::system::dismiss_popover(app);
     if let Some(win) = app.get_webview_window("uninstall") {
         let _ = win.show();
         let _ = win.set_focus();
-        return;
+        return Ok(());
     }
-    if let Err(e) = WebviewWindowBuilder::new(app, "uninstall", WebviewUrl::App("uninstall".into()))
+    match WebviewWindowBuilder::new(app, "uninstall", WebviewUrl::App("uninstall".into()))
         .title("Meridian - Uninstall")
         .inner_size(720.0, 620.0)
         .resizable(false)
         .zoom_hotkeys_enabled(true)
         .build()
     {
-        eprintln!("tray: failed to open uninstall wizard: {e}");
+        Ok(_) => Ok(()),
+        Err(e) => {
+            eprintln!("tray: failed to open uninstall wizard: {e}");
+            Err(e.to_string())
+        }
     }
 }

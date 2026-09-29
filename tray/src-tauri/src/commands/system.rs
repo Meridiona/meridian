@@ -39,7 +39,7 @@ pub async fn open_dashboard(app: tauri::AppHandle) -> Result<(), String> {
     // the popover for a user who is being sent somewhere useful.
     if !crate::onboarding_complete() {
         tracing::info!("dashboard requested before onboarding finished; opening the wizard");
-        crate::tray::open_wizard_window(&app);
+        let _ = crate::tray::open_wizard_window(&app);
         return Ok(());
     }
     // ON-DEMAND PM SYNC. The daemon no longer syncs the board on a timer (see
@@ -119,8 +119,7 @@ pub async fn open_worklogs(app: tauri::AppHandle) -> Result<(), String> {
 #[tracing::instrument(skip(app))]
 #[tauri::command]
 pub async fn open_setup(app: tauri::AppHandle) -> Result<(), String> {
-    crate::tray::open_wizard_window(&app);
-    Ok(())
+    crate::tray::open_wizard_window(&app)
 }
 
 /// Open (or focus) the in-app uninstall wizard window. Loads the Next
@@ -131,8 +130,7 @@ pub async fn open_setup(app: tauri::AppHandle) -> Result<(), String> {
 #[tracing::instrument(skip(app))]
 #[tauri::command]
 pub async fn open_uninstall(app: tauri::AppHandle) -> Result<(), String> {
-    crate::tray::open_uninstall_window(&app);
-    Ok(())
+    crate::tray::open_uninstall_window(&app)
 }
 
 /// Resize the setup wizard window's client area (a no-op if the window isn't
