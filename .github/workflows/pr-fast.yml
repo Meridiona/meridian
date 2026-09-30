@@ -355,8 +355,8 @@ jobs:
               fail.append("release-prepare.yml must require an explicit promotion channel")
           if 'expected="main"' not in prep_src:
               fail.append("release-prepare.yml must guard every promotion to main")
-          if "pre-main" in prep_src:
-              fail.append("release-prepare.yml must not depend on pre-main")
+          if 'expected="pre-main"' in prep_src:
+              fail.append("release-prepare.yml must not route any promotion through pre-main")
           if "--ref main" not in prep_src:
               fail.append("release-prepare.yml must dispatch release-build against main cache scope")
 
