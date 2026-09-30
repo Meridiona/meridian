@@ -121,7 +121,7 @@ jobs:
   install-package:
     name: Install package tests
     needs: changes
-    if: needs.changes.outputs.installer == 'true'
+    if: github.event_name == 'push' && needs.changes.outputs.installer == 'true'
     runs-on: macos-latest
     steps:
       - uses: actions/checkout@v7
@@ -168,7 +168,7 @@ jobs:
   rust-macos:
     name: Rust (macOS Apple Silicon) / ${{ matrix.task }}
     needs: changes
-    if: needs.changes.outputs.rust == 'true'
+    if: github.event_name == 'push' && needs.changes.outputs.rust == 'true'
     runs-on: macos-latest
     strategy:
       fail-fast: false
@@ -317,7 +317,7 @@ jobs:
   rust-windows:
     name: Rust (Windows x86_64) / ${{ matrix.task }}
     needs: changes
-    if: needs.changes.outputs.rust == 'true'
+    if: github.event_name == 'push' && needs.changes.outputs.rust == 'true'
     runs-on: windows-latest
     strategy:
       fail-fast: false
@@ -391,7 +391,7 @@ jobs:
   ui:
     name: UI
     needs: changes
-    if: needs.changes.outputs.ui == 'true'
+    if: github.event_name == 'push' && needs.changes.outputs.ui == 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
