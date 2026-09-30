@@ -124,11 +124,6 @@ jobs:
         with:
           toolchain: "1.93.1"
           components: clippy
-      - uses: Swatinem/rust-cache@v2
-        with:
-          add-job-id-key: false
-          shared-key: pr-fast-core
-          save-if: false
       - name: Lint changed crate
         run: cargo clippy -p meridian-core --all-targets -- -D warnings
       - name: Test changed crate
@@ -155,11 +150,6 @@ jobs:
         with:
           toolchain: "1.93.1"
           components: clippy
-      - uses: Swatinem/rust-cache@v2
-        with:
-          add-job-id-key: false
-          shared-key: pr-fast-oauth
-          save-if: false
       - name: Lint changed crate
         run: cargo clippy -p meridian-oauth --all-targets -- -D warnings
       - name: Test changed crate
@@ -186,11 +176,6 @@ jobs:
         with:
           toolchain: "1.93.1"
           components: clippy
-      - uses: Swatinem/rust-cache@v2
-        with:
-          add-job-id-key: false
-          shared-key: pr-fast-daemon
-          save-if: false
       - name: Lint daemon library and CLI
         run: cargo clippy -p meridian --lib --bin meridian -- -D warnings
       - name: Run daemon library tests
@@ -253,13 +238,15 @@ jobs:
 
       - uses: oven-sh/setup-bun@v2
 
-      - uses: actions/cache@v6
+      # PRs consume the cache produced by main CI but never write their own
+      # immutable copy. This keeps one Next.js lineage instead of one per PR ref.
+      - uses: actions/cache/restore@v6
         with:
           path: ui/.next/cache
-          key: fast-next-${{ hashFiles('ui/package-lock.json') }}-${{ hashFiles('ui/**/*.ts', 'ui/**/*.tsx') }}
+          key: nextjs-${{ hashFiles('ui/package-lock.json') }}-${{ hashFiles('ui/**/*.ts', 'ui/**/*.tsx') }}
           restore-keys: |
-            fast-next-${{ hashFiles('ui/package-lock.json') }}-
-            fast-next-
+            nextjs-${{ hashFiles('ui/package-lock.json') }}-
+            nextjs-
 
       - name: Install
         working-directory: ui
