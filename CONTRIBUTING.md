@@ -148,8 +148,8 @@ Read **[docs/testing.md](docs/testing.md)** first. The integration tests in `tes
 - **One branch per change.** Format: `type/short-description` — e.g. `feat/linear-sync`, `fix/timeline-gap`.
 - **Conventional Commits:** `type(scope): summary` — e.g. `fix(etl): detect sleep gaps that span ETL run boundaries`.
   - Common types: `feat`, `fix`, `docs`, `refactor`, `test`, `chore`.
-- **Never push to `main` or `pre-main` directly.** Open a PR from your branch.
-- **Target `pre-main`, not `main`.** All feature and fix PRs go against `pre-main` — the staging branch. Only a maintainer opens the `pre-main → main` release PR, and only after everything on `pre-main` has been tested end-to-end on staging.
+- **Never push directly to `main`.** Open a PR from your branch.
+- **Target `main`.** `main` is the development trunk. Pull requests are gated by the Fast PR workflow; exhaustive macOS/Windows validation runs after merge. Releases are explicit promotions from validated commits, not a side effect of merging.
 - **Do not mention Claude as co-author in commit messages.**
 
 Releases are automated by semantic-release from the commit history, so accurate types matter — `feat` and `fix` drive the version bump and land in the published release notes.
@@ -168,14 +168,14 @@ SQL migrations use the `--` comment form. The hooks expect these.
 
 ## Opening the pull request
 
-1. Push your branch and open a PR against **`pre-main`** (`gh pr create --base pre-main`) — not `main`. `pre-main` is the staging branch; every feature and fix lands there first and gets exercised end-to-end on staging.
+1. Push your branch and open a PR against **`main`** (`gh pr create --base main`).
 2. Fill out the PR template — what changed, why, and how you tested it.
 3. Make sure CI is green.
 4. A maintainer will review. We may ask for changes.
 
 Maintainers never merge their own PRs. Leave the final merge to a reviewer.
 
-Once a batch of changes on `pre-main` has been verified working end-to-end on staging, a **maintainer** opens a separate `pre-main → main` PR to release it to production. Contributors should not open PRs against `main`.
+Merging to `main` does not publish a release. Release promotion is a separate maintainer action against an immutable commit/tag after post-merge validation.
 
 ---
 

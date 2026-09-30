@@ -5,6 +5,8 @@ on:
     branches: [pre-main, main]
   push:
     branches: [pre-main, main]
+  merge_group:
+    types: [checks_requested]
 
 permissions:
   contents: read
@@ -24,20 +26,23 @@ jobs:
     name: Fast / classify changes
     runs-on: ubuntu-latest
     outputs:
-      rust: ${{ steps.paths.outputs.rust }}
-      core: ${{ steps.paths.outputs.core }}
-      oauth: ${{ steps.paths.outputs.oauth }}
-      daemon: ${{ steps.paths.outputs.daemon }}
-      tray: ${{ steps.paths.outputs.tray }}
-      ui: ${{ steps.paths.outputs.ui }}
-      migrations: ${{ steps.paths.outputs.migrations }}
-      installer: ${{ steps.paths.outputs.installer }}
+      rust: ${{ github.event_name == 'merge_group' && 'true' || steps.paths.outputs.rust }}
+      core: ${{ github.event_name == 'merge_group' && 'true' || steps.paths.outputs.core }}
+      oauth: ${{ github.event_name == 'merge_group' && 'true' || steps.paths.outputs.oauth }}
+      daemon: ${{ github.event_name == 'merge_group' && 'true' || steps.paths.outputs.daemon }}
+      tray: ${{ github.event_name == 'merge_group' && 'true' || steps.paths.outputs.tray }}
+      ui: ${{ github.event_name == 'merge_group' && 'true' || steps.paths.outputs.ui }}
+      migrations: ${{ github.event_name == 'merge_group' && 'true' || steps.paths.outputs.migrations }}
+      installer: ${{ github.event_name == 'merge_group' && 'true' || steps.paths.outputs.installer }}
     steps:
       - uses: actions/checkout@v7
         with:
           persist-credentials: false
 
+      # Merge queue entries represent the combined speculative tree, not a normal
+      # pull_request diff. Run the whole fast suite there; PRs still use path routing.
       - uses: dorny/paths-filter@v4
+        if: github.event_name != 'merge_group'
         id: paths
         with:
           filters: |

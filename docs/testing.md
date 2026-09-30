@@ -96,8 +96,7 @@ Ticket linking and worklog drafting that consume these categories go through the
 
 Windows is a **shipped, maintained platform**, not a port in progress — the daemon,
 tray, notifications, packaging and release channel all have real Windows
-implementations, and CI runs a dedicated `rust-windows` job (clippy `-D warnings` +
-`cargo test`) on every PR into `pre-main`.
+implementations, and CI runs the full Windows workspace validation after merges to the development trunk; PRs use the Fast PR gate.
 
 The source-level `tests/install/` suite is macOS/launchd-shaped, so Windows
 needs a separate installed-product check. `.github/workflows/windows-product-smoke.yml`
@@ -152,7 +151,7 @@ Prompt and provider experimentation happens through the **dev-only LLM Lab** (`m
 ## Fast PR gate
 
 `.github/workflows/pr-fast.yml` is the developer-feedback gate for PRs targeting
-either `pre-main` or `main`.
+`main`. It also handles GitHub merge-queue `merge_group` events; merge-queue entries deliberately run the full fast suite rather than path-filtering a speculative combined tree.
 
 Its job is fast integration confidence, not release qualification:
 
