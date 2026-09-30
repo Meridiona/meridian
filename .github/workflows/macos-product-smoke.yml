@@ -1,0 +1,85 @@
+name: macOS product smoke
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Exact release tag whose macOS DMG must be exercised"
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: macos-product-smoke-${{ inputs.tag }}
+  cancel-in-progress: true
+
+jobs:
+  macos:
+    name: Download + mount + verify signed app
+    runs-on: macos-latest
+    timeout-minutes: 10
+
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: Download exact tagged DMG
+        id: dmg
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ inputs.tag }}
+        run: |
+          set -euo pipefail
+          dir="${RUNNER_TEMP}/meridian-smoke"
+          mkdir -p "${dir}"
+          gh release download "${TAG}" --repo Meridiona/meridian \
+            --pattern 'Meridian-aarch64.dmg' --dir "${dir}"
+          dmg="${dir}/Meridian-aarch64.dmg"
+          test -s "${dmg}"
+          echo "path=${dmg}" >> "${GITHUB_OUTPUT}"
+
+      - name: Mount and verify notarized bundle
+        env:
+          DMG: ${{ steps.dmg.outputs.path }}
+        run: |
+          set -euo pipefail
+          mount="${RUNNER_TEMP}/meridian-mount"
+          app="${mount}/Meridian.app"
+          mkdir -p "${mount}"
+
+          cleanup() {
+            hdiutil detach "${mount}" -quiet || true
+          }
+          trap cleanup EXIT
+
+          hdiutil attach "${DMG}" -nobrowse -readonly -mountpoint "${mount}" -quiet
+          test -d "${app}"
+
+          codesign --verify --deep --strict --verbose=2 "${app}"
+          spctl --assess --type execute --verbose=2 "${app}"
+          xcrun stapler validate "${app}"
+
+          daemon="${app}/Contents/Resources/backend/meridian"
+          test -x "${daemon}"
+
+          # Exercise the shipped daemon binary without requiring a configured
+          # runner machine. JSON parsing is the contract here; a fresh CI host
+          # may legitimately report health warnings/criticals for absent user
+          # integrations or permissions.
+          set +e
+          "${daemon}" doctor --json > "${RUNNER_TEMP}/doctor.json"
+          rc=$?
+          set -e
+          python3 - <<'PY'
+          import json, os
+          p=os.path.join(os.environ["RUNNER_TEMP"],"doctor.json")
+          with open(p) as f:
+              payload=json.load(f)
+          if not isinstance(payload, dict):
+              raise SystemExit("doctor output was not a JSON object")
+          print("doctor JSON parsed; keys:", ", ".join(sorted(payload)[:12]))
+          PY
+          echo "doctor exit code on clean runner: ${rc}"

@@ -53,21 +53,18 @@ jobs:
               - 'rust-toolchain.toml'
               - '.cargo/**'
               - 'build.rs'
-              - '.github/workflows/pr-fast.yml'
             core:
               - 'meridian-core/**'
               - 'Cargo.toml'
               - 'Cargo.lock'
               - 'rust-toolchain.toml'
               - '.cargo/**'
-              - '.github/workflows/pr-fast.yml'
             oauth:
               - 'meridian-oauth/**'
               - 'Cargo.toml'
               - 'Cargo.lock'
               - 'rust-toolchain.toml'
               - '.cargo/**'
-              - '.github/workflows/pr-fast.yml'
             daemon:
               - 'src/**'
               - 'Cargo.toml'
@@ -75,28 +72,23 @@ jobs:
               - 'build.rs'
               - 'rust-toolchain.toml'
               - '.cargo/**'
-              - '.github/workflows/pr-fast.yml'
             tray:
               - 'tray/src-tauri/**'
               - 'Cargo.toml'
               - 'Cargo.lock'
               - 'rust-toolchain.toml'
               - '.cargo/**'
-              - '.github/workflows/pr-fast.yml'
             ui:
               - 'ui/**'
               - 'tray/src/**'
-              - '.github/workflows/pr-fast.yml'
             migrations:
               - 'src/migrations/**'
-              - '.github/workflows/pr-fast.yml'
             installer:
               - 'install.sh'
               - 'scripts/**'
               - 'tests/install/**'
               - 'tray/src-tauri/tauri*.conf.json'
               - 'tray/src-tauri/icons/**'
-              - '.github/workflows/pr-fast.yml'
 
   rust-fmt:
     name: Fast / Rust fmt
