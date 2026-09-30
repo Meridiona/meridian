@@ -1,6 +1,12 @@
 name: Windows product smoke
 
 on:
+  workflow_call:
+    inputs:
+      tag:
+        description: "Exact release tag whose artifact must be exercised"
+        required: true
+        type: string
   workflow_dispatch:
     inputs:
       tag:
@@ -9,7 +15,7 @@ on:
         type: string
 
 permissions:
-  contents: read
+  contents: write
 
 concurrency:
   group: windows-product-smoke-${{ github.ref }}
@@ -24,6 +30,7 @@ jobs:
     steps:
       - uses: actions/checkout@v7
         with:
+          ref: ${{ inputs.tag }}
           persist-credentials: false
 
       - name: Download exact tagged Windows installer
@@ -43,3 +50,17 @@ jobs:
       - name: Exercise installed product lifecycle
         shell: pwsh
         run: ./scripts/ci/windows-install-smoke.ps1 -InstallerPath "${{ steps.installer.outputs.path }}"
+
+      - name: Record successful Windows smoke on the release
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ inputs.tag }}
+        run: |
+          $proof = Join-Path $env:RUNNER_TEMP 'smoke-windows.ok'
+          @"
+tag=$env:TAG
+run_id=${{ github.run_id }}
+commit=${{ github.sha }}
+"@ | Set-Content -NoNewline $proof
+          gh release upload "$env:TAG" --repo Meridiona/meridian --clobber $proof
