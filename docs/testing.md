@@ -149,36 +149,46 @@ The Python `deepeval` + MLX golden-dataset eval harness that lived under `servic
 
 Prompt and provider experimentation happens through the **dev-only LLM Lab** (`meridian llm-experiment run|create|exec|list|get …`), which writes only the `llm_experiment*` tables and never touches production tables. Like every other LLM call, its runs emit OTel spans to OpenObserve, so a run is inspectable as a trace tree there.
 
-## Fast PR gate (shadow mode)
+## Fast PR gate
 
-`.github/workflows/pr-fast.yml` is the first stage of the CI redesign. It runs in
-parallel with the existing exhaustive `CI` workflow and is **not yet a required
-merge check**.
+`.github/workflows/pr-fast.yml` is the developer-feedback gate for PRs targeting
+either `pre-main` or `main`.
 
-Its job is developer feedback, not release qualification:
+Its job is fast integration confidence, not release qualification:
 
 - classify changes by crate/surface;
 - run `cargo fmt --check` for Rust changes;
 - lint + test only the changed Rust crate on Linux where possible;
 - compile/lint the Tauri tray library on macOS only when tray Rust changes;
-- run the existing UI tests, typecheck, and static build only when UI changes;
-- run installer, migration, release-shape, and license-policy checks cheaply.
+- run UI tests, typecheck, and static build only when UI changes;
+- run installer, migration, release-shape, and license-policy checks cheaply;
+- aggregate everything into one `Fast PR gate` result.
 
-The deliberate omissions are just as important: it does not run the full workspace
-on Windows, it does not run the full macOS workspace, and it does not package or
-sign artifacts. During shadow mode, the existing `CI` workflow remains the source
-of exhaustive pre-merge coverage. We will compare failures and timings across real
-PRs before changing branch protection.
+The deliberate omissions are important: the fast gate does not run the full
+workspace on Windows, does not run the full macOS workspace, and does not
+package/sign product artifacts.
 
-The intended promotion model is:
+The target architecture is:
 
 ```text
-PR fast gate -> merge -> full platform validation -> RC artifact smoke -> release
+feature PR -> Fast PR gate -> merge
+                         -> full platform validation
+                         -> explicit release promotion
+                         -> immutable RC/stable tag
+                         -> signed artifact smoke
+                         -> publish
 ```
 
-If the fast gate misses a class of defect the exhaustive workflow catches, fix the
-routing or test boundary before making it required. Do not paper over the miss by
-adding the entire workspace back to every PR.
+Branch updates are development state, not release events. `release-prepare.yml`
+is manual-only: stable promotion is dispatched from `main`, staging promotion
+from `pre-main`. That separation is what allows `main` to become the normal
+integration trunk without every merge attempting a production release.
+
+During the migration, the existing exhaustive `CI` workflow may still run on
+PRs because repository branch-protection settings must be switched from the old
+required contexts to `Fast PR gate` before the old PR trigger can be removed.
+Once that protection cutover is made, exhaustive macOS/Windows validation moves
+entirely to the post-merge promotion path.
 
 ## CI health contract
 
