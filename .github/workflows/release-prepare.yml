@@ -163,8 +163,31 @@ jobs:
             exit 1
           fi
           if [ "${candidate_sha}" != "${head_sha}" ]; then
-            echo "::error::main moved after ${CANDIDATE_TAG}: candidate=${candidate_sha}, main=${head_sha}. Cut and smoke a new RC before stable promotion."
-            exit 1
+            if ! git merge-base --is-ancestor "${candidate_sha}" "${head_sha}"; then
+              echo "::error::main diverged from ${CANDIDATE_TAG}: candidate=${candidate_sha}, main=${head_sha}"
+              exit 1
+            fi
+
+            mapfile -t changed < <(git diff --name-only "${candidate_sha}..${head_sha}")
+            bad=()
+            for path in "${changed[@]}"; do
+              case "${path}" in
+                .github/workflows/release-build.yml|                .github/workflows/release-prepare.yml|                .github/workflows/windows-product-smoke.yml|                .github/workflows/macos-product-smoke.yml|                scripts/ci/windows-install-smoke.ps1|                scripts/mirror-updater-channel.sh)
+                  ;;
+                *)
+                  bad+=("${path}")
+                  ;;
+              esac
+            done
+
+            if [ "${#bad[@]}" -ne 0 ]; then
+              printf '::error::main contains product/source changes after %s:\n' "${CANDIDATE_TAG}"
+              printf '  %s\n' "${bad[@]}"
+              echo "::error::Cut and smoke a new RC before stable promotion."
+              exit 1
+            fi
+            printf '→ allowing release-control-plane-only drift after %s:\n' "${CANDIDATE_TAG}"
+            printf '  %s\n' "${changed[@]}"
           fi
 
           meta="$(gh release view "${CANDIDATE_TAG}" --json isDraft,isPrerelease,assets)"
