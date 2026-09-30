@@ -921,7 +921,6 @@ jobs:
       MERIDIAN_COUNTER_API_KEY: ${{ secrets.COUNTER_API_KEY }}
       MERIDIAN_OTP_API_URL: ${{ vars.MERIDIAN_OTP_API_URL }}
       MERIDIAN_OTP_CLIENT_TOKEN: ${{ secrets.MERIDIAN_OTP_CLIENT_TOKEN }}
-      MERIDIAN_CHANNEL: ${{ needs.prepare.outputs.channel }}
       # The updater's minisign keypair is cross-platform — the SAME key signs
       # the macOS tarball and the Windows installer, and the pubkey baked into
       # tauri.conf.json verifies both. Consumed by `createUpdaterArtifacts` at
