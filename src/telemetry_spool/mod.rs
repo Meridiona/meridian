@@ -138,10 +138,10 @@ fn append_bundle_info<W: std::io::Write>(tar: &mut tar::Builder<W>) -> Result<()
         redact::local_host_pseudonym(),
         env!("CARGO_PKG_VERSION"),
         if cfg!(debug_assertions) {
-                "dev"
-            } else {
-                "prod"
-            },
+            "dev"
+        } else {
+            "prod"
+        },
         std::env::consts::OS,
         std::env::consts::ARCH,
         SystemTime::now()
