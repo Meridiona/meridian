@@ -249,7 +249,11 @@ fn write_and_open(script_path: &std::path::Path, script: &str) -> std::io::Resul
 /// app. Debug/source builds report `dev`; optimized packaged builds report
 /// `prod`. The RC/stable distinction lives only in GitHub release metadata.
 pub(crate) fn build_channel() -> &'static str {
-    if cfg!(debug_assertions) { "dev" } else { "prod" }
+    if cfg!(debug_assertions) {
+        "dev"
+    } else {
+        "prod"
+    }
 }
 
 /// `{ version, channel, supportId }` for the small badge in the dashboard and
