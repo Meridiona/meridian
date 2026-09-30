@@ -575,6 +575,62 @@ pub fn screen_recording_trusted() -> bool {
     true
 }
 
+/// Seconds since the user last touched the keyboard, mouse or trackpad,
+/// system-wide, or `None` when the platform cannot say.
+///
+/// Read from the OS input layer, deliberately independent of Meridian's own
+/// capture stack: `poll::capture_health` uses it to tell "the user is at the
+/// machine and nothing is being captured" (a real fault) from "the user is
+/// away" (capture is legitimately silent). Reading it from `capture_ui_events`
+/// instead would go blind in exactly the failure being diagnosed, because that
+/// recorder shares the accessibility grant the frames depend on.
+///
+/// macOS needs no permission for this (no TCC prompt). Windows counts from
+/// `GetTickCount`'s 32-bit millisecond clock, so the subtraction wraps rather
+/// than overflows.
+pub fn seconds_since_last_input() -> Option<f64> {
+    #[cfg(target_os = "macos")]
+    {
+        #[link(name = "CoreGraphics", kind = "framework")]
+        extern "C" {
+            fn CGEventSourceSecondsSinceLastEventType(state_id: i32, event_type: u32) -> f64;
+        }
+        // kCGEventSourceStateCombinedSessionState = 0; kCGAnyInputEventType = ~0.
+        // Safety: a pure read of session input state, no side effects.
+        let secs = unsafe { CGEventSourceSecondsSinceLastEventType(0, u32::MAX) };
+        (secs.is_finite() && secs >= 0.0).then_some(secs)
+    }
+    #[cfg(target_os = "windows")]
+    {
+        #[repr(C)]
+        struct LastInputInfo {
+            cb_size: u32,
+            dw_time: u32,
+        }
+        #[link(name = "user32")]
+        extern "system" {
+            fn GetLastInputInfo(plii: *mut LastInputInfo) -> i32;
+        }
+        #[link(name = "kernel32")]
+        extern "system" {
+            fn GetTickCount() -> u32;
+        }
+        let mut info = LastInputInfo {
+            cb_size: std::mem::size_of::<LastInputInfo>() as u32,
+            dw_time: 0,
+        };
+        // Safety: `info` is a live, correctly sized LASTINPUTINFO with `cbSize`
+        // set as the API requires; GetTickCount takes no arguments.
+        if unsafe { GetLastInputInfo(&mut info) } == 0 {
+            return None;
+        }
+        let now = unsafe { GetTickCount() };
+        Some(f64::from(now.wrapping_sub(info.dw_time)) / 1000.0)
+    }
+    #[cfg(not(any(target_os = "macos", target_os = "windows")))]
+    None
+}
+
 /// Re-issue the macOS Accessibility trust prompt — the `AXIsProcessTrusted`
 /// equivalent of [`crate::commands::setup::request_screen_recording`]'s
 /// `CGRequestScreenCaptureAccess` call. Surfaces the OS "would like to
@@ -866,6 +922,18 @@ pub(crate) fn revert_to_accessory_on_close(app: &tauri::AppHandle, win: &tauri::
 
 #[cfg(test)]
 mod tests {
+    /// The stall notice trusts this reading to tell "user away" from "user
+    /// working". A probe that silently returned `None` or garbage on a
+    /// supported OS would degrade every install back to the elapsed-time rule
+    /// without any test noticing, so pin that it yields a finite, non-negative
+    /// number where the OS can answer at all.
+    #[test]
+    #[cfg(any(target_os = "macos", target_os = "windows"))]
+    fn seconds_since_last_input_reads_a_sane_value() {
+        let secs = super::seconds_since_last_input().expect("the OS input clock must be readable");
+        assert!(secs.is_finite() && secs >= 0.0, "got {secs}");
+    }
+
     /// The non-macOS half of [`super::is_bundled`], factored out so the
     /// dev-vs-installed decision is testable without spawning a process from a
     /// contrived path.
