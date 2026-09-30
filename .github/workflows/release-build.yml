@@ -1373,6 +1373,14 @@ jobs:
       - name: Mirror onto the rolling updater tag
         env:
           GH_TOKEN: ${{ secrets.GH_TOKEN || secrets.GITHUB_TOKEN }}
+          TAG: ${{ needs.prepare.outputs.tag }}
           VERSION: ${{ needs.prepare.outputs.version }}
           CHANNEL: ${{ needs.prepare.outputs.channel }}
-        run: bash scripts/mirror-updater-channel.sh "$VERSION" "$CHANNEL"
+        run: |
+          set -euo pipefail
+          # assemble owns latest.json and uploads it to the draft release. Jobs
+          # do not share workspaces, so publish must retrieve the exact manifest
+          # it is about to mirror rather than assuming assemble's local file is
+          # still present on this runner.
+          gh release download "${TAG}" --pattern latest.json --dir . --clobber
+          bash scripts/mirror-updater-channel.sh "$VERSION" "$CHANNEL"
