@@ -1,5 +1,16 @@
 # Changelog
 
+## [1.92.1](https://github.com/Meridiona/meridian/compare/v1.92.0...v1.92.1) (2026-09-30)
+
+### 🐛 Bug Fixes
+
+* **health:** stop flagging Meridian's own windows as a capture failure ([fb14ce8](https://github.com/Meridiona/meridian/commit/fb14ce8dd4e355ae6b2b4d7e6e77a460fd23fd23))
+* **tray:** only call capture stalled when the user was actually active ([7807704](https://github.com/Meridiona/meridian/commit/780770422d76e9726e78966acc6e88cc7c62b84f))
+
+### 🔧 Chores
+
+* **release:** raise the mandatory-update floor to 1.92.0 ([4b2eaf5](https://github.com/Meridiona/meridian/commit/4b2eaf5be8911ddf3fed1b62a12c2f60f2c18626))
+
 ## [1.92.0](https://github.com/Meridiona/meridian/compare/v1.91.0...v1.92.0) (2026-09-29)
 
 ### 🚀 Features
