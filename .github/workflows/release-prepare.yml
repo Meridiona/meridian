@@ -213,6 +213,17 @@ jobs:
             echo "→ RC channel (.releaserc.staging.json)"
           fi
 
+      # semantic-release requires a normal release branch (main) and a distinct
+      # prerelease branch. Keep main as the only development trunk: this branch
+      # is a disposable release-control ref pointing at the exact same commit.
+      - name: Prepare ephemeral semantic-release RC branch
+        if: ${{ inputs.channel == 'rc' }}
+        run: |
+          set -euo pipefail
+          git push --force origin HEAD:refs/heads/release-candidate
+          git checkout -B release-candidate origin/release-candidate
+          echo "→ release-candidate points at $(git rev-parse HEAD)"
+
       - name: semantic-release
         id: run
         env:
@@ -381,6 +392,14 @@ jobs:
           else
             echo "::warning::could not dispatch release-build.yml; ${TAG} is tagged but NOTHING IS BUILDING. Run: gh workflow run release-build.yml --ref main -f tag=${TAG}"
           fi
+
+      - name: Remove ephemeral semantic-release RC branch
+        if: ${{ always() && inputs.channel == 'rc' }}
+        run: |
+          set -euo pipefail
+          git checkout --detach >/dev/null 2>&1 || true
+          git push origin --delete release-candidate 2>/dev/null || true
+          echo "→ release-candidate cleaned up"
 
       - name: Summary
         if: always()
