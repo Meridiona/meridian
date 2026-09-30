@@ -5,7 +5,6 @@
 # app, so it always gets maintainer review.
 /.github/workflows/  @Akarsh-Hegde
 /.releaserc.json     @Akarsh-Hegde
-/.releaserc.staging.json @Akarsh-Hegde
 /scripts/            @Akarsh-Hegde
 
 # Privacy and security surface. Changes here alter what leaves a user's machine
