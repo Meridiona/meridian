@@ -34,7 +34,7 @@
 # builds (ad-hoc "-" or the self-signed "Meridian Dev" identity from
 # scripts/dev-signing.sh) are left untouched: they are never notarized, and the
 # dev identity deliberately keeps its own stable cdhash for TCC (see
-# dev-signing.sh). Called from tray/package.json's `build` / `build:staging`,
+# dev-signing.sh). Called from tray/package.json's `build`,
 # between `build:daemon` and `tauri build`.
 set -euo pipefail
 
