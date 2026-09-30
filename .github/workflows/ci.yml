@@ -172,8 +172,7 @@ jobs:
       - name: Cache cargo registry and target
         uses: Swatinem/rust-cache@v2
         with:
-          # Save on pre-main (the integration branch everything targets), not
-          # main. A PR restores its BASE branch's cache, so saving on main
+          # Save on main, the integration trunk. A PR restores its BASE branch's cache, so saving on main
           # means PRs go warm as soon as the first main run seeds the cache —
           # without waiting for a release to reach main. One cold run on main
           # after this lands; warm for every PR after that.
@@ -221,10 +220,8 @@ jobs:
 
   # ── The required status check ─────────────────────────────────────────────
   #
-  # `pre-main`'s branch protection requires the context "Rust (macOS Apple
-  # Silicon)" by that exact name. Splitting the job would have deleted that
-  # context and left every PR waiting forever on a check that no longer exists,
-  # so this job keeps the name and gates on the matrix instead.
+  # Keep this aggregator name stable for historical status continuity. PR
+  # protection now gates on Fast PR gate; this context is post-merge signal only.
   #
   # Two things here are load-bearing and easy to get wrong:
   #
