@@ -1,6 +1,12 @@
 name: macOS product smoke
 
 on:
+  workflow_call:
+    inputs:
+      tag:
+        description: "Exact release tag whose artifact must be exercised"
+        required: true
+        type: string
   workflow_dispatch:
     inputs:
       tag:
@@ -9,7 +15,7 @@ on:
         type: string
 
 permissions:
-  contents: read
+  contents: write
 
 concurrency:
   group: macos-product-smoke-${{ inputs.tag }}
@@ -24,6 +30,7 @@ jobs:
     steps:
       - uses: actions/checkout@v7
         with:
+          ref: ${{ inputs.tag }}
           persist-credentials: false
 
       - name: Download exact tagged DMG
@@ -83,3 +90,14 @@ jobs:
           print("doctor JSON parsed; keys:", ", ".join(sorted(payload)[:12]))
           PY
           echo "doctor exit code on clean runner: ${rc}"
+
+      - name: Record successful macOS smoke on the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ inputs.tag }}
+        run: |
+          set -euo pipefail
+          proof="${RUNNER_TEMP}/smoke-macos.ok"
+          printf 'tag=%s\nrun_id=%s\ncommit=%s\n' \
+            "${TAG}" "${GITHUB_RUN_ID}" "${GITHUB_SHA}" > "${proof}"
+          gh release upload "${TAG}" --repo Meridiona/meridian --clobber "${proof}"

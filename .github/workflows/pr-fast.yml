@@ -345,12 +345,19 @@ jobs:
           inputs = prep_dispatch.get("inputs") or {}
           if "channel" not in inputs:
               fail.append("release-prepare.yml must require an explicit promotion channel")
+          if "candidate_tag" not in inputs:
+              fail.append("release-prepare.yml must require a candidate_tag input for stable promotion")
           if 'expected="main"' not in prep_src:
               fail.append("release-prepare.yml must guard every promotion to main")
           if 'expected="pre-main"' in prep_src:
               fail.append("release-prepare.yml must not route any promotion through pre-main")
           if "--ref main" not in prep_src:
               fail.append("release-prepare.yml must dispatch release-build against main cache scope")
+          for proof in ("smoke-windows.ok", "smoke-macos.ok"):
+              if proof not in build_src:
+                  fail.append(f"release-build.yml must require exact-artifact proof {proof} before publish")
+          if "Publish proven artifact set" not in build_src:
+              fail.append("release-build.yml must publish only after reusable artifact smokes")
 
           if fail:
               for message in fail:

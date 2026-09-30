@@ -1246,14 +1246,10 @@ jobs:
 
           gh release upload "${TAG}" --clobber "${assets[@]}"
 
-  # ── Stage 3: compose the manifest, verify, publish ──────────────────────────
-  publish:
-    name: Compose manifest + publish
+  # ── Stage 3: assemble the complete release, but KEEP IT DRAFT ───────────────
+  assemble:
+    name: Compose manifest + stage draft
     needs: [prepare, macos, windows]
-    # Skipped entirely on a cache_warm_only dispatch — there is no draft
-    # release (prepare skipped creating one) and nothing was uploaded (macos/
-    # windows skipped their upload steps), so composing/publishing a manifest
-    # here would have nothing valid to compose from.
     if: ${{ !inputs.cache_warm_only }}
     runs-on: ubuntu-latest
     permissions:
@@ -1269,20 +1265,6 @@ jobs:
           GH_TOKEN: ${{ secrets.GH_TOKEN || secrets.GITHUB_TOKEN }}
           TAG: ${{ needs.prepare.outputs.tag }}
           VERSION: ${{ needs.prepare.outputs.version }}
-        # WHY THIS IS A SINGLE JOB AND NOT DONE PER-PLATFORM:
-        #
-        # tauri-action's built-in updater-manifest upload does a READ-MODIFY-
-        # WRITE against a shared release asset, once per matrix job, with NO
-        # locking (src/upload-version-json.ts: list assets -> download
-        # latest.json -> merge -> DELETE -> re-upload). Two jobs finishing in
-        # the same window each read the pre-merge manifest and the loser's
-        # platform key silently vanishes. For us that reads as "Intel users
-        # never got the update". The action's own source concedes the race in a
-        # comment. It is the most-reported flake in Tauri release pipelines.
-        #
-        # Composing once, here, from the fragments each runner uploaded removes
-        # the race by construction and gives one place that knows the full key
-        # set — which is what makes the completeness assertion below possible.
         run: |
           set -euo pipefail
           mkdir -p frag && cd frag
@@ -1295,13 +1277,10 @@ jobs:
             --version "${VERSION}" --tag "${TAG}" --fragments frag --output latest.json
           cat latest.json
 
-      - name: Verify the release is complete before publishing
+      - name: Verify the draft is complete
         env:
           GH_TOKEN: ${{ secrets.GH_TOKEN || secrets.GITHUB_TOKEN }}
           TAG: ${{ needs.prepare.outputs.tag }}
-        # Zed's expected-asset diff. This is what makes `fail-fast: false` safe:
-        # without it, a silently-skipped architecture produces a release that
-        # looks green and is missing a platform.
         run: |
           set -euo pipefail
           actual="$(gh release view "${TAG}" --json assets --jq '[.assets[].name] | join(" ")')"
@@ -1315,10 +1294,6 @@ jobs:
             exit 1
           fi
 
-          # Every REQUIRED platform key must be populated — an empty url/signature
-          # is how a partial manifest reaches users looking complete. The
-          # `-nsis` alias is deliberately not checked here — see REQUIRED's
-          # comment in compose-updater-manifest.py.
           python3 - <<'PY'
           import json, sys
           m = json.load(open("latest.json"))
@@ -1329,38 +1304,79 @@ jobs:
           print("✓ latest.json carries all platform keys")
           PY
 
-      - name: Attach the manifest and publish
+      - name: Attach manifest to the draft
+        env:
+          GH_TOKEN: ${{ secrets.GH_TOKEN || secrets.GITHUB_TOKEN }}
+          TAG: ${{ needs.prepare.outputs.tag }}
+        run: |
+          set -euo pipefail
+          gh release upload "${TAG}" latest.json --clobber
+          echo "→ ${TAG} remains draft until exact-artifact smoke passes"
+
+  # ── Stage 4: exercise the exact bits that would be published ────────────────
+  smoke-windows:
+    name: Smoke exact Windows artifact
+    needs: [prepare, assemble]
+    if: ${{ !inputs.cache_warm_only }}
+    permissions:
+      contents: write
+    uses: ./.github/workflows/windows-product-smoke.yml
+    with:
+      tag: ${{ needs.prepare.outputs.tag }}
+    secrets: inherit
+
+  smoke-macos:
+    name: Smoke exact macOS artifact
+    needs: [prepare, assemble]
+    if: ${{ !inputs.cache_warm_only }}
+    permissions:
+      contents: write
+    uses: ./.github/workflows/macos-product-smoke.yml
+    with:
+      tag: ${{ needs.prepare.outputs.tag }}
+    secrets: inherit
+
+  # ── Stage 5: publish ONLY the already-smoked draft ───────────────────────────
+  publish:
+    name: Publish proven artifact set
+    needs: [prepare, assemble, smoke-windows, smoke-macos]
+    if: ${{ !inputs.cache_warm_only }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ needs.prepare.outputs.tag }}
+          persist-credentials: false
+
+      - name: Require smoke attestations on this exact release
+        env:
+          GH_TOKEN: ${{ secrets.GH_TOKEN || secrets.GITHUB_TOKEN }}
+          TAG: ${{ needs.prepare.outputs.tag }}
+        run: |
+          set -euo pipefail
+          assets="$(gh release view "${TAG}" --json assets --jq '[.assets[].name] | join(" ")')"
+          for proof in smoke-windows.ok smoke-macos.ok; do
+            case " ${assets} " in
+              *" ${proof} "*) echo "✓ ${proof}" ;;
+              *) echo "::error::${TAG} has no ${proof}; refusing to publish"; exit 1 ;;
+            esac
+          done
+
+      - name: Publish the proven draft
         env:
           GH_TOKEN: ${{ secrets.GH_TOKEN || secrets.GITHUB_TOKEN }}
           TAG: ${{ needs.prepare.outputs.tag }}
           CHANNEL: ${{ needs.prepare.outputs.channel }}
-        # The manifest goes up LAST and the draft flips only after it lands —
-        # uploading latest.json is what actually triggers installed apps to
-        # update, so it must never be reachable before the assets it points at.
-        # (Ghostty stages its appcast under a different name for the same
-        # reason.)
         run: |
           set -euo pipefail
-          gh release upload "${TAG}" latest.json --clobber
           gh release edit "${TAG}" --draft=false
-          echo "→ published ${TAG} (${CHANNEL})"
+          echo "→ published proven ${TAG} (${CHANNEL})"
 
       - name: Mirror onto the rolling updater tag
         env:
           GH_TOKEN: ${{ secrets.GH_TOKEN || secrets.GITHUB_TOKEN }}
           VERSION: ${{ needs.prepare.outputs.version }}
           CHANNEL: ${{ needs.prepare.outputs.channel }}
-        # Installed apps poll a FIXED endpoint (updater / updater-staging), not
-        # the versioned release, so the manifest has to be mirrored there.
         run: bash scripts/mirror-updater-channel.sh "$VERSION" "$CHANNEL"
-
-      - name: Dispatch exact-artifact product smokes for RC
-        if: ${{ needs.prepare.outputs.prerelease == 'true' }}
-        env:
-          GH_TOKEN: ${{ secrets.GH_TOKEN || secrets.GITHUB_TOKEN }}
-          TAG: ${{ needs.prepare.outputs.tag }}
-        run: |
-          set -euo pipefail
-          gh workflow run windows-product-smoke.yml --ref main -f tag="${TAG}"
-          gh workflow run macos-product-smoke.yml --ref main -f tag="${TAG}"
-          echo "→ dispatched Windows + macOS installed-artifact smoke for ${TAG}"

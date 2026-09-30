@@ -72,6 +72,11 @@ on:
         options:
           - rc
           - stable
+      candidate_tag:
+        description: "For stable: exact proven RC tag from the same main commit (for example v1.93.0-rc.2)"
+        type: string
+        required: false
+        default: ""
       dry_run:
         description: "Analyse commits and report the next version without tagging"
         type: boolean
@@ -136,6 +141,48 @@ jobs:
           # now caught loudly by the dispatch step's warning instead of being
           # silent.
           token: ${{ secrets.GH_TOKEN || secrets.GITHUB_TOKEN }}
+
+      - name: Require stable promotion to come from a proven RC
+        if: ${{ inputs.channel == 'stable' }}
+        env:
+          GH_TOKEN: ${{ secrets.GH_TOKEN || secrets.GITHUB_TOKEN }}
+          CANDIDATE_TAG: ${{ inputs.candidate_tag }}
+        run: |
+          set -euo pipefail
+
+          case "${CANDIDATE_TAG}" in
+            v*-rc.*) ;;
+            *) echo "::error::stable promotion requires candidate_tag=vX.Y.Z-rc.N"; exit 1 ;;
+          esac
+
+          git fetch --quiet --tags --force
+          candidate_sha="$(git rev-list -n1 "${CANDIDATE_TAG}" 2>/dev/null || true)"
+          head_sha="$(git rev-parse HEAD)"
+          if [ -z "${candidate_sha}" ]; then
+            echo "::error::candidate RC tag ${CANDIDATE_TAG} does not exist"
+            exit 1
+          fi
+          if [ "${candidate_sha}" != "${head_sha}" ]; then
+            echo "::error::main moved after ${CANDIDATE_TAG}: candidate=${candidate_sha}, main=${head_sha}. Cut and smoke a new RC before stable promotion."
+            exit 1
+          fi
+
+          meta="$(gh release view "${CANDIDATE_TAG}" --json isDraft,isPrerelease,assets)"
+          if [ "$(jq -r '.isDraft' <<<"${meta}")" != "false" ] || \
+             [ "$(jq -r '.isPrerelease' <<<"${meta}")" != "true" ]; then
+            echo "::error::${CANDIDATE_TAG} must be a published prerelease"
+            exit 1
+          fi
+
+          assets="$(jq -r '[.assets[].name] | join(" ")' <<<"${meta}")"
+          for proof in smoke-windows.ok smoke-macos.ok; do
+            case " ${assets} " in
+              *" ${proof} "*) echo "✓ ${CANDIDATE_TAG} carries ${proof}" ;;
+              *) echo "::error::${CANDIDATE_TAG} is missing ${proof}; stable promotion refused"; exit 1 ;;
+            esac
+          done
+
+          echo "→ stable promotion pinned to proven RC ${CANDIDATE_TAG} at ${head_sha}"
 
       - uses: actions/setup-node@v7
         with:
