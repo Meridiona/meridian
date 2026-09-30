@@ -11,7 +11,7 @@ name: Cache prune
 # It existed because release-build.yml was triggered by a TAG, and GitHub scopes
 # the Actions cache by `github.ref` with no workaround for tags: "tags only have
 # access to caches created in default branch". A tag build could not read
-# pre-main's cache, and every release cut a new tag, so nothing it saved was
+# the former integration branch's cache, and every release cut a new tag, so nothing it saved was
 # ever restorable.
 #
 # The warm workflow paid for that with a 25-minute compile it threw away, and
