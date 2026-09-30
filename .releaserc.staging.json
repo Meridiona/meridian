@@ -1,9 +1,8 @@
 {
   "branches": [
-    "main",
     {
-      "name": "pre-main",
-      "prerelease": "staging"
+      "name": "main",
+      "prerelease": "rc"
     }
   ],
   "tagFormat": "v${version}",
@@ -28,47 +27,47 @@
           "types": [
             {
               "type": "feat",
-              "section": "\ud83d\ude80 Features"
+              "section": "🚀 Features"
             },
             {
               "type": "fix",
-              "section": "\ud83d\udc1b Bug Fixes"
+              "section": "🐛 Bug Fixes"
             },
             {
               "type": "perf",
-              "section": "\u26a1 Performance"
+              "section": "⚡ Performance"
             },
             {
               "type": "refactor",
-              "section": "\u267b\ufe0f Refactoring"
+              "section": "♻️ Refactoring"
             },
             {
               "type": "build",
-              "section": "\ud83d\udce6 Build System"
+              "section": "📦 Build System"
             },
             {
               "type": "ci",
-              "section": "\ud83e\udd16 CI"
+              "section": "🤖 CI"
             },
             {
               "type": "test",
-              "section": "\u2705 Tests"
+              "section": "✅ Tests"
             },
             {
               "type": "docs",
-              "section": "\ud83d\udcdd Documentation"
+              "section": "📝 Documentation"
             },
             {
               "type": "style",
-              "section": "\ud83c\udfa8 Styles"
+              "section": "🎨 Styles"
             },
             {
               "type": "chore",
-              "section": "\ud83d\udd27 Chores"
+              "section": "🔧 Chores"
             },
             {
               "type": "revert",
-              "section": "\u23ea Reverts"
+              "section": "⏪ Reverts"
             }
           ]
         }
