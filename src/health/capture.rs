@@ -438,6 +438,15 @@ const COVERAGE_IGNORE_APPS: &[&str] = &[
     "CoreServicesUIAgent",
 ];
 
+/// Meridian's own windows are deliberately never captured (`is_self_app` in
+/// `tray/src-tauri/src/capture/screenpipe.rs`), so the user focusing the
+/// dashboard or setup wizard is focus with zero frames BY DESIGN. Mirrors that
+/// function's names (product name and binary name, case-insensitive); the
+/// daemon cannot import them from the tray crate.
+fn is_own_app(app: &str) -> bool {
+    app.eq_ignore_ascii_case("meridian") || app.eq_ignore_ascii_case("meridian-tray")
+}
+
 async fn capture_coverage(pool: &SqlitePool, window: &str) -> Check {
     // Use julianday() for both sides of the comparison: `datetime('now', ?1)`
     // produces '2026-06-23 17:00:00' (space separator, no Z), but
@@ -481,7 +490,7 @@ async fn capture_coverage(pool: &SqlitePool, window: &str) -> Check {
     let mut ghosted: Vec<String> = Vec::new();
     let mut degraded: Vec<String> = Vec::new();
     for (app, focus, frames) in &rows {
-        if COVERAGE_IGNORE_APPS.contains(&app.as_str()) {
+        if COVERAGE_IGNORE_APPS.contains(&app.as_str()) || is_own_app(app) {
             continue;
         }
         if *frames == 0 {
@@ -724,6 +733,29 @@ mod tests {
         insert_focus(&pool, "loginwindow", 10).await;
         let c = capture_coverage(&pool, "-1 day").await;
         assert_eq!(c.severity, Severity::Ok);
+    }
+
+    #[tokio::test]
+    async fn coverage_ignores_meridians_own_windows() {
+        // Focusing the dashboard is focus with no frames by design; the
+        // startup check used to report it as a critical capture failure.
+        let pool = mem_pool().await;
+        insert_focus(&pool, "Meridian", 19).await;
+        insert_focus(&pool, "meridian-tray", 8).await;
+        let c = capture_coverage(&pool, "-1 day").await;
+        assert_eq!(c.severity, Severity::Ok);
+    }
+
+    #[tokio::test]
+    async fn coverage_still_flags_a_real_ghost_next_to_own_app() {
+        // The exemption must not swallow a genuine frameless app.
+        let pool = mem_pool().await;
+        insert_focus(&pool, "Meridian", 19).await;
+        insert_focus(&pool, "Codex", 10).await;
+        let c = capture_coverage(&pool, "-1 day").await;
+        assert_eq!(c.severity, Severity::Critical);
+        assert!(c.detail.contains("Codex"));
+        assert!(!c.detail.contains("Meridian"));
     }
 
     // NOTE: `a11y_helper_verdict_parses_trust_states` and
