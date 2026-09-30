@@ -51,6 +51,7 @@ jobs:
                   ("nextjs-", "Next.js / shared"),
                   ("fast-next-", "Next.js / legacy PR"),
                   ("node-cache-", "npm"),
+                  ("codeql-", "CodeQL"),
                   ("sccache/", "legacy sccache"),
               )
               for prefix, label in rules:
@@ -61,6 +62,8 @@ jobs:
           def ref_class(ref: str) -> str:
               if ref == "refs/heads/main":
                   return "main"
+              if ref == "refs/heads/pre-main":
+                  return "retired pre-main"
               if ref.startswith("refs/pull/"):
                   return "PR"
               if "refs/tags/" in ref:
