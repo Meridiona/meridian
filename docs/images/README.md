@@ -52,9 +52,7 @@ branch was switched to match it.
 
 The specific video reused is `main`'s current one, `5cc26036-3842-4748-85c8-097a8b71f20d`
 (the "Product Hunt cut" - `main` swapped to this after this branch had already grabbed an
-older upload, `501f41e6-...`, which is why that older ID showed up here briefly). Check
-what `main`/`pre-main` currently link before reusing this ID again - it has already moved
-once. The previous version of this section linked out to a YouTube thumbnail instead;
+older upload, `501f41e6-...`, which is why that older ID showed up here briefly). Check what `main` currently links before reusing this ID again - it has already moved once. The previous version of this section linked out to a YouTube thumbnail instead;
 that approach is why `demo-thumb.jpg` no longer exists here.
 
 ## `meridian-reconstruction.gif` (already here)

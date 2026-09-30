@@ -45,9 +45,11 @@ manifest, verifies required assets, and publishes the draft. A later merge to
 tag-pinned.
 
 ### Release candidate (`main`)
-Config: `.releaserc.staging.json` (historical filename; it is now the RC
-semantic-release config). RC promotion cuts `vX.Y.Z-rc.N` from the current
-`main` commit without writing a version-bump commit back to the branch.
+RC promotion uses the committed stable semantic-release config in **dry-run
+analysis mode** to determine the next stable base version, then
+`release-prepare.yml` explicitly creates `vX.Y.Z-rc.N` from the current
+`main` commit. RC creation does not write a version-bump commit back to the
+branch.
 
 `release-build.yml` builds the immutable RC tag, signs/notarizes macOS and
 packages Windows, and keeps the GitHub Release **draft** while the exact DMG and
@@ -98,10 +100,11 @@ workflow publish the release and update the rolling updater channel.
 
 Dry-run either channel by adding `-f dry_run=true`.
 
-The workflow rejects mismatched channel/ref pairs. Once semantic-release creates
-the immutable `v*` tag, `release-prepare.yml` dispatches
-`release-build.yml` against `main` for cache scope while the build itself
-checks out the tag. The exact tagged source is therefore the exact source that
+The workflow rejects mismatched channel/ref pairs. Stable tags are created by
+semantic-release; RC tags are created explicitly by `release-prepare.yml`
+after semantic-release version analysis. In both cases, `release-prepare.yml`
+dispatches `release-build.yml` against `main` for cache scope while the
+build itself checks out the immutable tag. The exact tagged source is therefore the exact source that
 gets signed and published.
 
 ### 4. Monitor Build Status
