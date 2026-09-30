@@ -23,21 +23,29 @@
 //! grant, so a stale WindowServer cache entry is the one thing standing
 //! between "worked before" and "reinstalled and it's not tracking".
 //!
-//! # Debounce is unnecessary here, unlike `permissions.rs`
+//! # A quiet table only means something while the user is at the machine
 //!
-//! [`super::permissions`] must debounce because a single boolean TCC read can
-//! be a launch-time phantom (see its module doc's 2026-08-16 incident). This
-//! check instead measures elapsed time since the last real frame — the
-//! evidence already accumulates in the query itself. A single query result
-//! IS the accumulated signal; there is nothing to smooth.
+//! Capture writes nothing while the screen is locked, the display is off, or
+//! the user is simply away, so "no frame for 20 minutes" is the normal state
+//! of every lunch break and every night. Judging by elapsed time alone raised
+//! the red "Tracking has stopped" error (and its OS toast) for every user who
+//! stepped away, then cleared itself once they came back and a frame landed.
 //!
-//! [`STARTUP_GRACE`] plays the equivalent role: a fresh launch's newest frame
-//! is very often from a PRIOR session (last night, last week), so the very
-//! first health tick after launch would otherwise read as a huge, entirely
-//! normal gap and raise instantly. The grace period only has to outlast
-//! startup lag (plugin registration, the capture engine's first tick), not
-//! [`STALL_THRESHOLD`] itself — once one fresh frame lands, the gap collapses
-//! to seconds.
+//! So elapsed time is necessary but not sufficient. [`StallTracker`] also
+//! counts health ticks on which the user was demonstrably active (see
+//! [`crate::sys::seconds_since_last_input`]) and still no new frame had
+//! landed, and the notice needs [`ACTIVE_STALL_TICKS`] of them. The input
+//! signal comes from the OS, not from `capture_ui_events`, because that
+//! recorder shares the accessibility grant the frames depend on and would go
+//! blind in exactly the failure being diagnosed.
+//!
+//! This can only ever raise LATER or not at all compared with the elapsed-time
+//! rule alone, never sooner, so it cannot introduce a new false positive.
+//!
+//! [`STARTUP_GRACE`] covers the launch case: a fresh launch's newest frame is
+//! very often from a PRIOR session, so the first tick after launch would
+//! otherwise read as a huge, entirely normal gap. It only has to outlast
+//! startup lag (plugin registration, the capture engine's first tick).
 //!
 //! # Related
 //! - [`super::permissions`] — the input-side (TCC boolean) check this
@@ -68,6 +76,34 @@ const STALL_THRESHOLD: Duration = Duration::from_secs(20 * 60);
 /// from yesterday" from reading as an instant false positive at every launch.
 const STARTUP_GRACE: Duration = Duration::from_secs(3 * 60);
 
+/// A reading of [`crate::sys::seconds_since_last_input`] under this means the
+/// user touched an input device during the last health tick (~60s), with
+/// margin for tick jitter, so capture had something to record.
+const ACTIVE_IDLE_LIMIT_S: f64 = 90.0;
+
+/// Health ticks with the user active and not one new frame before the notice
+/// is believed. Ten is ten minutes of real use, comfortably past the point
+/// where a healthy pipeline has written hundreds of frames, and still inside
+/// [`STALL_THRESHOLD`], so a user who is working the whole time is told at the
+/// same 20 minutes as before, not later.
+const ACTIVE_STALL_TICKS: u32 = 10;
+
+/// What the poll loop remembers between health ticks. Lives in the loop, not a
+/// static, so it dies with the process and every launch starts from zero (the
+/// same reasoning as [`super::permissions::PermissionDebounce`]).
+#[derive(Default)]
+pub(super) struct StallTracker {
+    /// Newest frame timestamp seen on the previous tick; a change means at
+    /// least one frame landed since, i.e. capture is alive.
+    last_frame_ts: Option<chrono::DateTime<chrono::Utc>>,
+    /// Ticks since that frame on which the user was active. Cleared whenever a
+    /// new frame lands or a pause starts, so it never spans either.
+    active_ticks: u32,
+    /// Whether this episode has already been logged, so a long stall writes
+    /// one WARN instead of one a minute.
+    warned: bool,
+}
+
 /// Re-check whether capture is actually producing frames, and raise/clear
 /// [`NOTICE_ID`] accordingly. Runs on the same `do_health` cadence as
 /// [`super::permissions::check_permissions`] (~60s).
@@ -75,14 +111,26 @@ const STARTUP_GRACE: Duration = Duration::from_secs(3 * 60);
 /// `loop_started` and `paused` are passed in rather than read from a shared
 /// state so the decision stays a pure function of its inputs — mirrors
 /// [`super::permissions::PermissionDebounce::observe`]'s own reasoning.
-/// `loop_started.elapsed()` is computed here, in the one production call
-/// site — never in a test — for the same reason described on
+/// `loop_started.elapsed()` and the OS idle reading are taken here, in the one
+/// production call site — never in a test — for the same reason described on
 /// [`check_capture_health_inner`]'s `since_launch` parameter.
-pub(super) async fn check_capture_health(pool: &SqlitePool, loop_started: Instant, paused: bool) {
+pub(super) async fn check_capture_health(
+    pool: &SqlitePool,
+    loop_started: Instant,
+    paused: bool,
+    tracker: &mut StallTracker,
+) {
     if !crate::sys::is_bundled() {
         return;
     }
-    check_capture_health_inner(pool, loop_started.elapsed(), paused).await;
+    check_capture_health_inner(
+        pool,
+        loop_started.elapsed(),
+        paused,
+        tracker,
+        crate::sys::seconds_since_last_input(),
+    )
+    .await;
 }
 
 /// The `is_bundled()`-gated body of [`check_capture_health`], split out so
@@ -103,12 +151,25 @@ pub(super) async fn check_capture_health(pool: &SqlitePool, loop_started: Instan
 /// the hazard at its root instead of re-guarding it with `checked_sub`:
 /// tests construct arbitrary durations directly, with no `Instant`
 /// arithmetic anywhere in this module's test suite.
-async fn check_capture_health_inner(pool: &SqlitePool, since_launch: Duration, paused: bool) {
+///
+/// `idle_secs` is the OS's seconds-since-last-input reading, passed in for the
+/// same testability reason. `None` (the platform cannot say) counts as
+/// "active": an unreadable signal must fall back to the old elapsed-time
+/// behaviour, never silence a real stall.
+async fn check_capture_health_inner(
+    pool: &SqlitePool,
+    since_launch: Duration,
+    paused: bool,
+    tracker: &mut StallTracker,
+    idle_secs: Option<f64>,
+) {
     // Capture is legitimately silent for a pause the user or a schedule
     // chose — that is not "stalled", and clearing here would be wrong too:
     // a genuine stall discovered just before a pause starts should still
-    // read as raised when the pause ends, not be silently forgotten.
+    // read as raised when the pause ends, not be silently forgotten. The
+    // activity count restarts so it never spans the pause.
     if paused {
+        tracker.active_ticks = 0;
         return;
     }
     if since_launch < STARTUP_GRACE {
@@ -130,11 +191,39 @@ async fn check_capture_health_inner(pool: &SqlitePool, since_launch: Duration, p
         }
     };
 
-    let gap = chrono::Utc::now().signed_duration_since(last_ts);
-    let stalled = gap > chrono::Duration::from_std(STALL_THRESHOLD).unwrap();
+    let new_frame = tracker.last_frame_ts != Some(last_ts);
+    tracker.last_frame_ts = Some(last_ts);
+    if new_frame {
+        tracker.active_ticks = 0;
+        tracker.warned = false;
+    } else if idle_secs.is_none_or(|s| s < ACTIVE_IDLE_LIMIT_S) {
+        tracker.active_ticks = tracker.active_ticks.saturating_add(1);
+    }
 
-    let result = if stalled {
-        tracing::warn!(last_ts = %last_ts, "capture_health: no new frame within the stall threshold");
+    let gap = chrono::Utc::now().signed_duration_since(last_ts);
+    let quiet_too_long = gap > chrono::Duration::from_std(STALL_THRESHOLD).unwrap();
+
+    let result = if !quiet_too_long {
+        meridian::notices::clear_typed(pool, NOTICE_ID, EVENT_KEY).await
+    } else if tracker.active_ticks < ACTIVE_STALL_TICKS {
+        // Quiet for a long time, but the user was mostly away: the normal
+        // state of a lunch break or a night. Leave any existing notice as it
+        // is; the next frame clears it.
+        tracing::debug!(
+            active_ticks = tracker.active_ticks,
+            ?idle_secs,
+            "capture_health: no recent frame, but too little user activity to call it a stall"
+        );
+        return;
+    } else {
+        if !tracker.warned {
+            tracker.warned = true;
+            tracing::warn!(
+                last_ts = %last_ts,
+                active_ticks = tracker.active_ticks,
+                "capture_health: user active but no new frame within the stall threshold"
+            );
+        }
         meridian::notices::raise_typed(
             pool,
             meridian::notices::Notice {
@@ -152,8 +241,6 @@ async fn check_capture_health_inner(pool: &SqlitePool, since_launch: Duration, p
             },
         )
         .await
-    } else {
-        meridian::notices::clear_typed(pool, NOTICE_ID, EVENT_KEY).await
     };
     if let Err(e) = result {
         tracing::warn!(error = %e, id = NOTICE_ID, "capture_health: notice write failed");
@@ -203,17 +290,119 @@ mod tests {
     /// boot-epoch underflow described on [`check_capture_health_inner`].
     const LONG_AGO: Duration = Duration::from_secs(3600);
 
+    /// User at the keyboard right now.
+    const ACTIVE: Option<f64> = Some(1.0);
+    /// User away for an hour.
+    const AWAY: Option<f64> = Some(3600.0);
+
+    /// Drive `n` health ticks with a fixed idle reading.
+    async fn ticks(
+        pool: &SqlitePool,
+        tracker: &mut StallTracker,
+        n: u32,
+        idle: Option<f64>,
+        paused: bool,
+    ) {
+        for _ in 0..n {
+            check_capture_health_inner(pool, LONG_AGO, paused, tracker, idle).await;
+        }
+    }
+
+    async fn raised_count(pool: &SqlitePool) -> i64 {
+        sqlx::query_scalar("SELECT COUNT(*) FROM system_notices WHERE notice_id = ?1")
+            .bind(NOTICE_ID)
+            .fetch_one(pool)
+            .await
+            .unwrap()
+    }
+
     #[tokio::test]
-    async fn a_stalled_pipeline_past_the_grace_period_raises() {
+    async fn a_user_active_the_whole_time_still_gets_the_alarm() {
+        // The case this module exists for: the user is working, nothing lands.
+        // The first tick only records the newest frame; the next
+        // ACTIVE_STALL_TICKS are the evidence.
         let pool = seeded_pool(Some(chrono::Duration::hours(1))).await;
-        check_capture_health_inner(&pool, LONG_AGO, false).await;
-        let raised: i64 =
-            sqlx::query_scalar("SELECT COUNT(*) FROM system_notices WHERE notice_id = ?1")
-                .bind(NOTICE_ID)
-                .fetch_one(&pool)
-                .await
-                .unwrap();
-        assert_eq!(raised, 1, "a real stall past the grace period must raise");
+        let mut tracker = StallTracker::default();
+        ticks(&pool, &mut tracker, ACTIVE_STALL_TICKS, ACTIVE, false).await;
+        assert_eq!(
+            raised_count(&pool).await,
+            0,
+            "one tick short of the evidence"
+        );
+        ticks(&pool, &mut tracker, 1, ACTIVE, false).await;
+        assert_eq!(raised_count(&pool).await, 1, "a real stall must raise");
+    }
+
+    #[tokio::test]
+    async fn a_long_absence_never_raises() {
+        // Overnight or a long lunch: the newest frame is hours old and the
+        // user has not touched the machine. Capture is silent by design.
+        let pool = seeded_pool(Some(chrono::Duration::hours(11))).await;
+        let mut tracker = StallTracker::default();
+        ticks(&pool, &mut tracker, 200, AWAY, false).await;
+        assert_eq!(raised_count(&pool).await, 0, "being away is not a stall");
+    }
+
+    #[tokio::test]
+    async fn only_active_ticks_count_toward_the_alarm() {
+        let pool = seeded_pool(Some(chrono::Duration::hours(1))).await;
+        let mut tracker = StallTracker::default();
+        ticks(&pool, &mut tracker, 40, AWAY, false).await;
+        ticks(&pool, &mut tracker, 5, ACTIVE, false).await;
+        assert_eq!(raised_count(&pool).await, 0, "5 active ticks is not enough");
+        ticks(&pool, &mut tracker, 6, ACTIVE, false).await;
+        assert_eq!(
+            raised_count(&pool).await,
+            1,
+            "activity accumulates across idle gaps"
+        );
+    }
+
+    #[tokio::test]
+    async fn an_unreadable_idle_signal_counts_as_active() {
+        // Falling back to the old elapsed-time rule beats hiding a real stall.
+        let pool = seeded_pool(Some(chrono::Duration::hours(1))).await;
+        let mut tracker = StallTracker::default();
+        ticks(&pool, &mut tracker, ACTIVE_STALL_TICKS + 1, None, false).await;
+        assert_eq!(raised_count(&pool).await, 1);
+    }
+
+    #[tokio::test]
+    async fn a_new_frame_resets_the_count_and_clears_the_notice() {
+        let pool = seeded_pool(Some(chrono::Duration::hours(1))).await;
+        let mut tracker = StallTracker::default();
+        ticks(&pool, &mut tracker, ACTIVE_STALL_TICKS + 1, ACTIVE, false).await;
+        assert_eq!(raised_count(&pool).await, 1);
+        assert!(tracker.warned);
+
+        sqlx::query(
+            "INSERT INTO capture_frames (timestamp, app_name, text_source) \
+             VALUES (?1, 'TestApp', 'ocr')",
+        )
+        .bind(chrono::Utc::now().to_rfc3339())
+        .execute(&pool)
+        .await
+        .unwrap();
+        ticks(&pool, &mut tracker, 1, ACTIVE, false).await;
+
+        assert_eq!(raised_count(&pool).await, 0, "a landed frame must clear it");
+        assert_eq!(tracker.active_ticks, 0);
+        assert!(!tracker.warned, "the next episode must be logged again");
+    }
+
+    #[tokio::test]
+    async fn a_pause_restarts_the_activity_count() {
+        let pool = seeded_pool(Some(chrono::Duration::hours(1))).await;
+        let mut tracker = StallTracker::default();
+        ticks(&pool, &mut tracker, ACTIVE_STALL_TICKS, ACTIVE, false).await;
+        ticks(&pool, &mut tracker, 1, ACTIVE, true).await;
+        assert_eq!(tracker.active_ticks, 0);
+        ticks(&pool, &mut tracker, ACTIVE_STALL_TICKS - 1, ACTIVE, false).await;
+        assert_eq!(
+            raised_count(&pool).await,
+            0,
+            "the count must not span a pause"
+        );
     }
 
     #[tokio::test]
@@ -235,7 +424,8 @@ mod tests {
         .await
         .unwrap();
 
-        check_capture_health_inner(&pool, LONG_AGO, false).await;
+        check_capture_health_inner(&pool, LONG_AGO, false, &mut StallTracker::default(), ACTIVE)
+            .await;
         let raised: i64 =
             sqlx::query_scalar("SELECT COUNT(*) FROM system_notices WHERE notice_id = ?1")
                 .bind(NOTICE_ID)
@@ -251,7 +441,14 @@ mod tests {
         // frame is from a prior session (hours old), but the process itself
         // just started — capture hasn't had a chance to write yet.
         let pool = seeded_pool(Some(chrono::Duration::hours(6))).await;
-        check_capture_health_inner(&pool, Duration::ZERO, false).await;
+        check_capture_health_inner(
+            &pool,
+            Duration::ZERO,
+            false,
+            &mut StallTracker::default(),
+            ACTIVE,
+        )
+        .await;
         let raised: i64 =
             sqlx::query_scalar("SELECT COUNT(*) FROM system_notices WHERE notice_id = ?1")
                 .bind(NOTICE_ID)
@@ -267,7 +464,8 @@ mod tests {
     #[tokio::test]
     async fn a_stalled_pipeline_while_paused_does_not_raise() {
         let pool = seeded_pool(Some(chrono::Duration::hours(1))).await;
-        check_capture_health_inner(&pool, LONG_AGO, true).await;
+        check_capture_health_inner(&pool, LONG_AGO, true, &mut StallTracker::default(), ACTIVE)
+            .await;
         let raised: i64 =
             sqlx::query_scalar("SELECT COUNT(*) FROM system_notices WHERE notice_id = ?1")
                 .bind(NOTICE_ID)
@@ -280,7 +478,8 @@ mod tests {
     #[tokio::test]
     async fn no_frames_ever_written_does_not_raise() {
         let pool = seeded_pool(None).await;
-        check_capture_health_inner(&pool, LONG_AGO, false).await;
+        check_capture_health_inner(&pool, LONG_AGO, false, &mut StallTracker::default(), ACTIVE)
+            .await;
         let raised: i64 =
             sqlx::query_scalar("SELECT COUNT(*) FROM system_notices WHERE notice_id = ?1")
                 .bind(NOTICE_ID)

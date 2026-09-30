@@ -60,6 +60,9 @@ pub async fn run_poll_loop(app: tauri::AppHandle, state: Arc<Mutex<AppState>>) {
     // starts with an empty map, which is what gives every launch its grace
     // period (see `permissions`' module docs).
     let mut permission_debounce = permissions::PermissionDebounce::default();
+    // Frame/activity bookkeeping for the capture stall notice; same lifetime
+    // reasoning as the debounce above (see `capture_health`'s module docs).
+    let mut stall_tracker = capture_health::StallTracker::default();
     // When this loop started — `capture_health`'s startup grace period is
     // measured against this, not a static, for the same "dies with the
     // process" reasoning as the debounce above.
@@ -124,7 +127,13 @@ pub async fn run_poll_loop(app: tauri::AppHandle, state: Arc<Mutex<AppState>>) {
             if do_health {
                 permissions::check_permissions(&app, pool, &mut permission_debounce).await;
                 let paused = state.lock().unwrap().pause_source.is_some();
-                capture_health::check_capture_health(pool, loop_started, paused).await;
+                capture_health::check_capture_health(
+                    pool,
+                    loop_started,
+                    paused,
+                    &mut stall_tracker,
+                )
+                .await;
             }
         }
         // Disk-space guard: auto-pause capture when free disk space on the
