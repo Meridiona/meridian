@@ -34,7 +34,7 @@ jobs:
 
           used="$(gh api "repos/${REPO}/actions/cache/usage" --jq '.active_caches_size_in_bytes')"
 
-          python3 - "${rows}" "${used}" >> "${GITHUB_STEP_SUMMARY}" <<'PY'
+          python3 - "${rows}" "${used}" <<'PY' | tee -a "${GITHUB_STEP_SUMMARY}"
           import collections
           import sys
 
