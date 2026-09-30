@@ -99,12 +99,17 @@ tray, notifications, packaging and release channel all have real Windows
 implementations, and CI runs a dedicated `rust-windows` job (clippy `-D warnings` +
 `cargo test`) on every PR into `pre-main`.
 
-This checklist did not follow it there, which is the gap these items close. **None of
-the automated suites cover the Windows install path**: `tests/install/` is
-launchd-shaped by construction (`plutil -lint`, plist rendering), and the local git
-hooks are bash, so a Windows contributor's `pre-push` cannot catch a Windows-only
-failure — only CI can. Everything below is therefore manual, on a real Windows 10/11
-machine.
+The source-level `tests/install/` suite is macOS/launchd-shaped, so Windows
+needs a separate installed-product check. `.github/workflows/windows-product-smoke.yml`
+now provides that check on a real GitHub-hosted Windows runner: it builds an NSIS
+package, installs it silently, launches the packaged tray, waits for backend staging,
+verifies Task Scheduler/Startup fallback registration, consumes `doctor --json`, runs
+the native uninstall cleanup, then runs the NSIS uninstaller and verifies cleanup.
+
+The workflow is **manual/non-blocking** for now (`workflow_dispatch`) so it does not
+add a release-sized Windows build to every PR while the CI architecture is being
+redesigned. Once proven stable, the same smoke harness should be called from the RC
+artifact workflow rather than rebuilt independently.
 
 **Daemon lifecycle** (`tray/src-tauri/src/commands/daemon_control.rs` — named pipe +
 Task Scheduler, where macOS uses a Unix socket + launchd):
