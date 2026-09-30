@@ -219,7 +219,7 @@ on:
   workflow_dispatch:
     inputs:
       tag:
-        description: "Existing v* tag to build and publish (e.g. v1.84.0 or v1.84.0-staging.7). ALWAYS dispatch with branch = main, or the build starts from a cold cache."
+        description: "Existing v* tag to build and publish (e.g. v1.93.0 or v1.93.0-rc.1). ALWAYS dispatch with branch = main, or the build starts from a cold cache."
         required: true
         type: string
       cache_warm_only:
@@ -330,7 +330,9 @@ jobs:
 
           # The channel is a property of the version string, so it cannot drift
           # from what semantic-release actually cut.
-          if [[ "${version}" == *-staging* ]]; then
+          if [[ "${version}" == *-rc.* ]]; then
+            # RC artifacts intentionally use the existing staging runtime/update
+            # configuration. "staging" here is an app build channel, not a branch.
             channel=staging
             prerelease=true
           else
