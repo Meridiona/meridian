@@ -23,10 +23,10 @@ name: Release (prepare)
 # The old single-workflow shape pinned a SHA at plan time (correct — you want
 # the tag to name exactly the commit whose binaries you built) and then ran
 # semantic-release as a publisher at the END, after ~30 minutes of compiling.
-# Any merge to pre-main inside that window put the checkout behind the remote,
+# Any branch movement inside that window could put the checkout behind the remote,
 # and the publish aborted with:
 #
-#     The local branch pre-main is behind the remote one, therefore a new
+#     The local branch is behind the remote one, therefore a new
 #     version won't be published.
 #
 # Run 29748827473 did exactly that: both macOS arches built successfully, then
@@ -48,7 +48,7 @@ name: Release (prepare)
 #     ~60 seconds instead of ~30 minutes. Losing the race now costs a minute of
 #     ubuntu time and is simply re-runnable.
 #   * release-build.yml builds the TAG — an immutable ref, handed to it as an
-#     input. pre-main can move a hundred times mid-build and nothing notices,
+#     input. main can move a hundred times mid-build and nothing notices,
 #     because there is no branch-state check left to fail. The tag<->binary
 #     correspondence the old pinned-SHA checkout was reaching for now holds BY
 #     CONSTRUCTION.
@@ -68,9 +68,9 @@ on:
         description: "Promotion channel"
         type: choice
         required: true
-        default: staging
+        default: rc
         options:
-          - staging
+          - rc
           - stable
       dry_run:
         description: "Analyse commits and report the next version without tagging"
@@ -93,8 +93,7 @@ jobs:
     permissions:
       contents: write # pushes the version-bump commit and the tag
       actions: write # dispatches release-build.yml once the tag exists
-    # Promotion is manual-only. The first step enforces the channel/ref pairing:
-    # stable must run from main; staging must run from pre-main.
+    # Promotion is manual-only. RC and stable promotions both originate from main.
     outputs:
       released: ${{ steps.run.outputs.released }}
       version: ${{ steps.run.outputs.version }}
@@ -107,8 +106,7 @@ jobs:
         run: |
           set -euo pipefail
           case "${CHANNEL}" in
-            stable)  expected="main" ;;
-            staging) expected="pre-main" ;;
+            stable|rc) expected="main" ;;
             *) echo "::error::unknown release channel '${CHANNEL}'"; exit 1 ;;
           esac
           if [ "${REF_NAME}" != "${expected}" ]; then
@@ -150,14 +148,13 @@ jobs:
       - name: Select the release config for this branch
         # .releaserc.json is the name semantic-release loads by default, and it
         # is the committed PRODUCTION config (changelog + git plugins, so the
-        # version bump is committed back to main). On pre-main we copy the
-        # staging config over it — ephemeral, this CI checkout only, never
-        # committed.
+        # version bump is committed back to main). For RC promotion we copy the
+        # prerelease config over it - ephemeral in this CI checkout only.
         #
         # The two configs are separate whole files rather than one parameterised
-        # file because they differ structurally, not just in values: staging cuts
-        # prereleases on the `staging` channel and deliberately has NO
-        # @semantic-release/changelog and NO @semantic-release/git (a staging tag
+        # file because they differ structurally, not just in values: RC cuts
+        # prereleases on the `rc` channel and deliberately has NO
+        # @semantic-release/changelog and NO @semantic-release/git (an RC tag
         # must not rewrite the repo). That difference is also why the build's
         # "tag matches the committed version" assertion only applies to stable.
         run: |
@@ -166,7 +163,7 @@ jobs:
             echo "→ stable channel (.releaserc.json, as committed)"
           else
             cp .releaserc.staging.json .releaserc.json
-            echo "→ staging channel (.releaserc.staging.json)"
+            echo "→ RC channel (.releaserc.staging.json)"
           fi
 
       - name: semantic-release
@@ -217,14 +214,11 @@ jobs:
           else
             echo "released=false" >> "$GITHUB_OUTPUT"
 
-            # On pre-main this is routine and fine: a push carrying only
-            # chore/docs/ci commits legitimately cuts nothing, and the next
-            # feature merge picks everything up.
+            # On the RC channel this is routine and fine: if there are no releasable
+            # commits since the previous release, there is nothing to tag.
             #
-            # On MAIN it is a FAILURE, and must be loud. The only push to main
-            # is the pre-main → main release merge — a deliberate act whose
-            # entire purpose is to ship a version. If it produces no tag, the
-            # release silently did not happen, and a green check says otherwise.
+            # A stable promotion that produces no tag is a failure: the operator
+            # explicitly asked to ship, so a green no-op would be misleading.
             #
             # This is not hypothetical. It has now happened twice (#517, #522):
             # both were SQUASH-merged, which collapses every conventional commit
@@ -288,19 +282,15 @@ jobs:
         # release-build.yml used to fire on the tag push. That is the obvious
         # shape and it silently cost ~25 minutes a release, because GitHub
         # scopes the Actions cache by `github.ref` and tags can only ever read
-        # the DEFAULT BRANCH's cache — never a sibling tag's, never pre-main's.
+        # the DEFAULT BRANCH's cache — never a sibling tag's.
         # Every release cut a brand-new tag, so every release started cold.
         #
         # Dispatching instead makes `github.ref` the branch chosen here, while
         # `tag` travels as an INPUT that release-build checks out. main's cache
         # scope, the tag's source tree. release-build's `prepare` job hard-fails
         # if this is ever dispatched from anywhere else, so the two halves of
-        # that arrangement cannot drift apart.
-        #
-        # Note the asymmetry: `--ref main` is fixed, but ${TAG} may well point
-        # at a `pre-main` commit (that is exactly what a staging cut is). Main's
-        # copy of release-build.yml builds pre-main's source — intended, and
-        # spelled out in that file's `on:` block.
+        # that arrangement cannot drift apart. RC and stable tags both point
+        # into main history.
         #
         # The PAT matters here for the same reason it matters for the tag push
         # above: a workflow dispatched with the default GITHUB_TOKEN is subject
@@ -370,150 +360,4 @@ jobs:
             else
               echo "No release cut."
             fi
-          } >> "$GITHUB_STEP_SUMMARY"
-
-  # ── Back-merge main → pre-main ──────────────────────────────────────────────
-  #
-  # WHY THIS EXISTS. semantic-release derives the next version from the tags
-  # REACHABLE FROM THE BRANCH it runs on. The stable config's
-  # @semantic-release/git plugin commits the version bump onto `main`, and the
-  # tag points at that commit — so both live only on `main`. Nothing ever
-  # carried them back to `pre-main`, and the release flow is one-way
-  # (pre-main → main), so `pre-main` could not see them either.
-  #
-  # The result was silent and cumulative: measured on 2026-07-31, `main` was at
-  # v1.82.1 while the newest tag reachable from `pre-main` was
-  # v1.78.0-staging.16, and pre-main's own Cargo.toml / tauri.conf.json still
-  # read 1.77.0 — five minor versions of drift across twelve unmerged release
-  # commits. Staging kept incrementing `-staging.N` on a 1.78.0 base forever.
-  #
-  # That is not cosmetic. `1.78.0-staging.16` sorts BELOW `1.82.1` under semver,
-  # so tauri-plugin-updater will not offer a staging build to anyone already on
-  # a current stable install — the staging channel silently stops being
-  # installable by exactly the people meant to test it, and they have to fetch
-  # the asset by hand.
-  #
-  # Merging main back makes its tags reachable, so the next staging cut is
-  # numbered off the real current version and sorts above it again.
-  #
-  # A PR, NOT A DIRECT PUSH. pre-main is the staging branch everything is cut
-  # from; nothing here bypasses its review gate. This job only ever prepares the
-  # merge and opens the PR — a human merges it, exactly like the pre-main → main
-  # release PR. The trade-off is that an unmerged back-merge PR leaves staging
-  # stuck, which is why the PR body says so in as many words.
-  backmerge:
-    name: Back-merge main → pre-main
-    needs: prepare
-    # Stable channel only, and only when a release actually happened. A staging
-    # dispatch on pre-main has nothing to merge back, and a no-op run on main
-    # (semantic-release's own bump commit re-entering this workflow) must not
-    # open an empty PR.
-    if: ${{ github.ref_name == 'main' && needs.prepare.outputs.released == 'true' }}
-    runs-on: ubuntu-latest
-    permissions:
-      contents: write # pushes the back-merge branch
-      pull-requests: write # opens the PR
-    steps:
-      # *** THE PAT IS REQUIRED HERE, NOT A PREFERENCE. ***
-      #
-      # GitHub does not trigger workflows for refs pushed with the default
-      # GITHUB_TOKEN (the recursion guard), and a pull_request opened with it
-      # only ever lands in an approval-required state. Either way the
-      # back-merge PR arrives with no CI on it — and pre-main's checks are
-      # what a human merges it on, so it would sit unmergeable and silent,
-      # which is the exact failure mode this job exists to end.
-      #
-      # So there is deliberately NO `|| secrets.GITHUB_TOKEN` fallback below:
-      # a degraded back-merge is worse than a loud one. Fail here, before
-      # anything is pushed, with a message that names the missing secret.
-      - name: Require the release PAT
-        env:
-          GH_TOKEN: ${{ secrets.GH_TOKEN }}
-        run: |
-          set -euo pipefail
-          if [ -z "${GH_TOKEN}" ]; then
-            echo "::error::secrets.GH_TOKEN is not available; the back-merge PR would open with no CI on it. Configure the org PAT and re-run."
-            exit 1
-          fi
-          echo "→ GH_TOKEN present"
-
-      - uses: actions/checkout@v7
-        with:
-          fetch-depth: 0
-          fetch-tags: true
-          # Persisted on purpose: `git push` below reuses this credential, so
-          # it must be the PAT (see the guard step above), not the default
-          # token.
-          persist-credentials: true
-          token: ${{ secrets.GH_TOKEN }}
-
-      - name: Open the back-merge PR
-        env:
-          GITHUB_TOKEN: ${{ secrets.GH_TOKEN }}
-          TAG: ${{ needs.prepare.outputs.tag }}
-        run: |
-          set -euo pipefail
-          git fetch --quiet origin main pre-main
-
-          # Already contained (e.g. a re-run after the PR was merged): nothing
-          # to do, and opening an empty PR would be noise.
-          if [ "$(git rev-list --count origin/pre-main..origin/main)" = "0" ]; then
-            echo "→ pre-main already contains main; nothing to back-merge"
-            exit 0
-          fi
-
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-
-          branch="chore/backmerge-${TAG}"
-          git checkout -B "${branch}" origin/pre-main
-
-          # Conflicts are a human's call — the version manifests are the likely
-          # site, and guessing at them would corrupt the very numbers this job
-          # exists to keep straight. Fail loudly rather than push something
-          # half-resolved.
-          if ! git merge --no-edit origin/main; then
-            git merge --abort || true
-            echo "::error::main → pre-main back-merge conflicts; resolve it by hand"
-            {
-              echo "### Back-merge needs a human"
-              echo ""
-              echo "Merging \`main\` (\`${TAG}\`) into \`pre-main\` conflicts."
-              echo ""
-              echo '```bash'
-              echo "git checkout pre-main && git pull"
-              echo "git merge main   # resolve, keeping main's version manifests"
-              echo '```'
-              echo ""
-              echo "Until this lands, staging versions keep being cut from a stale"
-              echo "base and sort below the current stable release."
-            } >> "$GITHUB_STEP_SUMMARY"
-            exit 1
-          fi
-
-          git push --force-with-lease origin "${branch}"
-
-          if gh pr view "${branch}" --json number >/dev/null 2>&1; then
-            echo "→ PR already open for ${branch}"
-          else
-            gh pr create \
-              --base pre-main --head "${branch}" \
-              --title "chore: back-merge ${TAG} into pre-main" \
-              --body "$(printf '%s\n' \
-                "Automated back-merge of \`main\` (\`${TAG}\`) into \`pre-main\`." \
-                "" \
-                "**Merge this.** semantic-release numbers a staging cut from the tags" \
-                "reachable from \`pre-main\`. The stable release commit and its tag are" \
-                "created on \`main\` and never come back on their own, so until this lands," \
-                "staging keeps being cut from a stale base — and a staging version that" \
-                "sorts below the current stable release is one the updater will not offer" \
-                "to anyone already on stable." \
-                "" \
-                "Opened automatically by \`release-prepare.yml\`.")"
-          fi
-
-          {
-            echo "### Back-merge PR"
-            echo ""
-            echo "Opened \`${branch}\` → \`pre-main\` for \`${TAG}\`."
           } >> "$GITHUB_STEP_SUMMARY"

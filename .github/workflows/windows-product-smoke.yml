@@ -2,6 +2,11 @@ name: Windows product smoke
 
 on:
   workflow_dispatch:
+    inputs:
+      tag:
+        description: "Exact release tag whose Windows installer must be exercised"
+        required: true
+        type: string
 
 permissions:
   contents: read
@@ -21,15 +26,16 @@ jobs:
         with:
           persist-credentials: false
 
-      - name: Download latest shipped Windows installer
+      - name: Download exact tagged Windows installer
         id: installer
         shell: pwsh
         env:
           GH_TOKEN: ${{ github.token }}
+          TAG: ${{ inputs.tag }}
         run: |
           $dir = Join-Path $env:RUNNER_TEMP 'meridian-smoke'
           New-Item -ItemType Directory -Force -Path $dir | Out-Null
-          gh release download --repo Meridiona/meridian --pattern 'Meridian-x86_64-setup.exe' --dir $dir
+          gh release download "$env:TAG" --repo Meridiona/meridian --pattern 'Meridian-x86_64-setup.exe' --dir $dir
           $installer = Get-Item (Join-Path $dir 'Meridian-x86_64-setup.exe')
           "path=$($installer.FullName)" >> $env:GITHUB_OUTPUT
           Write-Host "Installer: $($installer.FullName)"

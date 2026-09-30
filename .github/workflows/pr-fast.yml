@@ -2,9 +2,9 @@ name: Fast PR
 
 on:
   pull_request:
-    branches: [pre-main, main]
+    branches: [main]
   push:
-    branches: [pre-main, main]
+    branches: [main]
   merge_group:
     types: [checks_requested]
 
@@ -353,8 +353,10 @@ jobs:
           inputs = prep_dispatch.get("inputs") or {}
           if "channel" not in inputs:
               fail.append("release-prepare.yml must require an explicit promotion channel")
-          if 'expected="main"' not in prep_src or 'expected="pre-main"' not in prep_src:
-              fail.append("release-prepare.yml must guard stable→main and staging→pre-main")
+          if 'expected="main"' not in prep_src:
+              fail.append("release-prepare.yml must guard every promotion to main")
+          if 'expected="pre-main"' in prep_src:
+              fail.append("release-prepare.yml must not route any promotion through pre-main")
           if "--ref main" not in prep_src:
               fail.append("release-prepare.yml must dispatch release-build against main cache scope")
 
