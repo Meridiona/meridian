@@ -11,20 +11,14 @@ name: Release (build & publish)
 # branch HEAD, an immutable build ref demands the opposite, and a long build
 # makes the conflict certain rather than theoretical).
 #
-# THIS FILE REPLACES THE OLD STAGING-SPECIFIC AND MONOLITHIC
-# release.yml, which have been deleted. It is now the ONLY build path, for both
-# channels, and the channel is derived from the tag — so stable and staging
-# cannot drift from each other:
+# THIS IS THE PRODUCT-BUILD PATH FOR RELEASE CANDIDATES.
 #
-#     v1.75.0            -> stable   (browser-downloaded DMG; notarized;
-#                                     served from `releases/latest`)
-#     v1.92.2-rc.1      -> staging  (RC tag; same signing/notarization path,
-#                                     but served from `updater-staging`)
+# RC tags are immutable candidates (vX.Y.Z-rc.N), but the binaries are stamped
+# with the final X.Y.Z application version and are channel-neutral. Stable
+# promotion is handled by release-prepare.yml and reuses the exact proven RC
+# artifacts; it does not dispatch this workflow or rebuild the product.
 #
-# Both channels are now notarized identically — the one remaining difference
-# keyed off `prepare`'s `channel` output is the staging tauri config (updater
-# endpoint etc). Everything else — compile, signing, notarizing, packaging,
-# verification, publishing — is one shared path.
+# See docs/ci-cd.md for the release invariants and cache topology.
 #
 # ── SHAPE ────────────────────────────────────────────────────────────────────
 #
@@ -108,19 +102,10 @@ name: Release (build & publish)
 # already ran zero cargo invocations even before this change — bundling was
 # never part of the duplication, only the compile step was.
 #
-# Compile-time config (e.g. the staging channel's updater endpoint, baked into
-# the binary by `generate_context!()`) still needs to differ by channel even
-# though this now bypasses the Tauri CLI's own `--config` flag. `tauri-build`'s
-# `build()` (called from `tray/src-tauri/build.rs`) reads a `TAURI_CONFIG` env
-# var — a JSON string it `json_patch::merge`s onto the base config — which is
-# exactly the mechanism `--config` uses under the hood (confirmed directly
-# against tauri-build 2.6.2's source, not assumed). The "Compile daemon + tray"
-# step below sets that env var to the staging config file's contents for
-# staging builds, replicating `--config src-tauri/tauri.staging.conf.json`
-# without going through the CLI. The later `tauri bundle` step keeps its
-# explicit `--config` flag unchanged — bundling metadata (naming, identifiers)
-# goes through the CLI as before; only the compile step needed the env-var
-# equivalent.
+# Release candidates and stable releases intentionally use the same compiled
+# product configuration. There is no staging Tauri config or compile-time
+# release channel. The RC tag controls release metadata and asset URLs; stable
+# promotion later rewrites updater-manifest URLs without changing the binaries.
 
 # ── DISPATCHED AGAINST `main`, BUILDS A TAG. NOT TRIGGERED BY THE TAG PUSH. ──
 #
@@ -232,8 +217,8 @@ on:
         type: boolean
         default: false
 
-# Serialise releases. Two in flight would fight over the rolling updater tag,
-# the shared caches, and Apple's notarization throughput. Never cancel in
+# Serialise release builds. Two RC builds in flight would contend for shared
+# caches and Apple's notarization throughput. Never cancel in
 # progress: a killed run can leave a draft release and a half-uploaded asset set.
 concurrency:
   group: release-build
@@ -365,14 +350,14 @@ jobs:
         # so the result is an update loop (install, report old version, see the
         # same update again).
         #
-        # RC tags point at the exact main commit without a committed version bump,
-        # so there is nothing meaningful to compare against in the manifest tree.
-        # The build stamps the RC version from the immutable tag. Only stable,
-        # whose semantic-release flow commits the bump, can be checked here.
+        # RC tags point at the exact main commit without a committed version bump, so
+        # there is nothing meaningful to compare against in the manifest tree.
+        # The build stamps the final X.Y.Z version derived from the immutable RC
+        # tag. Stable promotion does not call this workflow.
         run: |
           set -euo pipefail
           if [ "${CHANNEL}" != "stable" ]; then
-            echo "→ staging channel: version is stamped from the tag, nothing committed to compare"
+            echo "→ RC build: version is stamped from the immutable candidate tag"
             exit 0
           fi
           manifest="$(grep -m1 '^version = ' Cargo.toml | cut -d'"' -f2)"
