@@ -1,7 +1,8 @@
 # Meridian Release Runbook
 
-Operational procedures for the DMG app — currently focused on **rollbacks**.
-Read alongside `CLAUDE.md` (§ "Make a DMG release mandatory").
+Operational procedures for the packaged desktop app, currently focused on **rollbacks**.
+Read alongside `docs/ci-cd.md` for the current CI/release architecture and
+`CLAUDE.md` (§ "Make a DMG release mandatory") for the emergency update floor.
 
 > **Note:** Meridian no longer ships a separate on-device model runtime. Since
 > the Python/MLX removal, the only model Meridian downloads is the candle-based
@@ -30,12 +31,11 @@ Key code:
 - App forced-install floor: `update.rs::enforce_minimum_version` +
   `scripts/package-updater.sh` (reads `tray/minimum-version`, bakes a
   `Minimum-Version:` line into `latest.json`'s notes).
-- App release wiring: `.github/workflows/release.yml`'s `semantic-release` step
-  runs `npx semantic-release`, whose `@semantic-release/exec` `prepareCmd`
-  (`.releaserc.json`) chains `… && bash scripts/package-updater.sh <ver> && bash
-  scripts/verify-release-bundle.sh <ver>`. `@semantic-release/github` then
-  publishes `latest.json` as a release asset. `verify-release-bundle.sh` fails
-  the release if `latest.json` is missing (guards a silent updater-sign no-op).
+- App release wiring: `.github/workflows/release-prepare.yml` creates an
+  explicit RC candidate and dispatches `.github/workflows/release-build.yml`.
+  The RC build signs/notarizes/packages and exact-artifact-smokes macOS + Windows.
+  Stable promotion then reuses those exact proven binaries and rewrites only
+  updater/release metadata. Stable does not rebuild the product.
 
 ---
 
@@ -62,9 +62,10 @@ gh pr create --base main --title "revert: <desc>" \
   --body "Rolls back <bad change>; ships the reverted code as a forward version."
 ```
 
-Then: merge → wait for post-merge validation → cut and smoke a new RC → promote that proven RC to stable.
-The `main` release publishes a `latest.json` with a **higher** version, and
-installed apps update normally (the in-app banner/card + tray-menu check).
+Then: merge → wait for post-merge validation → cut and smoke a new RC → promote
+that proven RC to stable. Stable promotion publishes a `latest.json` with a
+**higher** version while reusing the RC's exact signed binaries, and installed
+apps update normally (the in-app banner/card + tray-menu check).
 
 ### A2 — Forced rollback (evict the bad build within ≤6 h)
 
@@ -113,4 +114,6 @@ git add tray/minimum-version
 
 - These procedures affect the **DMG channel** only. npm/CLI installs update via
   `meridian update`.
-- RC builds use the staging updater/runtime configuration and must pass exact-artifact smoke before stable promotion.
+- RC builds are channel-neutral final-version binaries. They must pass
+  exact-artifact macOS and Windows smoke before stable promotion.
+- There is no staging updater/runtime channel in the current release model.
