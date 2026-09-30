@@ -1,0 +1,51 @@
+name: Nightly regression
+
+# Slow, broad checks belong off the developer feedback path. A manual dispatch
+# lets a release engineer run the same suite when investigating a regression.
+on:
+  schedule:
+    - cron: '30 18 * * 1-5'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: nightly-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  full-workspace:
+    name: Full workspace (macOS)
+    runs-on: macos-latest
+    timeout-minutes: 30
+    env:
+      SQLX_OFFLINE: "true"
+      CARGO_INCREMENTAL: "0"
+      CARGO_NET_GIT_FETCH_WITH_CLI: "true"
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - name: Authenticate private Rust dependency
+        env:
+          GH_TOKEN: ${{ secrets.GH_TOKEN }}
+        run: |
+          test -n "$GH_TOKEN"
+          git config --global \
+            url."https://x-access-token:${GH_TOKEN}@github.com/Meridiona/screenpipe-fork".insteadOf \
+            "https://github.com/Meridiona/screenpipe-fork"
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: "1.93.1"
+          components: clippy
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: nightly-macos
+          add-job-id-key: false
+      - name: Stub tray bundle resource
+        run: |
+          mkdir -p target/release
+          : > target/release/meridian
+      - run: cargo clippy --workspace --all-targets -- -D warnings
+      - run: cargo test --workspace
