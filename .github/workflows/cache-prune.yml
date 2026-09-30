@@ -42,9 +42,13 @@ name: Cache prune
 # FOUR duplicate copies of itself. Manual cleanup does not scale.
 
 on:
-  # Housekeeping is deliberately off the merge path. Nightly pruning is enough
-  # to stay ahead of cache growth, and manual dispatch remains available after
-  # an unusually large cache churn. 04:15 UTC.
+  # Ordinary merges do not prune. A change to the pruning policy itself gets
+  # one immediate run so the migration it describes actually happens, then the
+  # nightly schedule maintains the steady state.
+  push:
+    branches: [main]
+    paths:
+      - ".github/workflows/cache-prune.yml"
   schedule:
     - cron: "15 4 * * *"
   workflow_dispatch:
@@ -81,6 +85,7 @@ jobs:
             "v0-rust-windows-release-x86_64-pc-windows-msvc|refs/heads/main"
             "v0-rust-ci-macos-silicon|refs/heads/main"
             "v0-rust-ci-windows|refs/heads/main"
+            "nextjs-|refs/heads/main"
           )
           # Counts so a SYSTEMATIC failure is loud. Every pair failing used to
           # look identical to a quiet, healthy run: see the `--jq` note below.
@@ -137,38 +142,32 @@ jobs:
             exit 1
           fi
 
+      - name: Reap retired pre-main caches
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          repo="${{ github.repository }}"
+          ids="$(gh api --paginate "repos/${repo}/actions/caches?per_page=100&ref=refs/heads/pre-main" \
+            --jq '.actions_caches[].id')"
+          if [ -z "${ids}" ]; then
+            echo "no pre-main caches remain"
+            exit 0
+          fi
+          n=0
+          for id in ${ids}; do
+            gh api -X DELETE "repos/${repo}/actions/caches/${id}" >/dev/null
+            n=$((n + 1))
+          done
+          echo "reaped ${n} retired pre-main cache entries"
+
       - name: Reap caches no run can ever restore
         env:
           GH_TOKEN: ${{ github.token }}
         # THE POOL IS 10 GiB, SHARED, AND EVICTED BY LRU ACROSS EVERYTHING.
         #
-        # That is the whole problem. The four tarballs this project actually
-        # needs are ~6 GiB of it, so anything else that accumulates competes
-        # directly with them — and when the cap is crossed GitHub evicts the
-        # OLDEST entry, not the most useless one. Measured at 8.94 GiB with two
-        # categories of provably dead weight in the way:
-        #
-        #   TAG-SCOPED (0.74 GiB, +~380 MiB per release). GitHub scopes caches
-        #   by ref, and a run may restore only from its own ref or the default
-        #   branch. So one tag's cache is unreadable by every other tag, by
-        #   every branch, forever — it is garbage the instant that build ends.
-        #   These stop being created at all once `main` carries the
-        #   dispatch-on-main release workflow (release builds then run with
-        #   github.ref = refs/heads/main), so this is mostly clearing a legacy
-        #   pile. Re-running a build for the SAME tag would go cold, which is
-        #   the one thing given up here and is worth roughly nothing: with
-        #   dispatch-on-main a rebuild restores main's cache instead.
-        #
-        #   CLOSED-PR MERGE REFS. Same rule: refs/pull/N/merge is reachable
-        #   only from that PR's own runs. Once it is merged or closed, nothing
-        #   can read it again. Only OPEN PRs are spared.
-        #
-        # Both categories are identified by REF, never by key, so a new cache
-        # key added anywhere is covered automatically instead of silently
-        # accumulating until someone extends a hardcoded prefix list.
-        #
-        # Best-effort throughout: reaping is housekeeping and must never fail a
-        # run. A cache that survives one night is reaped the next.
+        # Tag-scoped and closed-PR caches are unreachable by future useful runs.
+        # Best-effort throughout: a cache that survives one night is reaped next.
         run: |
           set -uo pipefail
           repo="${{ github.repository }}"
@@ -212,6 +211,25 @@ jobs:
           if [ "${used}" -gt 8589934592 ]; then
             echo "::warning::Actions cache pool is $((used / 1048576)) MiB of 10240 MiB. LRU eviction can drop the release tarballs, which costs a full cold release build."
           fi
+
+      - name: Reap obsolete PR cache lineages
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          repo="${{ github.repository }}"
+          ids="$(gh api --paginate "repos/${repo}/actions/caches?per_page=100" \
+            --jq '.actions_caches[] | select(.key | startswith("v0-rust-pr-fast-") or startswith("fast-next-")) | .id')"
+          if [ -z "${ids}" ]; then
+            echo "no obsolete PR cache lineages"
+            exit 0
+          fi
+          n=0
+          for id in ${ids}; do
+            gh api -X DELETE "repos/${repo}/actions/caches/${id}" >/dev/null
+            n=$((n + 1))
+          done
+          echo "reaped ${n} obsolete PR cache entries"
 
       - name: Reap orphaned sccache objects
         env:

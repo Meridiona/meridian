@@ -177,6 +177,7 @@ jobs:
                 .github/workflows/pr-fast.yml|\
                 .github/workflows/ci.yml|\
                 .github/workflows/cache-prune.yml|\
+                .github/workflows/cache-audit.yml|\
                 .github/workflows/windows-product-smoke.yml|\
                 .github/workflows/macos-product-smoke.yml|\
                 scripts/ci/windows-install-smoke.ps1)
