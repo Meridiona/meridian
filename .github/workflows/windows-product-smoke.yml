@@ -1,0 +1,107 @@
+name: Windows product smoke
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: windows-product-smoke-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_INCREMENTAL: "0"
+  CARGO_NET_RETRY: "3"
+  CARGO_NET_GIT_FETCH_WITH_CLI: "true"
+  SQLX_OFFLINE: "true"
+  TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+  TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+
+jobs:
+  windows:
+    name: Build + install + smoke + uninstall
+    runs-on: windows-latest
+    timeout-minutes: 45
+
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: Authenticate git for private screenpipe-fork
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ secrets.GH_TOKEN }}
+        run: git config --global url."https://x-access-token:${env:GH_TOKEN}@github.com/Meridiona/screenpipe-fork".insteadOf "https://github.com/Meridiona/screenpipe-fork"
+
+      - name: Install NASM
+        uses: ilammy/setup-nasm@72793074d3c8cdda771dba85f6deafe00623038b # v1.5.2
+
+      - name: Install Rust 1.93.1
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: "1.93.1"
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          add-job-id-key: false
+          shared-key: windows-release-x86_64-pc-windows-msvc
+          save-if: false
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: "24"
+          cache: "npm"
+          cache-dependency-path: |
+            ui/package-lock.json
+            tray/package-lock.json
+
+      - name: Install UI dependencies
+        shell: pwsh
+        run: npm --prefix ui ci --no-audit --no-fund
+
+      - name: Install tray dependencies
+        shell: pwsh
+        run: npm --prefix tray ci --no-audit --no-fund
+
+      - name: Build UI
+        shell: pwsh
+        run: npm --prefix ui run build
+
+      - name: Stub daemon for tauri-build resource probe
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path target/release | Out-Null
+          New-Item -ItemType File -Force -Path target/release/meridian.exe | Out-Null
+
+      - name: Build branch NSIS package
+        working-directory: tray
+        shell: pwsh
+        env:
+          MERIDIAN_CHANNEL: staging
+        run: |
+          $env:TAURI_CONFIG = Get-Content -Raw src-tauri/tauri.staging.conf.json
+          npm run build:windows:staging
+
+      - name: Locate NSIS installer
+        id: installer
+        shell: pwsh
+        run: |
+          $installer = Get-ChildItem target/release/bundle/nsis/*-setup.exe | Select-Object -First 1
+          if (-not $installer) { throw "No NSIS installer was produced" }
+          "path=$($installer.FullName)" >> $env:GITHUB_OUTPUT
+          Write-Host "Installer: $($installer.FullName)"
+
+      - name: Exercise installed product lifecycle
+        shell: pwsh
+        run: ./scripts/ci/windows-install-smoke.ps1 -InstallerPath "${{ steps.installer.outputs.path }}"
+
+      - name: Upload installer for debugging
+        if: failure()
+        uses: actions/upload-artifact@v6
+        with:
+          name: windows-smoke-installer
+          path: target/release/bundle/nsis/*-setup.exe
+          if-no-files-found: ignore
+          retention-days: 3
