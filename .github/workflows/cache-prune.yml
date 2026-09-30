@@ -81,6 +81,7 @@ jobs:
             "v0-rust-windows-release-x86_64-pc-windows-msvc|refs/heads/main"
             "v0-rust-ci-macos-silicon|refs/heads/main"
             "v0-rust-ci-windows|refs/heads/main"
+            "nextjs-|refs/heads/main"
           )
           # Counts so a SYSTEMATIC failure is loud. Every pair failing used to
           # look identical to a quiet, healthy run: see the `--jq` note below.
@@ -212,6 +213,25 @@ jobs:
           if [ "${used}" -gt 8589934592 ]; then
             echo "::warning::Actions cache pool is $((used / 1048576)) MiB of 10240 MiB. LRU eviction can drop the release tarballs, which costs a full cold release build."
           fi
+
+      - name: Reap obsolete PR cache lineages
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          repo="${{ github.repository }}"
+          ids="$(gh api --paginate "repos/${repo}/actions/caches?per_page=100" \
+            --jq '.actions_caches[] | select(.key | startswith("v0-rust-pr-fast-") or startswith("fast-next-")) | .id')"
+          if [ -z "${ids}" ]; then
+            echo "no obsolete PR cache lineages"
+            exit 0
+          fi
+          n=0
+          for id in ${ids}; do
+            gh api -X DELETE "repos/${repo}/actions/caches/${id}" >/dev/null
+            n=$((n + 1))
+          done
+          echo "reaped ${n} obsolete PR cache entries"
 
       - name: Reap orphaned sccache objects
         env:
