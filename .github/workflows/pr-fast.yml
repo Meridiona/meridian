@@ -51,12 +51,14 @@ jobs:
               - '.github/workflows/pr-fast.yml'
             core:
               - 'meridian-core/**'
+              - 'Cargo.toml'
               - 'Cargo.lock'
               - 'rust-toolchain.toml'
               - '.cargo/**'
               - '.github/workflows/pr-fast.yml'
             oauth:
               - 'meridian-oauth/**'
+              - 'Cargo.toml'
               - 'Cargo.lock'
               - 'rust-toolchain.toml'
               - '.cargo/**'
@@ -71,9 +73,7 @@ jobs:
               - '.github/workflows/pr-fast.yml'
             tray:
               - 'tray/src-tauri/**'
-              - 'tray/src/**'
-              - 'tray/package.json'
-              - 'tray/package-lock.json'
+              - 'Cargo.toml'
               - 'Cargo.lock'
               - 'rust-toolchain.toml'
               - '.cargo/**'
@@ -124,7 +124,7 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           add-job-id-key: false
-          shared-key: pr-fast-linux
+          shared-key: pr-fast-core
           save-if: ${{ github.event_name == 'push' }}
       - name: Lint changed crate
         run: cargo clippy -p meridian-core --all-targets -- -D warnings
@@ -147,7 +147,7 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           add-job-id-key: false
-          shared-key: pr-fast-linux
+          shared-key: pr-fast-oauth
           save-if: false
       - name: Lint changed crate
         run: cargo clippy -p meridian-oauth --all-targets -- -D warnings
@@ -170,7 +170,7 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           add-job-id-key: false
-          shared-key: pr-fast-linux
+          shared-key: pr-fast-daemon
           save-if: ${{ github.event_name == 'push' }}
       - name: Lint daemon library and CLI
         run: cargo clippy -p meridian --lib --bin meridian -- -D warnings
