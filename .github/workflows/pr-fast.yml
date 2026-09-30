@@ -3,8 +3,6 @@ name: Fast PR
 on:
   pull_request:
     branches: [main]
-  push:
-    branches: [main]
   merge_group:
     types: [checks_requested]
 
@@ -130,7 +128,7 @@ jobs:
         with:
           add-job-id-key: false
           shared-key: pr-fast-core
-          save-if: ${{ github.event_name == 'push' }}
+          save-if: false
       - name: Lint changed crate
         run: cargo clippy -p meridian-core --all-targets -- -D warnings
       - name: Test changed crate
@@ -192,7 +190,7 @@ jobs:
         with:
           add-job-id-key: false
           shared-key: pr-fast-daemon
-          save-if: ${{ github.event_name == 'push' }}
+          save-if: false
       - name: Lint daemon library and CLI
         run: cargo clippy -p meridian --lib --bin meridian -- -D warnings
       - name: Run daemon library tests
@@ -222,16 +220,18 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           add-job-id-key: false
-          shared-key: pr-fast-macos-tray
-          save-if: ${{ github.event_name == 'push' }}
+          shared-key: ci-macos-silicon
+          save-if: false
 
       - name: Stub bundled daemon resource
         run: |
           mkdir -p target/release
           : > target/release/meridian
 
-      # Intentionally compile/lint the tray library only. Full tray tests and
-      # both shipped platforms remain in the exhaustive post-merge workflow.
+      # Intentionally compile/lint the tray library only. Reuse the dependency
+      # cache seeded by post-merge macOS CI on main, so PRs do not spend ~10 min
+      # rebuilding the same native dependency graph from scratch. Full tray tests
+      # and both shipped platforms remain in exhaustive post-merge CI.
       - name: Lint tray library
         run: cargo clippy -p meridian-tray --lib -- -D warnings
 
