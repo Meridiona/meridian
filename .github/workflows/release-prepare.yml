@@ -23,10 +23,10 @@ name: Release (prepare)
 # The old single-workflow shape pinned a SHA at plan time (correct — you want
 # the tag to name exactly the commit whose binaries you built) and then ran
 # semantic-release as a publisher at the END, after ~30 minutes of compiling.
-# Any merge to pre-main inside that window put the checkout behind the remote,
+# Any branch movement inside that window could put the checkout behind the remote,
 # and the publish aborted with:
 #
-#     The local branch pre-main is behind the remote one, therefore a new
+#     The local branch is behind the remote one, therefore a new
 #     version won't be published.
 #
 # Run 29748827473 did exactly that: both macOS arches built successfully, then
@@ -48,7 +48,7 @@ name: Release (prepare)
 #     ~60 seconds instead of ~30 minutes. Losing the race now costs a minute of
 #     ubuntu time and is simply re-runnable.
 #   * release-build.yml builds the TAG — an immutable ref, handed to it as an
-#     input. pre-main can move a hundred times mid-build and nothing notices,
+#     input. main can move a hundred times mid-build and nothing notices,
 #     because there is no branch-state check left to fail. The tag<->binary
 #     correspondence the old pinned-SHA checkout was reaching for now holds BY
 #     CONSTRUCTION.
@@ -148,9 +148,8 @@ jobs:
       - name: Select the release config for this branch
         # .releaserc.json is the name semantic-release loads by default, and it
         # is the committed PRODUCTION config (changelog + git plugins, so the
-        # version bump is committed back to main). On pre-main we copy the
-        # staging config over it — ephemeral, this CI checkout only, never
-        # committed.
+        # version bump is committed back to main). For RC promotion we copy the
+        # prerelease config over it - ephemeral in this CI checkout only.
         #
         # The two configs are separate whole files rather than one parameterised
         # file because they differ structurally, not just in values: RC cuts
@@ -218,10 +217,8 @@ jobs:
             # On the RC channel this is routine and fine: if there are no releasable
             # commits since the previous release, there is nothing to tag.
             #
-            # On MAIN it is a FAILURE, and must be loud. The only push to main
-            # is the pre-main → main release merge — a deliberate act whose
-            # entire purpose is to ship a version. If it produces no tag, the
-            # release silently did not happen, and a green check says otherwise.
+            # A stable promotion that produces no tag is a failure: the operator
+            # explicitly asked to ship, so a green no-op would be misleading.
             #
             # This is not hypothetical. It has now happened twice (#517, #522):
             # both were SQUASH-merged, which collapses every conventional commit
@@ -285,7 +282,7 @@ jobs:
         # release-build.yml used to fire on the tag push. That is the obvious
         # shape and it silently cost ~25 minutes a release, because GitHub
         # scopes the Actions cache by `github.ref` and tags can only ever read
-        # the DEFAULT BRANCH's cache — never a sibling tag's, never pre-main's.
+        # the DEFAULT BRANCH's cache — never a sibling tag's.
         # Every release cut a brand-new tag, so every release started cold.
         #
         # Dispatching instead makes `github.ref` the branch chosen here, while
