@@ -244,19 +244,12 @@ fn write_and_open(script_path: &std::path::Path, script: &str) -> std::io::Resul
         .map(|_| ())
 }
 
-/// Build channel this binary was compiled for — lets a user tell a local dev
-/// run apart from a staging or production build at a glance. `dev` is a
-/// runtime check (`tauri dev` / unbundled `cargo run`); `staging` is baked in
-/// at compile time via `MERIDIAN_CHANNEL` (an `option_env!` baked in by the
-/// staging release workflow);
-/// anything else (a plain release build with no channel baked in) is `prod`.
-/// `pub(crate)` — also read by [`crate::analytics::base_properties`] to tag
-/// every PostHog event with the same dev/staging/prod distinction.
+/// Runtime build class. Release candidates and stable releases intentionally
+/// share identical signed bytes, so "staging" is no longer compiled into the
+/// app. Debug/source builds report `dev`; optimized packaged builds report
+/// `prod`. The RC/stable distinction lives only in GitHub release metadata.
 pub(crate) fn build_channel() -> &'static str {
-    if cfg!(debug_assertions) {
-        return "dev";
-    }
-    option_env!("MERIDIAN_CHANNEL").unwrap_or("prod")
+    if cfg!(debug_assertions) { "dev" } else { "prod" }
 }
 
 /// `{ version, channel, supportId }` for the small badge in the dashboard and
