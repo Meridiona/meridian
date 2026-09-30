@@ -820,7 +820,7 @@ jobs:
         if: ${{ !inputs.cache_warm_only }}
         env:
           VERSION: ${{ needs.prepare.outputs.version }}
-            run: bash scripts/verify-release-bundle.sh "$VERSION"
+        run: bash scripts/verify-release-bundle.sh "$VERSION"
 
       - name: Upload this architecture's assets into the draft
         if: ${{ !inputs.cache_warm_only }}
