@@ -42,7 +42,7 @@ cd "${REPO_ROOT}"
 # per-arch build's suffix is tauri-bundler's own arch spelling, not the triple)
 # — so glob for it rather than trying to reconstruct the name.
 TARGET="${MERIDIAN_TARGET:-universal-apple-darwin}"
-# Same validation as package-updater.sh / mirror-staging-release.sh: fail on the
+# Same validation as package-updater.sh / mirror-updater-channel.sh: fail on the
 # typo'd/unsupported target here rather than falling through to the generic "no
 # DMG found" error below, which doesn't say why.
 case "${TARGET}" in

@@ -288,7 +288,7 @@ jobs:
       # `github.ref` is what GitHub scopes the Actions cache by, and for a
       # workflow_dispatch that is the branch chosen in the "Use workflow from"
       # dropdown — NOT `inputs.tag`, and not what any job checks out. Dispatch
-      # this from `pre-main`, or from a tag, and every compile job below silently
+      # this from a tag instead of `main`, and every compile job below silently
       # restores nothing and saves to a scope no future run can read: a ~36
       # minute build that looks completely normal and leaves the cache no better
       # than it found it.
