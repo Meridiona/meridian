@@ -201,9 +201,9 @@ jobs:
         uses: Swatinem/rust-cache@v2
         with:
           # Save on pre-main (the integration branch everything targets), not
-          # main. A PR restores its BASE branch's cache, so saving on pre-main
-          # means PRs go warm as soon as the first pre-main run seeds the cache —
-          # without waiting for a release to reach main. One cold run on pre-main
+          # main. A PR restores its BASE branch's cache, so saving on main
+          # means PRs go warm as soon as the first main run seeds the cache —
+          # without waiting for a release to reach main. One cold run on main
           # after this lands; warm for every PR after that.
           #
           # Only the `test` leg saves, and BOTH legs share one key. rust-cache
@@ -212,7 +212,7 @@ jobs:
           # since clippy lints only workspace crates and builds dependencies as
           # ordinary rlibs. One shared cache therefore serves both, and letting
           # a single leg write it avoids two jobs racing to save the same key.
-          save-if: ${{ github.ref == 'refs/heads/pre-main' && matrix.task == 'test' }}
+          save-if: ${{ github.ref == 'refs/heads/main' && matrix.task == 'test' }}
           # Name the cache lineage explicitly so a future job rename does not
           # silently orphan it and force a cold rebuild. Unchanged by the
           # clippy/test split on purpose — the existing warm cache carries over
@@ -359,11 +359,11 @@ jobs:
         uses: Swatinem/rust-cache@v2
         with:
           # Same reasoning as the macOS job's cache step — see there for why
-          # save-if targets pre-main and why only the `test` leg writes the
+          # save-if targets main and why only the `test` leg writes the
           # shared key. Distinct shared-key: this is a debug/test profile build,
           # unrelated to release-build.yml's release-profile
           # windows-release-x86_64-pc-windows-msvc cache.
-          save-if: ${{ github.ref == 'refs/heads/pre-main' && matrix.task == 'test' }}
+          save-if: ${{ github.ref == 'refs/heads/main' && matrix.task == 'test' }}
           add-job-id-key: false
           shared-key: ci-windows
 
