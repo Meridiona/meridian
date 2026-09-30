@@ -746,11 +746,11 @@ fixtures that produce genuinely corrupt files live in `src/db/test_corrupt.rs`
 - `pre-push` hook runs the full suite: `cargo fmt` + `cargo clippy --workspace` + UI build + UI tests + security audit (claude CLI) + `cargo test --workspace`
 - Never skip hooks with `--no-verify`
 - Install hooks after cloning: `bash scripts/setup-hooks.sh`
-- Never amend a commit that has already been pushed to `main` or `pre-main`
+- Never amend a commit that has already been pushed to `main`
 
-### PR target branch — `pre-main`, not `main`
+### PR target branch — `main`
 
-- **Every feature/fix PR targets `pre-main`** (`gh pr create --base pre-main`), regardless of what any older doc or habit says — `pre-main` is the staging branch and is where all day-to-day work lands.
-- `pre-main` is deployed to staging and gets exercised end-to-end there (including the staging DMG auto-update channel) before anything reaches production.
-- **Only a maintainer** opens the `pre-main → main` release PR, and only once everything currently on `pre-main` has been verified working end-to-end on staging. Contributors should not open `main`-targeted PRs.
-- `pre-main` is the staging/test channel, `main` is production.
+- **Every feature/fix PR targets `main`** (`gh pr create --base main`). `main` is the development trunk.
+- Pull requests are gated by the Fast PR workflow and Merge Queue.
+- Full macOS/Windows validation runs after merge on `main`.
+- Merging to `main` does **not** publish production. RC and stable releases are explicit promotion actions.
