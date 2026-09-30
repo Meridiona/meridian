@@ -1,0 +1,591 @@
+name: Extended validation
+
+# This workflow runs after integration, not on every pull request. It protects
+# the shipped macOS and Windows builds without making review feedback wait for
+# two expensive platform compiles.
+on:
+  push:
+    branches: [main, pre-main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  SQLX_OFFLINE: "true"
+  # Incremental compilation is a pure loss on a CI runner: every job starts from
+  # a restored cache and compiles once, so the incremental state is never read
+  # back — only WRITTEN, inflating target/ and the cache tarball for no reuse.
+  CARGO_INCREMENTAL: "0"
+  # NOTE: `CARGO_PROFILE_{DEV,TEST}_DEBUG: line-tables-only` used to live here
+  # (#664). It was measured and removed - it bought NOTHING. The theory was that
+  # full debug info linked into ~20 test binaries (a PDB each on Windows) drove
+  # the `test` step. Its own CI run disproved that:
+  #
+  #     Windows test   1186s -> 1193s
+  #     macOS   test    517s ->  520s
+  #
+  # Flat on both, while that run also rebuilt every dependency (the profile
+  # change invalidated the cache), i.e. it did strictly MORE work for the same
+  # time. The cost is codegen and linking of the workspace crates themselves,
+  # not the volume of debug info. Do not re-add this without a measurement
+  # showing otherwise; it is not free, since it invalidates the whole dependency
+  # cache once and degrades every backtrace.
+  CARGO_NET_RETRY: "3"
+  # The tray pulls screenpipe-screen/-a11y from the PRIVATE Meridiona/
+  # screenpipe-fork (a git dep). cargo RESOLVES it for the whole workspace, so
+  # the Rust job must be able to fetch the source. Force the git CLI so cargo
+  # honours the url.insteadOf rewrite the auth step installs.
+  CARGO_NET_GIT_FETCH_WITH_CLI: "true"
+
+jobs:
+  # ── What changed? — skip the compile job when a PR touches no Rust ───────────
+  # A docs- or UI-only change does not need the (slow) macOS compile. This gate
+  # runs in ~15s; the Rust job keys its `if:` off it.
+  changes:
+    name: Detect changes
+    runs-on: ubuntu-latest
+    outputs:
+      rust: ${{ steps.f.outputs.rust }}
+      ui: ${{ steps.f.outputs.ui }}
+      migrations: ${{ steps.f.outputs.migrations }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          # Nothing in this workflow pushes; don't leave the token in .git/config
+          # where any later step or third-party action could read it.
+          persist-credentials: false
+      - uses: dorny/paths-filter@v4
+        id: f
+        with:
+          # A change to ci.yml itself trips every filter.
+          filters: |
+            rust:
+              - '**/*.rs'
+              - '**/Cargo.toml'
+              - '**/Cargo.lock'
+              - 'rust-toolchain.toml'
+              - '.cargo/**'
+              - 'src/migrations/**'
+              - '.github/workflows/ci.yml'
+            ui:
+              - 'ui/**'
+              - 'tray/src/**'
+              - '.github/workflows/ci.yml'
+            migrations:
+              - 'src/migrations/**'
+              - '.github/workflows/ci.yml'
+
+  # ── Rust gate #1: macOS Apple Silicon ─────────────────────────────────────
+  # macOS Apple Silicon is the primary shipped platform. Intel (macos-13) and
+  # Linux jobs were removed deliberately — Meridian never ships either; Intel
+  # in particular was a scarce, slow runner that queued 25+ min. This single
+  # native runner compiles and tests the entire workspace — daemon, core, oauth,
+  # AND the tray (including its macOS-only Swift/objc2 layer, which no other
+  # runner can build).
+  #
+  # Windows is a SEPARATE job below (`rust-windows`) — it used to only be
+  # exercised at release time, which meant a Windows-only regression (e.g. the
+  # vendored-OpenSSL build breaking, or a `cfg(windows)` branch with a real bug)
+  # shipped all the way to a tagged release before anyone found out. fmt is
+  # skipped there deliberately: it is platform-independent style, already
+  # checked once here — running it twice buys nothing.
+  #
+  # ── Why clippy and test are separate jobs ─────────────────────────────────
+  #
+  # They are two full compiles of the same workspace, and running them
+  # sequentially in one job means paying the sum. Measured, with dependencies
+  # already cached:
+  #
+  #     Windows   clippy 808s + test 1186s = ~33m
+  #     macOS     clippy 297s + test  517s = ~14m
+  #
+  # As parallel jobs the wall-clock is the MAX, not the sum — ~20m and ~9m. This
+  # is arithmetic on measured numbers, not an optimisation hypothesis. (The
+  # hypothesis that WAS tried, cutting debug info, is documented in the `env:`
+  # block above as having achieved nothing.)
+  #
+  # The cost is runner minutes: four Rust jobs instead of two. That trade was
+  # made deliberately.
+  #
+  # `fail-fast: false` matters — a clippy failure must not cancel the test job.
+  # Getting one signal per push is the entire point of paying for two runners.
+  rust-macos:
+    name: Rust (macOS Apple Silicon) / ${{ matrix.task }}
+    needs: changes
+    if: needs.changes.outputs.rust == 'true'
+    runs-on: macos-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        task: [clippy, test]
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          # Nothing in this workflow pushes; don't leave the token in .git/config
+          # where any later step or third-party action could read it.
+          persist-credentials: false
+
+      - name: Authenticate git for the private screenpipe-fork dependency
+        # checkout's default GITHUB_TOKEN is scoped to THIS repo, so cargo's
+        # `git fetch` of the fork 403s. Rewrite just that URL to embed a PAT.
+        env:
+          GH_TOKEN: ${{ secrets.GH_TOKEN }}
+        run: |
+          git config --global \
+            url."https://x-access-token:${GH_TOKEN}@github.com/Meridiona/screenpipe-fork".insteadOf \
+            "https://github.com/Meridiona/screenpipe-fork"
+
+      - name: Install Rust 1.93.1
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: "1.93.1"
+          components: rustfmt, clippy
+
+      - name: Cache cargo registry and target
+        uses: Swatinem/rust-cache@v2
+        with:
+          # Save on pre-main (the integration branch everything targets), not
+          # main. A PR restores its BASE branch's cache, so saving on pre-main
+          # means PRs go warm as soon as the first pre-main run seeds the cache —
+          # without waiting for a release to reach main. One cold run on pre-main
+          # after this lands; warm for every PR after that.
+          #
+          # Only the `test` leg saves, and BOTH legs share one key. rust-cache
+          # prunes workspace-member artifacts, so what is actually cached is the
+          # dependency graph plus the registry — identical for clippy and test,
+          # since clippy lints only workspace crates and builds dependencies as
+          # ordinary rlibs. One shared cache therefore serves both, and letting
+          # a single leg write it avoids two jobs racing to save the same key.
+          save-if: ${{ github.ref == 'refs/heads/pre-main' && matrix.task == 'test' }}
+          # Name the cache lineage explicitly so a future job rename does not
+          # silently orphan it and force a cold rebuild. Unchanged by the
+          # clippy/test split on purpose — the existing warm cache carries over
+          # rather than restarting cold.
+          add-job-id-key: false
+          shared-key: ci-macos-silicon
+
+      - name: Stub the tray bundle resource
+        # tauri-build STATS the bundle.resources daemon path when the tray
+        # compiles but never reads it during check/test — a placeholder satisfies
+        # the stat and saves a ~9-min release build of the daemon just to make a
+        # file nothing reads.
+        run: |
+          mkdir -p target/release
+          : > target/release/meridian
+
+      # `--workspace` is load-bearing, NOT redundant — see the note above
+      # `rust-windows` for the trap it closes.
+      #
+      # fmt rides on the clippy leg rather than getting a job of its own: it
+      # takes seconds and needs no compilation, so a third runner would cost
+      # more in queue time than it saves.
+      - name: fmt
+        if: matrix.task == 'clippy'
+        run: cargo fmt --check
+
+      - name: clippy
+        if: matrix.task == 'clippy'
+        run: cargo clippy --workspace --all-targets -- -D warnings
+
+      - name: test
+        if: matrix.task == 'test'
+        run: cargo test --workspace
+
+  # ── The required status check ─────────────────────────────────────────────
+  #
+  # `pre-main`'s branch protection requires the context "Rust (macOS Apple
+  # Silicon)" by that exact name. Splitting the job would have deleted that
+  # context and left every PR waiting forever on a check that no longer exists,
+  # so this job keeps the name and gates on the matrix instead.
+  #
+  # Two things here are load-bearing and easy to get wrong:
+  #
+  # - `if: always()` — without it, a FAILED dependency makes this job "skipped"
+  #   rather than failed, and GitHub counts a skipped required check as
+  #   satisfied. The branch would have been protected by a check that silently
+  #   passes whenever the thing it guards breaks.
+  # - `skipped` is accepted deliberately. Docs-only PRs skip the Rust jobs by
+  #   design (the `changes` filter), and those must stay mergeable.
+  #
+  # `needs.<job>.result` for a matrix job is `success` only if EVERY leg
+  # succeeded, so this covers clippy and test both.
+  rust:
+    name: Rust (macOS Apple Silicon)
+    needs: [changes, rust-macos]
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - name: Require every macOS Rust leg to have passed
+        run: |
+          result='${{ needs.rust-macos.result }}'
+          echo "macOS Rust matrix result: $result"
+          case "$result" in
+            success | skipped) ;;
+            *) exit 1 ;;
+          esac
+
+  # ── Rust gate #2: Windows x86_64 ──────────────────────────────────────────
+  # Windows is a shipped platform (NSIS installer, see release-build.yml) but
+  # was previously only exercised at RELEASE time — a Windows-only regression
+  # (the vendored-OpenSSL build, a `cfg(windows)` branch, a `tauri.windows.conf.json`
+  # mismatch) shipped all the way to a tagged release before anyone found out.
+  # This closes that gap on every PR instead.
+  #
+  # `--workspace` on clippy and test is REQUIRED, and its absence is a silent
+  # coverage hole rather than a style choice.
+  #
+  # A bare `cargo clippy`/`test` covers the whole workspace ONLY when the root
+  # manifest is virtual. Ours is not: `members = [".", ...]` makes the repo root
+  # itself a package, so cargo defaults to *that package alone* and silently
+  # skips meridian-core, meridian-oauth and the tray. Those crates still COMPILE
+  # (the daemon depends on them), which is what makes it convincing — they are
+  # simply never tested and their test code is never linted.
+  #
+  # This comment previously asserted the opposite, and the cost was real:
+  # meridian-core's 269 lib tests had never run here, and two db_crypto tests
+  # sat red for days after PR #655's refactor changed the error wording they
+  # assert on, with every gate green the whole time.
+  #
+  # With `--workspace` the coverage matches what this always claimed: daemon,
+  # core, oauth, AND the tray (the `capture` feature's screenpipe-screen/-a11y
+  # stack already supports Windows; it ships there today) — same as the macOS
+  # job. No `fmt` here: it is platform-independent style, already checked once
+  # by the macOS job.
+  #
+  # Split into clippy/test legs for the same reason as the macOS job — see the
+  # measurement there. Windows is the long pole (~33m sequential), so it gains
+  # the most: ~20m. No aggregator job here, unlike macOS, because branch
+  # protection does not require a Windows context; if one is ever added, it must
+  # name the new legs (or gain an aggregator of its own) rather than the old
+  # "Rust (Windows x86_64)", which no longer exists.
+  rust-windows:
+    name: Rust (Windows x86_64) / ${{ matrix.task }}
+    needs: changes
+    if: needs.changes.outputs.rust == 'true'
+    runs-on: windows-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        task: [clippy, test]
+    defaults:
+      run:
+        # Every step below except the actual cargo commands is a POSIX script
+        # Git Bash handles fine. The cargo commands themselves run under pwsh —
+        # see the note on that step for why.
+        shell: bash
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: Authenticate git for the private screenpipe-fork dependency
+        env:
+          GH_TOKEN: ${{ secrets.GH_TOKEN }}
+        run: |
+          git config --global \
+            url."https://x-access-token:${GH_TOKEN}@github.com/Meridiona/screenpipe-fork".insteadOf \
+            "https://github.com/Meridiona/screenpipe-fork"
+
+      # `libsqlite3-sys`'s `bundled-sqlcipher-vendored-openssl` feature compiles
+      # OpenSSL from source (needs NASM), same as release-build.yml's Windows
+      # job — this is a workspace-wide direct dependency, so it applies to a
+      # debug/test build here too, not just release.
+      - name: Install NASM (for vendored OpenSSL's assembly routines)
+        uses: ilammy/setup-nasm@72793074d3c8cdda771dba85f6deafe00623038b # v1.5.2
+
+      - name: Install Rust 1.93.1
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: "1.93.1"
+          components: clippy
+
+      - name: Cache cargo registry and target
+        uses: Swatinem/rust-cache@v2
+        with:
+          # Same reasoning as the macOS job's cache step — see there for why
+          # save-if targets pre-main and why only the `test` leg writes the
+          # shared key. Distinct shared-key: this is a debug/test profile build,
+          # unrelated to release-build.yml's release-profile
+          # windows-release-x86_64-pc-windows-msvc cache.
+          save-if: ${{ github.ref == 'refs/heads/pre-main' && matrix.task == 'test' }}
+          add-job-id-key: false
+          shared-key: ci-windows
+
+      - name: Stub the tray bundle resource
+        # Same reasoning as the macOS job's equivalent step: tauri-build STATS
+        # bundle.resources when the tray compiles, even for a check/test build.
+        run: |
+          mkdir -p target/release
+          : > target/release/meridian.exe
+
+      # `shell: pwsh`, NOT this job's bash default — Git Bash unconditionally
+      # forces its own MSYS perl ahead of Strawberry Perl on PATH, which is
+      # missing CPAN modules OpenSSL's Configure script needs (see
+      # release-build.yml's Windows job for the full story).
+      - name: clippy
+        if: matrix.task == 'clippy'
+        shell: pwsh
+        run: cargo clippy --workspace --all-targets -- -D warnings
+
+      - name: test
+        if: matrix.task == 'test'
+        shell: pwsh
+        run: cargo test --workspace
+
+  ui:
+    name: UI
+    needs: changes
+    if: needs.changes.outputs.ui == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          # Nothing in this workflow pushes; don't leave the token in .git/config
+          # where any later step or third-party action could read it.
+          persist-credentials: false
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v7
+        with:
+          node-version: '24'
+          cache: 'npm'
+          cache-dependency-path: ui/package-lock.json
+
+      - name: Set up Bun
+        uses: oven-sh/setup-bun@v2
+
+      - name: Cache Next.js build
+        uses: actions/cache@v6
+        with:
+          path: ui/.next/cache
+          key: nextjs-${{ hashFiles('ui/package-lock.json') }}-${{ hashFiles('ui/**/*.ts', 'ui/**/*.tsx') }}
+          restore-keys: |
+            nextjs-${{ hashFiles('ui/package-lock.json') }}-
+            nextjs-
+
+      - name: UI install
+        run: npm ci
+        working-directory: ui
+
+      # `bun test` here also covers the tray popover's JS tests — they live in
+      # ui/__tests__ (popover-pause-utils, popover-health-panel) even though the
+      # popover source is tray/src, precisely so this one run discovers them.
+      - name: UI tests
+        run: bun test
+        working-directory: ui
+
+      # `ui/package.json` defined `typecheck` and NOTHING invoked it — not CI, not the
+      # git hooks. Type errors were caught only as a side effect of `next build`, which
+      # disappears the moment someone sets `typescript.ignoreBuildErrors` in
+      # next.config.ts (an entirely reasonable thing to reach for when a build is slow),
+      # with no failing job to notice. Run BEFORE the build: seconds against its
+      # minutes, and a type error should not cost a full production compile to surface.
+      #
+      # There is deliberately NO lint step. The `lint` script was `next lint`, which
+      # Next 16 REMOVED — it parsed "lint" as a directory name and could only ever
+      # fail — and this project has no ESLint config or dependency at all. The script
+      # has been deleted rather than left as a broken command that looks like coverage.
+      # Adding real ESLint is worth doing, but it is a change with its own diff.
+      - name: UI typecheck
+        run: npm run typecheck
+        working-directory: ui
+
+      - name: UI build
+        run: npm run build
+        working-directory: ui
+
+  # Shipped migrations are immutable: sqlx records a checksum of every applied
+  # migration and the daemon refuses to start if a migration file later differs.
+  # A pre-commit hook also guards this, but hooks are opt-in and bypassable, so
+  # enforce it server-side where it cannot be skipped. Nearly free — a git diff.
+  migration-guard:
+    name: Migrations append-only
+    needs: changes
+    if: github.event_name == 'pull_request' && needs.changes.outputs.migrations == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Reject modified, renamed, or deleted migrations
+        run: |
+          base='${{ github.event.pull_request.base.sha }}'
+          violations=$(git diff --name-status "$base"...HEAD -- src/migrations \
+            | grep -E '^(M|D|R)' || true)
+          if [ -n "$violations" ]; then
+            echo "::error::Shipped migrations are immutable. Add a NEW numbered migration in src/migrations/ — never modify, rename, or delete an existing one (it changes the sqlx checksum and breaks every database that already applied it)."
+            echo "Offending changes:"
+            echo "$violations"
+            exit 1
+          fi
+          echo "OK — no existing migrations were modified, renamed, or deleted."
+
+  # ── The release build must stay dispatch-on-main, not tag-triggered ─────────
+  #
+  # `release-build.yml` is dispatched against `main` with the tag as an INPUT,
+  # rather than triggered by the tag push. That is not a style choice: GitHub
+  # scopes the Actions cache by `github.ref`, and tags may only read the DEFAULT
+  # BRANCH's cache. A tag-triggered build can therefore never restore anything,
+  # because every release cuts a brand-new tag.
+  #
+  # It was tag-triggered for this pipeline's entire history and nobody noticed,
+  # because the failure is invisible: green checks, correct signed binaries,
+  # "No cache found." inside a collapsed log group, and ~25 extra minutes per
+  # release. A whole second workflow (cache-warm.yml, since deleted) existed to
+  # paper over it and was itself silently broken by one environment variable.
+  #
+  # Adding `push: tags:` back here would restore all of that, look completely
+  # reasonable in review, and cost half an hour a release with nothing failing.
+  # So it fails here instead. Nearly free - it reads two files.
+  release-trigger-shape:
+    name: Release trigger shape
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: Assert the release build is dispatched against main, not tag-triggered
+        run: |
+          python3 - <<'PY'
+          import sys, yaml
+
+          build = yaml.safe_load(open(".github/workflows/release-build.yml"))
+          prep_src = open(".github/workflows/release-prepare.yml").read()
+          build_src = open(".github/workflows/release-build.yml").read()
+
+          # PyYAML resolves the bare key `on` to the boolean True (YAML 1.1
+          # "Norway problem"), so accept either spelling rather than depending
+          # on which one this loader produces.
+          triggers = build.get("on", build.get(True)) or {}
+          fail = []
+
+          if "push" in triggers:
+              fail.append(
+                  "release-build.yml has a `push:` trigger. A tag-triggered build "
+                  "cannot restore main's cache (GitHub scopes caches by github.ref "
+                  "and tags only read the default branch), so every release would "
+                  "compile ~1100 crates cold. It must be workflow_dispatch only.")
+
+          dispatch = (triggers.get("workflow_dispatch") or {})
+          if "tag" not in (dispatch.get("inputs") or {}):
+              fail.append(
+                  "release-build.yml's workflow_dispatch has no `tag` input. That "
+                  "input is how the immutable ref reaches the build while the "
+                  "cache scope stays on main.")
+
+          if "refs/heads/main" not in build_src:
+              fail.append(
+                  "release-build.yml no longer checks `github.ref` against "
+                  "refs/heads/main. Without that guard a dispatch from the wrong "
+                  "branch silently builds cold and saves to an unreadable scope.")
+
+          if "--ref main" not in prep_src:
+              fail.append(
+                  "release-prepare.yml does not dispatch with `--ref main`. The tag "
+                  "would be pushed and nothing would build, or it would build from "
+                  "a cold cache.")
+
+          # The "did the tag push already build?" question is answered by the
+          # workflow files AT THE PUSHED REF - the tag's own tree, i.e. this
+          # checkout - never by the default branch's copy. Reading main's copy
+          # instead inverts the answer on exactly the branch that is dispatch-
+          # only, and skips the dispatch for a tag that auto-built nothing:
+          # tagged, nothing building, no failure anywhere. That shipped once.
+          if "contents/.github/workflows/release-build.yml?ref=main" in prep_src:
+              fail.append(
+                  "release-prepare.yml decides whether to dispatch by reading "
+                  "MAIN's release-build.yml. Trigger evaluation uses the workflow "
+                  "file at the PUSHED REF (the tag's own tree), so this answers the "
+                  "wrong question and can leave a tag with no build at all. Inspect "
+                  "the local .github/workflows/release-build.yml instead.")
+
+          if fail:
+              for f in fail:
+                  print(f"::error::{f}")
+              sys.exit(1)
+          print("OK - release-build is workflow_dispatch-only with a `tag` input, "
+                "guards on refs/heads/main, and release-prepare dispatches --ref main.")
+          PY
+
+  # screenpipe relicensed MIT → Commercial on 2026-06-10. Meridian ships zero
+  # screenpipe code, so staying pinned to the last MIT-based fork rev keeps the
+  # install license-clean. Enforce the pin server-side so it can't silently
+  # drift. Nearly free — it only greps a manifest.
+  screenpipe-license-pin:
+    name: screenpipe MIT pin
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          # Nothing in this workflow pushes; don't leave the token in .git/config
+          # where any later step or third-party action could read it.
+          persist-credentials: false
+
+      - name: Assert the screenpipe-fork git rev stays pinned to the last MIT-based commit
+        run: |
+          # Capture pulls the fork as a git dep in tray/src-tauri/Cargo.toml —
+          # that `rev` is the pin. What this guard protects is the LICENSE BASE:
+          # the fork is cut from screenpipe's last MIT commit (892199f74), and
+          # screenpipe >= 0.4.17 is Commercial-licensed. Meridiona's OWN commits
+          # on top of that base carry no license risk — so bumping `expected` is
+          # legitimate ONLY when every commit the bump introduces is ours and none
+          # merges upstream screenpipe code past the MIT cutoff.
+          #
+          # Audit each time you bump, and record it here:
+          #   gh api repos/Meridiona/screenpipe-fork/compare/<old>...<new> \
+          #     --jq '.commits[] | .sha[0:8] + "  " + .commit.author.name'
+          #
+          # 2026-07-19, d6d2b318 -> 825b038d. Three commits, all Meridiona-
+          # authored, no upstream merge:
+          #   1bc2ba88 adityaharishch  fix(a11y): prune browser tab strip …
+          #   4f9ba866 adityaharishch  Merge pull request #1 (same, ours)
+          #   825b038d Akarsh Hegde    fix(screen): disable sck-rs on macOS 26
+          #
+          # 2026-07-21, 825b038d -> 064c44cc. Two commits, all Meridiona-
+          # authored, no upstream merge:
+          #   552e7f8b adityaharishch  Merge pull request #2 (825b038d, already audited above)
+          #   064c44cc Akarsh Hegde    fix(screen): disable sck-rs unconditionally, not just on macOS 26+
+          #
+          # 2026-07-22, 064c44cc -> 3c99154. Two commits, all Meridiona-
+          # authored, no upstream merge (ae39b5f is a no-op merge wrapper —
+          # its tree is identical to 064c44cc, already audited above):
+          #   ae39b5f  Akarsh Hegde    Merge pull request #3 (064c44cc, already audited above)
+          #   3c99154  adityaharishch  fix(a11y): serialize workspace-observer registration to stop a double-free
+          #
+          # 2026-07-24, 3c99154 -> 2b7e929f. Five commits, all Meridiona-
+          # (adityaharishch)-authored, no upstream merge, none touch anything
+          # past the MIT cutoff — the last of them (2b7e929f) only extracts
+          # code already present elsewhere in this same fork
+          # (screenpipe-engine's sleep_monitor.rs, itself MIT-based) into
+          # screenpipe-screen; it copies nothing new from upstream:
+          #   8382e368  adityaharishch  fix(screen): wrap per-frame window enumeration/capture in an autorelease pool
+          #   c29722d1  adityaharishch  fix(a11y): wrap focus-observer run-loop iterations in an autorelease pool
+          #   f13c631c  adityaharishch  fix(a11y): wrap per-click context-capture reads in an autorelease pool
+          #   b2e5b268  adityaharishch  fix(a11y): leak NSWorkspace observer guards instead of dropping them
+          #   2b7e929f  adityaharishch  feat(screen): expose a display-reconfiguration watcher from screenpipe-screen
+          #
+          # 2026-07-27, 2b7e929f -> 61332b8a. Three commits, all Meridiona-
+          # (adityaharishch)-authored, no upstream merge:
+          #   2ac29227  adityaharishch  Merge pull request #4 (autorelease-pool leak fixes, ours)
+          #   0c693a1c  adityaharishch  Merge pull request #5 (reconciles with 2b7e929f, already
+          #                             audited above; brings in no new tree content beyond PR #4)
+          #   61332b8a  adityaharishch  fix(screen): redact PII in OCR output before it reaches the frame consumer
+          expected="61332b8a15f09a08876455ad45713eb3b1bfa2df"
+          f="tray/src-tauri/Cargo.toml"
+          fail=0
+          for crate in screenpipe-screen screenpipe-a11y; do
+            v=$(grep -E "^${crate} = " "$f" | grep -oE 'rev = "[0-9a-f]+"' | cut -d'"' -f2)
+            if [ "$v" != "$expected" ]; then
+              echo "::error file=$f::${crate}'s pinned rev='$v' but must be '$expected'. screenpipe >= 0.4.17 is Commercial-licensed; bumping the pin risks shipping users a commercial dependency. Changing this requires legal review (and editing this guard). See the LICENSE PIN comment at the pin."
+              fail=1
+            fi
+          done
+          [ "$fail" -eq 0 ] && echo "OK — screenpipe-fork pinned to the last MIT-based rev ($expected)."
