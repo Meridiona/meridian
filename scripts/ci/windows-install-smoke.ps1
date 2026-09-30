@@ -21,8 +21,8 @@ function Wait-Until([scriptblock]$Condition, [int]$TimeoutSeconds, [string]$Desc
 }
 
 $installer = (Resolve-Path $InstallerPath).Path
-$installDir = Join-Path $env:LOCALAPPDATA 'Meridian'
-$appExe = Join-Path $installDir 'Meridian.exe'
+$installDir = $null
+$appExe = $null
 $meridianDir = Join-Path $HOME '.meridian'
 $daemonExe = Join-Path $meridianDir 'bin\meridian.exe'
 $backendMarker = Join-Path $meridianDir 'backend-version'
@@ -37,8 +37,40 @@ Write-Step "Installing NSIS package silently"
 $install = Start-Process -FilePath $installer -ArgumentList '/S' -Wait -PassThru
 Assert-True ($install.ExitCode -eq 0) "NSIS installer exited with code $($install.ExitCode)"
 
-Write-Step "Verifying installed application binary"
-Wait-Until { Test-Path $appExe } 30 "installed Meridian.exe at $appExe"
+Write-Step "Locating installed application binary"
+$candidates = @(
+    (Join-Path $env:LOCALAPPDATA 'Meridian\Meridian.exe'),
+    (Join-Path $env:LOCALAPPDATA 'Programs\Meridian\Meridian.exe')
+)
+
+$deadline = (Get-Date).AddSeconds(30)
+do {
+    foreach ($candidate in $candidates) {
+        if (Test-Path $candidate) {
+            $appExe = (Resolve-Path $candidate).Path
+            break
+        }
+    }
+
+    if (-not $appExe) {
+        $found = Get-ChildItem -Path $env:LOCALAPPDATA -Filter 'Meridian.exe' -File -Recurse -Depth 4 -ErrorAction SilentlyContinue |
+            Select-Object -First 1
+        if ($found) { $appExe = $found.FullName }
+    }
+
+    if (-not $appExe) { Start-Sleep -Seconds 2 }
+} while (-not $appExe -and (Get-Date) -lt $deadline)
+
+if (-not $appExe) {
+    Write-Host "LOCALAPPDATA contents containing Meridian-like names:"
+    Get-ChildItem -Path $env:LOCALAPPDATA -Force -ErrorAction SilentlyContinue |
+        Where-Object { $_.Name -match 'Meridian' } |
+        Format-Table FullName,Mode,Length -AutoSize
+    throw "Timed out locating installed Meridian.exe under $env:LOCALAPPDATA after 30 seconds"
+}
+
+$installDir = Split-Path -Parent $appExe
+Write-Host "Installed application: $appExe"
 
 Write-Step "Launching installed Meridian"
 Start-Process -FilePath $appExe | Out-Null

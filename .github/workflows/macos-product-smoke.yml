@@ -69,8 +69,24 @@ jobs:
           spctl --assess --type execute --verbose=2 "${app}"
           xcrun stapler validate "${app}"
 
-          daemon="${app}/Contents/Resources/backend/meridian"
-          test -x "${daemon}"
+          expected_daemon="${app}/Contents/Resources/backend/meridian"
+          if [ -x "${expected_daemon}" ]; then
+            daemon="${expected_daemon}"
+          else
+            echo "::group::Meridian.app resource tree"
+            find "${app}/Contents/Resources" -maxdepth 5 -print | sort
+            echo "::endgroup::"
+
+            candidates="$(find "${app}/Contents/Resources" -maxdepth 5 -type f -name meridian -perm -111 -print)"
+            count="$(printf '%s\n' "${candidates}" | sed '/^$/d' | wc -l | tr -d ' ')"
+            if [ "${count}" -ne 1 ]; then
+              echo "::error::Expected executable daemon at ${expected_daemon}; found ${count} executable 'meridian' candidates"
+              exit 1
+            fi
+            daemon="${candidates}"
+            echo "::warning::daemon was bundled at unexpected path: ${daemon}"
+          fi
+          echo "Daemon under test: ${daemon}"
 
           # Exercise the shipped daemon binary without requiring a configured
           # runner machine. JSON parsing is the contract here; a fresh CI host
