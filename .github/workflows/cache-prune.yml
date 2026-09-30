@@ -42,11 +42,9 @@ name: Cache prune
 # FOUR duplicate copies of itself. Manual cleanup does not scale.
 
 on:
-  # After every merge to either release branch, so a superseded entry is reaped
-  # promptly rather than sitting until the next night, and nightly as a backstop
-  # for quiet stretches. 04:15 UTC.
-  push:
-    branches: [main]
+  # Housekeeping is deliberately off the merge path. Nightly pruning is enough
+  # to stay ahead of cache growth, and manual dispatch remains available after
+  # an unusually large cache churn. 04:15 UTC.
   schedule:
     - cron: "15 4 * * *"
   workflow_dispatch:
