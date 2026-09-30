@@ -23,7 +23,7 @@
 // Requires an OAuth App with **Device Flow enabled** (Settings → Developer
 // settings → OAuth Apps → your app → "Enable Device Flow"). The public client_id
 // is baked in at build time via `MERIDIAN_GITHUB_OAUTH_CLIENT_ID` (a GitHub
-// Actions var; see `.github/workflows/release.yml`), overridable at runtime with
+// Actions var; see `.github/workflows/release-build.yml`), overridable at runtime with
 // `GITHUB_OAUTH_CLIENT_ID` for source builds / a custom app.
 
 use std::time::{Duration, Instant};
