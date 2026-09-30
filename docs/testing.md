@@ -143,6 +143,21 @@ The Python `deepeval` + MLX golden-dataset eval harness that lived under `servic
 
 Prompt and provider experimentation happens through the **dev-only LLM Lab** (`meridian llm-experiment run|create|exec|list|get …`), which writes only the `llm_experiment*` tables and never touches production tables. Like every other LLM call, its runs emit OTel spans to OpenObserve, so a run is inspectable as a trace tree there.
 
+## CI health contract
+
+The native CLI exposes the same health report in machine-readable form for
+installed-artifact smoke tests:
+
+```bash
+meridian doctor --json
+meridian doctor --ci --json
+```
+
+`--json` prints a versioned JSON document with aggregate counts and every health
+check. Normal doctor semantics treat warnings as non-fatal; `--ci` is stricter
+and exits non-zero for either warnings or critical failures. This is the contract
+future DMG/NSIS install tests should consume instead of scraping human output.
+
 ## Install-package tests
 
 Tests for the install package (`install.sh`, `scripts/meridian-cli.sh`, the daemon installers, and the plist templates) live under `tests/install/`.
@@ -165,19 +180,23 @@ Coverage:
 - **Plist linting** — `plutil -lint` on `com.meridiona.daemon.plist`. (The screenpipe plist was removed with the in-process capture cutover; only the *uninstaller* survives, to evict leftover agents from pre-v1.64.0 installs, and it needs no template.)
 - **install.sh dry-run** — `./install.sh --dry-run --skip-permissions --skip-env --no-ui --no-daemon` exits 0.
 - **install.sh --help** — prints usage including all flags (`--no-ui`, `--dry-run`, `--no-daemon`, `--skip-permissions`, `--skip-env`).
-- **meridian CLI** — `--help`, `status`, `doctor`, and unknown-command paths all exit cleanly.
+- **meridian CLI** — `--help`, `status`, `doctor`, and unknown-command paths exercise the wrapper/fallback behavior without hanging. Native `doctor` may exit 1 for real critical faults.
 - **Plist rendering** — runs `install-daemon.sh` against a temp HOME, verifies all `{{placeholders}}` are substituted (no leftover `{{...}}` tokens).
 - **Env collection** — calls the `get_env_value` / `set_env_value` helpers in isolation; verifies idempotency (re-setting the same key replaces in place, doesn't append duplicates).
 
 The suite does NOT actually install or load launchd agents — it stays within the cloned repo and uses temp directories. Run time is under 30 seconds.
 
-> **This suite is not wired into CI or the git hooks — run it by hand.** Because
-> nothing runs it automatically it rots quietly: it was found in August 2026 still
-> listing `install-ui-daemon.sh` and `uninstall-ui-daemon.sh`, deleted with the
-> standalone Node UI server, so several checks had been failing on a missing file for
-> months without anyone noticing. There is currently one known failure
-> (`doctor output prints a final summary`) that reproduces on a clean checkout.
-> Wiring it into CI is worth doing; until then, run it after touching `install.sh`,
-> `meridian-cli.sh`, or any plist.
+> **CI:** this suite runs automatically on macOS when installer/package-related
+> files change (including `install.sh`, `scripts/**`, `tests/install/**`, Tauri
+> bundle configuration, or the CI workflow itself). It remains intentionally
+> separate from the full Rust workspace jobs so installer-only changes get fast
+> feedback.
 
-Pre-push hook integration: not currently wired (the test suite is opt-in). If you want to gate pushes on the install tests, append `bash tests/install/run.sh` to your `.git/hooks/pre-push`.
+The suite is still useful locally before pushing installer/package changes:
+
+```bash
+bash tests/install/run.sh
+```
+
+Pre-push hook integration remains optional; if you want an additional local gate,
+append `bash tests/install/run.sh` to your `.git/hooks/pre-push`.
