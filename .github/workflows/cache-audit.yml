@@ -47,12 +47,9 @@ jobs:
                   ("v0-rust-ci-windows", "rust / Windows CI"),
                   ("v0-rust-macos-release-", "rust / macOS release"),
                   ("v0-rust-windows-release-", "rust / Windows release"),
-                  ("v0-rust-pr-fast-", "rust / legacy PR"),
                   ("nextjs-", "Next.js / shared"),
-                  ("fast-next-", "Next.js / legacy PR"),
                   ("node-cache-", "npm"),
                   ("codeql-", "CodeQL"),
-                  ("sccache/", "legacy sccache"),
               )
               for prefix, label in rules:
                   if key.startswith(prefix):
@@ -62,8 +59,6 @@ jobs:
           def ref_class(ref: str) -> str:
               if ref == "refs/heads/main":
                   return "main"
-              if ref == "refs/heads/pre-main":
-                  return "retired pre-main"
               if ref.startswith("refs/pull/"):
                   return "PR"
               if "refs/tags/" in ref:
@@ -108,8 +103,8 @@ jobs:
           print()
           print("## Cache policy")
           print()
-          print("- PR Rust jobs should be readers only; they must not create durable per-PR target caches.")
+          print("- PR Rust jobs are readers only; they do not create durable per-PR target caches.")
           print("- macOS PR tray reads the cache written by macOS post-merge CI.")
           print("- PR UI reads the cache written by main UI CI.")
-          print("- Release debug/test caches are kept separate from release-profile caches because Cargo artifacts are not compatible across profiles/platforms.")
+          print("- Release caches stay separate from CI debug/test caches.")
           PY
