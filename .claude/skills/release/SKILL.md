@@ -6,11 +6,17 @@ allowed-tools: Bash, Read, Edit, Grep, Write
 
 # Meridian Release Skill
 
-Meridian uses **semantic-release** (not release-please) driven by two GitHub
-Actions workflows: `.github/workflows/release.yml` (production, on push to
-`main`) and `.github/workflows/release-staging.yml` (staging, on push to
-`pre-main` gated by a `[staging-release]` commit-message marker, or manual
-dispatch).
+Meridian uses **semantic-release** (not release-please) with an explicit
+promotion pipeline:
+
+- `.github/workflows/release-prepare.yml` decides the version and creates an
+  immutable tag.
+- `.github/workflows/release-build.yml` builds, signs, notarizes, verifies,
+  and publishes that exact tag.
+
+**Branch pushes never release.** Merging code and promoting a release are
+separate operations. Stable promotion is dispatched from `main`; staging
+promotion is dispatched from `pre-main`.
 
 ## Components & Version Files
 
@@ -26,28 +32,17 @@ Bumped in lockstep by `scripts/set-version.sh <version>`:
 ## Release Workflow
 
 ### Production (`main`)
-Config: `.releaserc.json`. Commit-message convention (conventionalcommits
-preset): `feat:` → minor, `fix:` → patch, `feat!:`/`BREAKING CHANGE:` → major,
-`chore:`/`docs:`/`refactor:` → no bump but included in changelog.
+Config: `.releaserc.json`. Conventional commits determine the next stable
+version. `release-prepare.yml` runs semantic-release only when a human
+explicitly dispatches `channel=stable` from `main`. semantic-release updates
+the version/changelog, creates the draft GitHub Release, commits the stable
+version bump back to `main`, and pushes the immutable `vX.Y.Z` tag.
 
-`prepareCmd` runs, in order:
-1. `scripts/set-version.sh <ver>` — bump all version files
-2. `cargo build --release`
-3. UI build (`ui/`), tray build (`tray/`, `tauri build`)
-4. `scripts/notarize-dmg.sh <ver>` — notarize + staple the `.dmg` (Tauri only
-   signs+notarizes+staples the `.app`, not the `.dmg`)
-5. `scripts/package-updater.sh <ver>` — build `latest.json` from the real
-   minisign `.sig`, copy the versioned DMG to a stable `Meridian.dmg` name
-6. `scripts/verify-release-bundle.sh <ver>` — hard gate: codesign identity,
-   Gatekeeper offline acceptance, staple presence, and that the updater
-   artifacts (`.app.tar.gz`, `.sig`, `latest.json`) exist and are non-empty
-   (Tauri can silently exit 0 with a bad/missing signing key)
-
-Then `@semantic-release/github` publishes `Meridian.dmg`,
-`Meridian.app.tar.gz`, `.sig`, and `latest.json` onto a versioned `v<version>`
-GitHub Release (becomes GitHub's "latest"), and `@semantic-release/git`
-commits the version bump + `CHANGELOG.md` back to `main`
-(`chore(release): X.Y.Z [skip ci]`).
+The separate `release-build.yml` then builds that tag once on macOS Apple
+Silicon and Windows x86_64, signs/notarizes/packages it, composes the updater
+manifest, verifies required assets, and publishes the draft. A later merge to
+`main` cannot change the source of an in-flight release because the build is
+tag-pinned.
 
 ### Staging (`pre-main`)
 Config: `.releaserc.staging.json` (copied over `.releaserc.json` at CI
@@ -85,12 +80,28 @@ cd packages/meridian-mcp && npm run build && cd ../..
 ```
 
 ### 3. Trigger a Release
-Production: merge conventional-commit PRs into `main` — `release-prepare.yml`
-runs semantic-release automatically on push there, tags `vX.Y.Z`, and the tag
-push triggers `release-build.yml`. Staging is manual-only: `gh workflow run
-release-prepare.yml --ref pre-main` (or "Run workflow" in the Actions UI with
-the branch dropdown set to `pre-main`) — it is no longer cut automatically on
-every merge to `pre-main`.
+
+A merge does **not** publish anything.
+
+Stable promotion:
+
+```bash
+gh workflow run release-prepare.yml --ref main -f channel=stable
+```
+
+Staging promotion:
+
+```bash
+gh workflow run release-prepare.yml --ref pre-main -f channel=staging
+```
+
+Dry-run either channel by adding `-f dry_run=true`.
+
+The workflow rejects mismatched channel/ref pairs. Once semantic-release creates
+the immutable `v*` tag, `release-prepare.yml` dispatches
+`release-build.yml` against `main` for cache scope while the build itself
+checks out the tag. The exact tagged source is therefore the exact source that
+gets signed and published.
 
 ### 4. Monitor Build Status
 

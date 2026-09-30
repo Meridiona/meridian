@@ -99,12 +99,18 @@ tray, notifications, packaging and release channel all have real Windows
 implementations, and CI runs a dedicated `rust-windows` job (clippy `-D warnings` +
 `cargo test`) on every PR into `pre-main`.
 
-This checklist did not follow it there, which is the gap these items close. **None of
-the automated suites cover the Windows install path**: `tests/install/` is
-launchd-shaped by construction (`plutil -lint`, plist rendering), and the local git
-hooks are bash, so a Windows contributor's `pre-push` cannot catch a Windows-only
-failure — only CI can. Everything below is therefore manual, on a real Windows 10/11
-machine.
+The source-level `tests/install/` suite is macOS/launchd-shaped, so Windows
+needs a separate installed-product check. `.github/workflows/windows-product-smoke.yml`
+now provides that check on a real GitHub-hosted Windows runner. The manual workflow
+downloads the latest shipped `Meridian-x86_64-setup.exe` instead of recompiling the
+product, then installs it silently, launches the packaged tray, waits for backend
+staging, verifies Task Scheduler/Startup fallback registration, probes daemon health,
+runs the native uninstall cleanup, then runs the NSIS uninstaller and verifies cleanup.
+
+The workflow is **manual/non-blocking** for now (`workflow_dispatch`). Using a
+prebuilt installer keeps this lifecycle check fast; when RC artifacts are introduced,
+the same smoke harness should consume the installer produced by that RC build rather
+than the latest stable release.
 
 **Daemon lifecycle** (`tray/src-tauri/src/commands/daemon_control.rs` — named pipe +
 Task Scheduler, where macOS uses a Unix socket + launchd):
@@ -143,6 +149,62 @@ The Python `deepeval` + MLX golden-dataset eval harness that lived under `servic
 
 Prompt and provider experimentation happens through the **dev-only LLM Lab** (`meridian llm-experiment run|create|exec|list|get …`), which writes only the `llm_experiment*` tables and never touches production tables. Like every other LLM call, its runs emit OTel spans to OpenObserve, so a run is inspectable as a trace tree there.
 
+## Fast PR gate
+
+`.github/workflows/pr-fast.yml` is the developer-feedback gate for PRs targeting
+either `pre-main` or `main`.
+
+Its job is fast integration confidence, not release qualification:
+
+- classify changes by crate/surface;
+- run `cargo fmt --check` for Rust changes;
+- lint + test only the changed Rust crate on Linux where possible;
+- compile/lint the Tauri tray library on macOS only when tray Rust changes;
+- run UI tests, typecheck, and static build only when UI changes;
+- run installer, migration, release-shape, and license-policy checks cheaply;
+- aggregate everything into one `Fast PR gate` result.
+
+The deliberate omissions are important: the fast gate does not run the full
+workspace on Windows, does not run the full macOS workspace, and does not
+package/sign product artifacts.
+
+The target architecture is:
+
+```text
+feature PR -> Fast PR gate -> merge
+                         -> full platform validation
+                         -> explicit release promotion
+                         -> immutable RC/stable tag
+                         -> signed artifact smoke
+                         -> publish
+```
+
+Branch updates are development state, not release events. `release-prepare.yml`
+is manual-only: stable promotion is dispatched from `main`, staging promotion
+from `pre-main`. That separation is what allows `main` to become the normal
+integration trunk without every merge attempting a production release.
+
+During the migration, the existing exhaustive `CI` workflow may still run on
+PRs because repository branch-protection settings must be switched from the old
+required contexts to `Fast PR gate` before the old PR trigger can be removed.
+Once that protection cutover is made, exhaustive macOS/Windows validation moves
+entirely to the post-merge promotion path.
+
+## CI health contract
+
+The native CLI exposes the same health report in machine-readable form for
+installed-artifact smoke tests:
+
+```bash
+meridian doctor --json
+meridian doctor --ci --json
+```
+
+`--json` prints a versioned JSON document with aggregate counts and every health
+check. Normal doctor semantics treat warnings as non-fatal; `--ci` is stricter
+and exits non-zero for either warnings or critical failures. This is the contract
+future DMG/NSIS install tests should consume instead of scraping human output.
+
 ## Install-package tests
 
 Tests for the install package (`install.sh`, `scripts/meridian-cli.sh`, the daemon installers, and the plist templates) live under `tests/install/`.
@@ -165,19 +227,23 @@ Coverage:
 - **Plist linting** — `plutil -lint` on `com.meridiona.daemon.plist`. (The screenpipe plist was removed with the in-process capture cutover; only the *uninstaller* survives, to evict leftover agents from pre-v1.64.0 installs, and it needs no template.)
 - **install.sh dry-run** — `./install.sh --dry-run --skip-permissions --skip-env --no-ui --no-daemon` exits 0.
 - **install.sh --help** — prints usage including all flags (`--no-ui`, `--dry-run`, `--no-daemon`, `--skip-permissions`, `--skip-env`).
-- **meridian CLI** — `--help`, `status`, `doctor`, and unknown-command paths all exit cleanly.
+- **meridian CLI** — `--help`, `status`, `doctor`, and unknown-command paths exercise the wrapper/fallback behavior without hanging. Native `doctor` may exit 1 for real critical faults.
 - **Plist rendering** — runs `install-daemon.sh` against a temp HOME, verifies all `{{placeholders}}` are substituted (no leftover `{{...}}` tokens).
 - **Env collection** — calls the `get_env_value` / `set_env_value` helpers in isolation; verifies idempotency (re-setting the same key replaces in place, doesn't append duplicates).
 
 The suite does NOT actually install or load launchd agents — it stays within the cloned repo and uses temp directories. Run time is under 30 seconds.
 
-> **This suite is not wired into CI or the git hooks — run it by hand.** Because
-> nothing runs it automatically it rots quietly: it was found in August 2026 still
-> listing `install-ui-daemon.sh` and `uninstall-ui-daemon.sh`, deleted with the
-> standalone Node UI server, so several checks had been failing on a missing file for
-> months without anyone noticing. There is currently one known failure
-> (`doctor output prints a final summary`) that reproduces on a clean checkout.
-> Wiring it into CI is worth doing; until then, run it after touching `install.sh`,
-> `meridian-cli.sh`, or any plist.
+> **CI:** this suite runs automatically on macOS when installer/package-related
+> files change (including `install.sh`, `scripts/**`, `tests/install/**`, Tauri
+> bundle configuration, or the CI workflow itself). It remains intentionally
+> separate from the full Rust workspace jobs so installer-only changes get fast
+> feedback.
 
-Pre-push hook integration: not currently wired (the test suite is opt-in). If you want to gate pushes on the install tests, append `bash tests/install/run.sh` to your `.git/hooks/pre-push`.
+The suite is still useful locally before pushing installer/package changes:
+
+```bash
+bash tests/install/run.sh
+```
+
+Pre-push hook integration remains optional; if you want an additional local gate,
+append `bash tests/install/run.sh` to your `.git/hooks/pre-push`.

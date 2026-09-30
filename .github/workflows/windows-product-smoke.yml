@@ -1,0 +1,39 @@
+name: Windows product smoke
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: windows-product-smoke-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  windows:
+    name: Download + install + smoke + uninstall
+    runs-on: windows-latest
+    timeout-minutes: 10
+
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: Download latest shipped Windows installer
+        id: installer
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $dir = Join-Path $env:RUNNER_TEMP 'meridian-smoke'
+          New-Item -ItemType Directory -Force -Path $dir | Out-Null
+          gh release download --repo Meridiona/meridian --pattern 'Meridian-x86_64-setup.exe' --dir $dir
+          $installer = Get-Item (Join-Path $dir 'Meridian-x86_64-setup.exe')
+          "path=$($installer.FullName)" >> $env:GITHUB_OUTPUT
+          Write-Host "Installer: $($installer.FullName)"
+
+      - name: Exercise installed product lifecycle
+        shell: pwsh
+        run: ./scripts/ci/windows-install-smoke.ps1 -InstallerPath "${{ steps.installer.outputs.path }}"

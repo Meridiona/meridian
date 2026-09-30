@@ -79,6 +79,7 @@ jobs:
       rust: ${{ steps.f.outputs.rust }}
       ui: ${{ steps.f.outputs.ui }}
       migrations: ${{ steps.f.outputs.migrations }}
+      installer: ${{ steps.f.outputs.installer }}
     steps:
       - uses: actions/checkout@v7
         with:
@@ -105,6 +106,30 @@ jobs:
             migrations:
               - 'src/migrations/**'
               - '.github/workflows/ci.yml'
+            installer:
+              - 'install.sh'
+              - 'scripts/**'
+              - 'tests/install/**'
+              - 'tray/src-tauri/tauri*.conf.json'
+              - 'tray/src-tauri/icons/**'
+              - '.github/workflows/ci.yml'
+
+  # ── Install-package regression suite ───────────────────────────────────────
+  # Fast macOS-only checks for the source installer, launchd templates and CLI
+  # wrapper. Kept separate from the full Rust workspace build so installer-only
+  # changes get useful feedback in seconds instead of waiting on native compile.
+  install-package:
+    name: Install package tests
+    needs: changes
+    if: github.event_name == 'push' && needs.changes.outputs.installer == 'true'
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: Run install-package regression suite
+        run: bash tests/install/run.sh
 
   # ── Rust gate #1: macOS Apple Silicon ─────────────────────────────────────
   # macOS Apple Silicon is the primary shipped platform. Intel (macos-13) and
@@ -143,7 +168,7 @@ jobs:
   rust-macos:
     name: Rust (macOS Apple Silicon) / ${{ matrix.task }}
     needs: changes
-    if: needs.changes.outputs.rust == 'true'
+    if: github.event_name == 'push' && needs.changes.outputs.rust == 'true'
     runs-on: macos-latest
     strategy:
       fail-fast: false
@@ -292,7 +317,7 @@ jobs:
   rust-windows:
     name: Rust (Windows x86_64) / ${{ matrix.task }}
     needs: changes
-    if: needs.changes.outputs.rust == 'true'
+    if: github.event_name == 'push' && needs.changes.outputs.rust == 'true'
     runs-on: windows-latest
     strategy:
       fail-fast: false
@@ -366,7 +391,7 @@ jobs:
   ui:
     name: UI
     needs: changes
-    if: needs.changes.outputs.ui == 'true'
+    if: github.event_name == 'push' && needs.changes.outputs.ui == 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7

@@ -59,38 +59,19 @@ name: Release (prepare)
 # version cheaply (or read it from the repo), then build from an immutable ref.
 
 on:
-  # AUTO only on push to main — that push is the deliberate pre-main → main
-  # release merge, and its whole purpose is to ship a stable version, so it
-  # stays automatic. Stable channel picks up .releaserc.json (committed,
-  # changelog + git plugins) below.
-  #
-  # Staging is intentionally NOT auto-triggered on push to pre-main anymore.
-  # It used to fire on every merge to pre-main, cutting a new
-  # `vX.Y.Z-staging.N` prerelease per merge whether or not anyone wanted a
-  # staging build right then. That churned through macOS-runner minutes and
-  # notarization budget on every PR merge. Staging is now cut on demand only,
-  # via "Run workflow" (workflow_dispatch) with the branch dropdown set to
-  # `pre-main` — pick that branch in the Actions UI and dispatch.
-  #
-  # There is intentionally NO commit-message marker gate on either trigger.
-  # The previous design gated staging auto-release on a `[staging-release]`
-  # substring, which backfired: a squash merge folds every PR commit BODY
-  # into the merge message, and this repo's own workflow comments quote the
-  # literal marker — so merging a PR that merely TOUCHED these files matched
-  # the gate and cut an unintended release (v1.72.0-staging.6, deleted).
-  #
-  # Which channel a run is depends only on the branch it runs against
-  # (`GITHUB_REF_NAME`), and that selects the semantic-release config below.
-  # The BUILD does not read this at all — it derives the channel from the tag
-  # it is handed, so there is exactly one source of truth for "is this stable
-  # or staging".
-  push:
-    branches: [main]
-  # Staging releases are manual-only now: pick `pre-main` in the branch
-  # dropdown and dispatch. Also used for dry-run version previews on any
-  # branch without cutting anything.
+  # Promotion is explicit. A branch update is development state; it is not a
+  # release event. This is what lets main become the integration trunk later
+  # without every merge attempting to publish production.
   workflow_dispatch:
     inputs:
+      channel:
+        description: "Promotion channel"
+        type: choice
+        required: true
+        default: staging
+        options:
+          - staging
+          - stable
       dry_run:
         description: "Analyse commits and report the next version without tagging"
         type: boolean
@@ -112,16 +93,30 @@ jobs:
     permissions:
       contents: write # pushes the version-bump commit and the tag
       actions: write # dispatches release-build.yml once the tag exists
-    # No `if:` gate. The job runs on every push to main and on manual dispatch
-    # (e.g. against pre-main for a staging cut); semantic-release itself
-    # decides whether the commits warrant a release. There is deliberately no
-    # commit-message substring match — that is what previously cut an
-    # accidental release (see `on:` above).
+    # Promotion is manual-only. The first step enforces the channel/ref pairing:
+    # stable must run from main; staging must run from pre-main.
     outputs:
       released: ${{ steps.run.outputs.released }}
       version: ${{ steps.run.outputs.version }}
       tag: ${{ steps.run.outputs.tag }}
     steps:
+      - name: Validate promotion target
+        env:
+          CHANNEL: ${{ inputs.channel }}
+          REF_NAME: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          case "${CHANNEL}" in
+            stable)  expected="main" ;;
+            staging) expected="pre-main" ;;
+            *) echo "::error::unknown release channel '${CHANNEL}'"; exit 1 ;;
+          esac
+          if [ "${REF_NAME}" != "${expected}" ]; then
+            echo "::error::${CHANNEL} promotion must be dispatched from '${expected}', not '${REF_NAME}'."
+            exit 1
+          fi
+          echo "→ ${CHANNEL} promotion from ${REF_NAME}"
+
       - uses: actions/checkout@v7
         with:
           # Branch HEAD by name, NOT a pinned SHA — the whole point of this job
@@ -167,7 +162,7 @@ jobs:
         # "tag matches the committed version" assertion only applies to stable.
         run: |
           set -euo pipefail
-          if [ "${GITHUB_REF_NAME}" = "main" ]; then
+          if [ "${{ inputs.channel }}" = "stable" ]; then
             echo "→ stable channel (.releaserc.json, as committed)"
           else
             cp .releaserc.staging.json .releaserc.json
@@ -195,6 +190,7 @@ jobs:
           # but you must dispatch release-build.yml by hand against the tag.
           GITHUB_TOKEN: ${{ secrets.GH_TOKEN || secrets.GITHUB_TOKEN }}
           DRY_RUN: ${{ inputs.dry_run }}
+          CHANNEL: ${{ inputs.channel }}
         # Detect whether a tag actually appeared rather than parsing
         # semantic-release's prose. Sorted by CREATION DATE, not version:
         # semver sorts prereleases below their release, so a version sort could
@@ -254,14 +250,14 @@ jobs:
             # .releaserc.json); this check replaces the part of its job that was
             # actually wanted.
             subject="$(git log -1 --format=%s)"
-            if [ "${GITHUB_REF_NAME}" = "main" ] && \
+            if [ "${CHANNEL}" = "stable" ] && \
                [ "${subject#chore(release): }" != "${subject}" ]; then
               echo "→ semantic-release's own bump commit (${subject}); nothing to release, as expected"
               exit 0
             fi
 
-            if [ "${GITHUB_REF_NAME}" = "main" ]; then
-              echo "::error::No releasable commits on main — no version was tagged and NOTHING WILL BUILD."
+            if [ "${CHANNEL}" = "stable" ]; then
+              echo "::error::Stable promotion found no releasable commits — no version was tagged and NOTHING WILL BUILD."
               {
                 echo "### Release prepare FAILED"
                 echo ""

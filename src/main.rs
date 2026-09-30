@@ -982,15 +982,23 @@ async fn main() -> Result<()> {
     }
 
     // `meridian doctor` — content-free system-health sweep. Read-only, no daemon
-    // init. Surfaces broken capture/config so a misclassification isn't blamed on
-    // the model. Currently covers L1 screenpipe capture; more layers TBD. Exits
-    // non-zero if any check is critical.
+    // init. Human mode exits non-zero only for critical faults. `--ci` is
+    // deliberately stricter: warnings fail too, which makes it suitable for
+    // installed-artifact smoke tests. `--json` exposes a stable automation
+    // contract derived from the exact same report as the human table.
     if std::env::args().nth(1).as_deref() == Some("doctor") {
-        // `--porcelain` emits TSV rows for machine ingestion; otherwise a rich,
-        // colour-when-a-tty, by-daemon table. Read-only comprehensive sweep.
-        let porcelain = std::env::args().any(|a| a == "--porcelain");
-        let fix = std::env::args().any(|a| a == "--fix");
-        let dry_run = std::env::args().any(|a| a == "--dry-run");
+        let args: Vec<String> = std::env::args().collect();
+        let porcelain = args.iter().any(|a| a == "--porcelain");
+        let json = args.iter().any(|a| a == "--json");
+        let ci = args.iter().any(|a| a == "--ci");
+        let fix = args.iter().any(|a| a == "--fix");
+        let dry_run = args.iter().any(|a| a == "--dry-run");
+
+        if porcelain && json {
+            eprintln!("doctor: --porcelain and --json are mutually exclusive");
+            std::process::exit(2);
+        }
+
         let cfg = Config::from_env();
         let report = meridian::health::run_all(&cfg).await;
         if fix {
@@ -999,7 +1007,9 @@ async fn main() -> Result<()> {
             let residual = meridian::health::fix::run(&cfg, &report, dry_run);
             std::process::exit(if residual { 1 } else { 0 });
         }
-        if porcelain {
+        if json {
+            print!("{}", report.render_json());
+        } else if porcelain {
             print!("{}", report.render_porcelain());
         } else {
             use std::io::IsTerminal;
@@ -1013,8 +1023,13 @@ async fn main() -> Result<()> {
                 print!("{}", meridian::health::diagnose::escalation_hint(color));
             }
         }
-        let critical = report.worst() == meridian::health::Severity::Critical;
-        std::process::exit(if critical { 1 } else { 0 });
+
+        let failed = if ci {
+            !report.ci_healthy()
+        } else {
+            report.worst() == meridian::health::Severity::Critical
+        };
+        std::process::exit(if failed { 1 } else { 0 });
     }
 
     // `meridian uninstall [--purge] [--dry-run] [--yes]` — stop + remove the

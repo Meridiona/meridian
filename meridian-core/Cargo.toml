@@ -53,3 +53,9 @@ sqlx = { version = "0.7", features = ["sqlite", "runtime-tokio-rustls"] }
 # db_crypto.rs tests exercise real on-disk migration/export, so they need real
 # temp files (not just `sqlite::memory:`).
 tempfile = "3"
+
+# libsqlite3-sys is never `use`d: it is declared only to switch on the
+# SQLCipher feature for the single resolved build (see the comment on the dep).
+# Without this, cargo-machete reports it as unused on every run.
+[package.metadata.cargo-machete]
+ignored = ["libsqlite3-sys"]

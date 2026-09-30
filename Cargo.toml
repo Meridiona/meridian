@@ -74,7 +74,6 @@ sqlx = { version = "0.7", features = ["sqlite", "runtime-tokio-rustls", "chrono"
 # feature into the single resolved libsqlite3-sys build (Cargo feature
 # unification) that every workspace member links, including the tray.
 libsqlite3-sys = { version = "0.26", features = ["bundled-sqlcipher-vendored-openssl"] }
-sqlite-vec = "0.1.3"
 
 # Shared lean data layer (DB row types + read queries) — also depended on by the
 # Tauri dashboard, so the queries live in ONE place (single source of truth).
@@ -179,8 +178,6 @@ tempfile = "3"
 # OAuth (PKCE) — browser-based auth for PM providers (Jira, Linear)
 sha2 = "0.10"
 base64 = "0.22"
-rand = "0.8"
-jsonschema = { version = "0.48.0", default-features = false }
 
 [target.'cfg(target_os = "macos")'.dependencies]
 candle-core = { version = "0.10", features = ["accelerate"] }
@@ -215,3 +212,9 @@ windows-sys = { version = "0.61", features = [
 tokio       = { version = "1.15", features = ["full", "test-util"] }
 tempfile    = "3"
 serial_test = "3"
+
+# libsqlite3-sys is never `use`d: it is declared only to switch on the
+# SQLCipher feature for the single resolved build (see the comment on the dep).
+# Without this, cargo-machete reports it as unused on every run.
+[package.metadata.cargo-machete]
+ignored = ["libsqlite3-sys"]
