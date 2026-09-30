@@ -49,7 +49,7 @@ conventional-commit message.
 
 ```bash
 git fetch origin
-git checkout -b fix/rollback-<desc> origin/pre-main
+git checkout -b fix/rollback-<desc> origin/main
 
 # Revert the bad change. For a squashed PR *merge* commit, use -m 1:
 git revert -m 1 <bad-merge-sha>
@@ -58,11 +58,11 @@ git revert -m 1 <bad-merge-sha>
 #   revert: <what and why>        → patch bump (moves the version forward)
 
 git push -u origin fix/rollback-<desc>
-gh pr create --base pre-main --title "revert: <desc>" \
+gh pr create --base main --title "revert: <desc>" \
   --body "Rolls back <bad change>; ships the reverted code as a forward version."
 ```
 
-Then: merge → validate on staging → **a maintainer promotes `pre-main → main`**.
+Then: merge → wait for post-merge validation → cut and smoke a new RC → promote that proven RC to stable.
 The `main` release publishes a `latest.json` with a **higher** version, and
 installed apps update normally (the in-app banner/card + tray-menu check).
 
@@ -87,9 +87,7 @@ git add tray/minimum-version
   the floor ships with **every** release while the file has content, so leaving
   it set keeps forcing later releases too.
 
-> **Invariant:** keep `main ⊆ pre-main`. Do the revert on `pre-main` and
-> promote. If a true emergency forces a direct `main` hotfix, back-merge the
-> same revert to `pre-main` immediately so the invariant is restored.
+> **Invariant:** `main` is the single development trunk. Reverts and hotfixes go through a PR to `main`; releases are separate explicit RC/stable promotions.
 
 ---
 
@@ -115,5 +113,4 @@ git add tray/minimum-version
 
 - These procedures affect the **DMG channel** only. npm/CLI installs update via
   `meridian update`.
-- The staging channel (`pre-main` → staging DMG updater) mirrors production and
-  should be exercised first when time allows.
+- RC builds use the staging updater/runtime configuration and must pass exact-artifact smoke before stable promotion.
