@@ -74,6 +74,12 @@ Assert-True ($daemonCritical.Count -eq 0) ("daemon health contains critical chec
 Write-Step "Verifying Meridian data directory"
 Assert-True (Test-Path $meridianDir) "~/.meridian was not created"
 
+Write-Step "Stopping the installed tray before cleanup"
+Get-Process -ErrorAction SilentlyContinue |
+    Where-Object { $_.Path -eq $appExe } |
+    Stop-Process -Force -ErrorAction SilentlyContinue
+Start-Sleep -Seconds 2
+
 Write-Step "Running Meridian cleanup command"
 $uninstallOutput = & $daemonExe uninstall --purge --yes 2>&1
 $uninstallExit = $LASTEXITCODE
