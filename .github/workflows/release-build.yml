@@ -324,13 +324,14 @@ jobs:
         run: |
           set -euo pipefail
           tag="${RAW_TAG}"
-          version="${tag#v}"
+          release_version="${tag#v}"
+          version="${release_version}"
 
-          # The channel is a property of the version string, so it cannot drift
-          # from what semantic-release actually cut.
-          if [[ "${version}" == *-rc.* ]]; then
-            # RC artifacts intentionally use the existing staging runtime/update
-            # configuration. "staging" here is an app build channel, not a branch.
+          # Candidate artifacts are stamped with the final stable version so the
+          # exact signed/notarized bytes can later be promoted without rebuilding.
+          # The RC suffix belongs to the GitHub release/tag, not the app binary.
+          if [[ "${release_version}" == *-rc.* ]]; then
+            version="${release_version%%-rc.*}"
             channel=staging
             prerelease=true
           else
@@ -340,6 +341,7 @@ jobs:
 
           {
             echo "tag=${tag}"
+            echo "release_version=${release_version}"
             echo "version=${version}"
             echo "channel=${channel}"
             echo "prerelease=${prerelease}"
@@ -458,7 +460,6 @@ jobs:
       MERIDIAN_COUNTER_API_KEY: ${{ secrets.COUNTER_API_KEY }}
       MERIDIAN_OTP_API_URL: ${{ vars.MERIDIAN_OTP_API_URL }}
       MERIDIAN_OTP_CLIENT_TOKEN: ${{ secrets.MERIDIAN_OTP_CLIENT_TOKEN }}
-      MERIDIAN_CHANNEL: ${{ needs.prepare.outputs.channel }}
       # Signing + updater material. TAURI_SIGNING_* is consumed at BUNDLE time.
       TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
       TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
@@ -728,16 +729,10 @@ jobs:
         # target/<triple>/release/meridian; the "Stage the real daemon" step
         # copies it over the stub before bundling.
         #
-        # TAURI_CONFIG replicates `--config src-tauri/tauri.staging.conf.json`
-        # for the compile-time-baked config (e.g. the updater endpoint) —
-        # `tauri-build`'s build.rs reads this env var and JSON-patches it onto
-        # the base config, the same mechanism `--config` uses under the hood.
-        # The later `tauri bundle` step keeps its own explicit `--config` flag
-        # for bundling metadata, unchanged.
+        # One channel-neutral binary: release channel is distribution metadata,
+        # never a compile-time input. This is what makes RC -> stable promotion
+        # an artifact move instead of a second compile/sign/notarize cycle.
         run: |
-          if [ "${CHANNEL}" = "staging" ]; then
-            export TAURI_CONFIG="$(cat src-tauri/tauri.staging.conf.json)"
-          fi
           cargo build --release --locked --target ${{ matrix.target }} \
             -p meridian --bin meridian \
             -p meridian-tray --bin meridian-tray \
@@ -768,8 +763,6 @@ jobs:
       - name: Bundle, sign and notarize the app
         working-directory: tray
         if: ${{ !inputs.cache_warm_only }}
-        env:
-          CHANNEL: ${{ needs.prepare.outputs.channel }}
         # `tauri bundle` runs ZERO cargo invocations — it packages what is
         # already in target/. It signs the .app, notarizes it, staples it, then
         # produces the DMG and the updater tarball.
@@ -792,20 +785,8 @@ jobs:
         # `unset` them.
         run: |
           set -euo pipefail
-          echo "→ ${CHANNEL}: signing AND notarizing"
-          # Uses the already-bound $CHANNEL rather than re-interpolating an
-          # expression into this script a second time - the exact
-          # template-injection shape this file's own convention (see the
-          # RAW_TAG/VERSION binding notes elsewhere) says to avoid. (Not
-          # spelled out literally here on purpose: GitHub Actions scans the
-          # WHOLE run: block's raw text for that syntax, even inside a shell
-          # comment, and an empty one fails to parse - this exact line broke
-          # every release build until this comment was reworded.)
-          config_flag=""
-          if [ "${CHANNEL}" = "staging" ]; then
-            config_flag="--config src-tauri/tauri.staging.conf.json"
-          fi
-          npx tauri bundle --target ${{ matrix.target }} --bundles app,dmg ${config_flag}
+          echo "→ channel-neutral: signing AND notarizing"
+          npx tauri bundle --target ${{ matrix.target }} --bundles app,dmg
 
       - name: Notarize and staple the DMG
         # Runs on every channel now — see the note on the bundle step above for
@@ -826,6 +807,7 @@ jobs:
         if: ${{ !inputs.cache_warm_only }}
         env:
           VERSION: ${{ needs.prepare.outputs.version }}
+          MERIDIAN_RELEASE_TAG: ${{ needs.prepare.outputs.tag }}
         run: bash scripts/package-updater.sh "$VERSION"
 
       - name: Verify the bundle before anything is uploaded
@@ -839,8 +821,7 @@ jobs:
         if: ${{ !inputs.cache_warm_only }}
         env:
           VERSION: ${{ needs.prepare.outputs.version }}
-          MERIDIAN_CHANNEL: ${{ needs.prepare.outputs.channel }}
-        run: bash scripts/verify-release-bundle.sh "$VERSION"
+            run: bash scripts/verify-release-bundle.sh "$VERSION"
 
       - name: Upload this architecture's assets into the draft
         if: ${{ !inputs.cache_warm_only }}
@@ -1173,10 +1154,6 @@ jobs:
         # this is enough to fix it.
         shell: pwsh
         env:
-          # Bound through env rather than interpolated into `run:`, same
-          # reason as VERSION/CHANNEL/TAG elsewhere in this file — `${{ }}`
-          # inside `run:` is the template-injection shape.
-          CHANNEL: ${{ needs.prepare.outputs.channel }}
           # Baked into the daemon .exe via option_env! (see the macOS build step
           # + src/observability/otlp_target.rs). Repo variable, not a secret;
           # unset → central error shipping stays inert.
@@ -1188,28 +1165,15 @@ jobs:
           # native-crash reporting. Client-embeddable DSN → repo variable; unset
           # → the tray never initialises Sentry.
           MERIDIAN_SENTRY_DSN: ${{ vars.MERIDIAN_SENTRY_DSN }}
-        # ONE cargo invocation for both binaries — same fix as the macOS job,
-        # see the header comment "WHY THE BUILD IS ONE CARGO INVOCATION, NOT
-        # TWO". `build:windows`/`build:windows:staging` (tray/package.json)
-        # now do the combined compile + `tauri bundle` in one script; the
-        # channel split is only about which config `tauri bundle` packages
-        # with. TAURI_CONFIG is set here (not in package.json) so it applies
-        # to the compile half via plain env-var inheritance — npm/node
-        # processes inherit the parent shell's environment regardless of
-        # which shell they internally spawn, so this works the same way
-        # whether `npm run` is invoked from pwsh (here) or bash.
-        run: |
-          if ($env:CHANNEL -eq "staging") {
-            $env:TAURI_CONFIG = Get-Content -Raw src-tauri/tauri.staging.conf.json
-            npm run build:windows:staging
-          } else {
-            npm run build:windows
-          }
+        # Channel-neutral Windows build. RC and stable use the exact same
+        # executable/installer bytes; only GitHub release metadata differs.
+        run: npm run build:windows
 
       - name: Package the updater artifacts
         if: ${{ !inputs.cache_warm_only }}
         env:
           VERSION: ${{ needs.prepare.outputs.version }}
+          MERIDIAN_RELEASE_TAG: ${{ needs.prepare.outputs.tag }}
         run: bash scripts/package-updater-windows.sh "$VERSION"
 
       - name: Upload this platform's assets into the draft
