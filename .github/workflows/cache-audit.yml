@@ -1,0 +1,112 @@
+name: Cache audit
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - ".github/workflows/cache-audit.yml"
+      - ".github/workflows/cache-prune.yml"
+      - ".github/workflows/pr-fast.yml"
+      - ".github/workflows/ci.yml"
+      - ".github/workflows/release-build.yml"
+  schedule:
+    - cron: "45 4 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  inventory:
+    name: Cache inventory
+    runs-on: ubuntu-latest
+    steps:
+      - name: Inventory Actions caches by family
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          rows="$(mktemp)"
+          gh api --paginate "repos/${REPO}/actions/caches?per_page=100" \
+            --jq '.actions_caches[] | [.key,.ref,(.size_in_bytes|tostring),.created_at,.last_accessed_at] | @tsv' > "${rows}"
+
+          used="$(gh api "repos/${REPO}/actions/cache/usage" --jq '.active_caches_size_in_bytes')"
+
+          python3 - "${rows}" "${used}" >> "${GITHUB_STEP_SUMMARY}" <<'PY'
+          import collections
+          import sys
+
+          path = sys.argv[1]
+          used = int(sys.argv[2])
+
+          def family(key: str) -> str:
+              rules = (
+                  ("v0-rust-ci-macos-silicon", "rust / macOS CI"),
+                  ("v0-rust-ci-windows", "rust / Windows CI"),
+                  ("v0-rust-macos-release-", "rust / macOS release"),
+                  ("v0-rust-windows-release-", "rust / Windows release"),
+                  ("v0-rust-pr-fast-", "rust / legacy PR"),
+                  ("nextjs-", "Next.js / shared"),
+                  ("fast-next-", "Next.js / legacy PR"),
+                  ("node-cache-", "npm"),
+                  ("sccache/", "legacy sccache"),
+              )
+              for prefix, label in rules:
+                  if key.startswith(prefix):
+                      return label
+              return "other"
+
+          def ref_class(ref: str) -> str:
+              if ref == "refs/heads/main":
+                  return "main"
+              if ref.startswith("refs/pull/"):
+                  return "PR"
+              if "refs/tags/" in ref:
+                  return "tag"
+              return "branch/other"
+
+          entries = []
+          with open(path, encoding="utf-8") as f:
+              for line in f:
+                  if not line.strip():
+                      continue
+                  key, ref, size, created, accessed = line.rstrip("\n").split("\t")
+                  entries.append((key, ref, int(size), created, accessed))
+
+          by_family = collections.defaultdict(lambda: [0, 0, collections.Counter()])
+          for key, ref, size, *_ in entries:
+              fam = family(key)
+              by_family[fam][0] += 1
+              by_family[fam][1] += size
+              by_family[fam][2][ref_class(ref)] += 1
+
+          mib = lambda n: n / 1048576
+          print("# Actions cache inventory")
+          print()
+          print(f"**Repository total:** {mib(used):,.0f} MiB / 10,240 MiB ({used / (10 * 1024**3) * 100:.1f}%)")
+          print()
+          print("| Family | Entries | Size MiB | Refs |")
+          print("|---|---:|---:|---|")
+          for fam, (count, size, refs) in sorted(by_family.items(), key=lambda kv: kv[1][1], reverse=True):
+              ref_text = ", ".join(f"{k}={v}" for k, v in sorted(refs.items()))
+              print(f"| {fam} | {count} | {mib(size):,.0f} | {ref_text} |")
+
+          print()
+          print("## Largest individual entries")
+          print()
+          print("| Size MiB | Ref | Last accessed | Key |")
+          print("|---:|---|---|---|")
+          for key, ref, size, created, accessed in sorted(entries, key=lambda x: x[2], reverse=True)[:20]:
+              safe_key = key.replace("|", "\\|")
+              print(f"| {mib(size):,.0f} | `{ref}` | {accessed} | `{safe_key}` |")
+
+          print()
+          print("## Cache policy")
+          print()
+          print("- PR Rust jobs should be readers only; they must not create durable per-PR target caches.")
+          print("- macOS PR tray reads the cache written by macOS post-merge CI.")
+          print("- PR UI reads the cache written by main UI CI.")
+          print("- Release debug/test caches are kept separate from release-profile caches because Cargo artifacts are not compatible across profiles/platforms.")
+          PY
