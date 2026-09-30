@@ -44,12 +44,11 @@ manifest, verifies required assets, and publishes the draft. A later merge to
 `main` cannot change the source of an in-flight release because the build is
 tag-pinned.
 
-### Staging (`pre-main`)
+### Release candidate (`main`)
 Config: `.releaserc.staging.json` (copied over `.releaserc.json` at CI
 runtime — never the committed file). The tray builds with the
 `tray/src-tauri/tauri.staging.conf.json` overlay (different updater endpoint)
-and cuts a prerelease version `X.Y.Z-staging.N`. No version-bump commit back
-to `pre-main`. `publishCmd` runs
+and cuts a prerelease version `X.Y.Z-rc.N`. No RC version-bump commit is written back to `main`. `publishCmd` runs
 `scripts/mirror-staging-release.sh <ver>`, which mirrors `latest.json` (and
 the DMG) onto a fixed, rolling `updater-staging` GitHub prerelease tag so it
 never leaks into production's "latest" pointer.
@@ -89,10 +88,10 @@ Stable promotion:
 gh workflow run release-prepare.yml --ref main -f channel=stable
 ```
 
-Staging promotion:
+RC promotion:
 
 ```bash
-gh workflow run release-prepare.yml --ref pre-main -f channel=staging
+gh workflow run release-prepare.yml --ref main -f channel=rc
 ```
 
 Dry-run either channel by adding `-f dry_run=true`.
