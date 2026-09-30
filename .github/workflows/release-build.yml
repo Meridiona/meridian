@@ -32,9 +32,9 @@ name: Release (build & publish)
 # macOS is Apple-Silicon-only (Intel/x86_64 was removed — see the macos job's
 # matrix comment). Windows was ALSO removed at the same time this pipeline was
 # rewritten and has since been restored as its own job below, running in
-# PARALLEL with macOS (not sequentially after it, the way the old monolithic
-# release.yml ran it — that added ~38 minutes of critical path for no reason
-# other than being written before this pipeline had a fan-out shape at all).
+# PARALLEL with macOS (not sequentially after it, as in the retired monolithic
+# pipeline — that added ~38 minutes of critical path for no reason other than
+# being written before this pipeline had a fan-out shape at all).
 #
 # Production still does not publish a macOS Intel build: existing Intel
 # installs find no newer release on their updater endpoint and simply stop
@@ -507,11 +507,10 @@ jobs:
         id: rust-cache
         with:
           # shared-key REPLACES rust-cache's automatic job-based key. That
-          # matters: by default `add-job-id-key` is true, so ci.yml's
-          # macos-universal job, the old release-staging build job and the old
-          # release.yml job each computed a DIFFERENT key and none could read
-          # another's cache. Three disjoint copies of nearly the same thing,
-          # against a quota that was already evicting (8.5GB of 25 caches).
+          # matters: by default `add-job-id-key` is true, so older CI/release
+          # jobs each computed a DIFFERENT key and none could read another's
+          # cache. Multiple disjoint copies of nearly the same thing competed
+          # against a quota that was already evicting useful entries.
           #
           # Keyed by TARGET only, so every workflow that compiles this triple
           # shares one warm cache.
@@ -755,18 +754,11 @@ jobs:
         # notarize call at all (tauri-apps/tauri#7533, open since 2023) — hence
         # the separate step below.
         #
-        # Notarization now runs on EVERY channel, staging included. It used to be
-        # skipped on staging on the theory that tauri-plugin-updater never sets
-        # the quarantine flag Gatekeeper keys off — true for an in-place update,
-        # but false the moment someone downloads a staging DMG directly (browser,
-        # `gh release download`, Slack link, …), which quarantines it exactly like
-        # a stable DMG and trips "Apple could not verify this app is free of
-        # malware" with no ticket to fall back on. APPLE_API_* are already defined
-        # unconditionally in this job's `env:` (see the note there on why an
-        # Actions `cond && secret || ''` expression is NOT a safe way to gate
-        # them), so nothing needs to change to turn notarization on here — the
-        # credentials were always present, only the staging branch below used to
-        # `unset` them.
+        # Every RC candidate is a real distributable artifact, so every macOS RC is
+        # signed, notarized, and stapled before exact-artifact smoke. Stable later
+        # reuses these exact bytes; there is no separate stable notarization pass.
+        # APPLE_API_* are defined unconditionally in this job's env; see the note
+        # there on why conditional secret interpolation is unsafe.
         run: |
           set -euo pipefail
           echo "→ channel-neutral: signing AND notarizing"
