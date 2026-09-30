@@ -1,0 +1,377 @@
+name: Fast PR
+
+on:
+  pull_request:
+    branches: [pre-main]
+  push:
+    branches: [pre-main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: fast-pr-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+env:
+  SQLX_OFFLINE: "true"
+  CARGO_INCREMENTAL: "0"
+  CARGO_NET_RETRY: "3"
+  CARGO_NET_GIT_FETCH_WITH_CLI: "true"
+
+jobs:
+  changes:
+    name: Fast / classify changes
+    runs-on: ubuntu-latest
+    outputs:
+      rust: ${{ steps.paths.outputs.rust }}
+      core: ${{ steps.paths.outputs.core }}
+      oauth: ${{ steps.paths.outputs.oauth }}
+      daemon: ${{ steps.paths.outputs.daemon }}
+      tray: ${{ steps.paths.outputs.tray }}
+      ui: ${{ steps.paths.outputs.ui }}
+      migrations: ${{ steps.paths.outputs.migrations }}
+      installer: ${{ steps.paths.outputs.installer }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - uses: dorny/paths-filter@v4
+        id: paths
+        with:
+          filters: |
+            rust:
+              - '**/*.rs'
+              - '**/Cargo.toml'
+              - 'Cargo.lock'
+              - 'rust-toolchain.toml'
+              - '.cargo/**'
+              - 'build.rs'
+              - '.github/workflows/pr-fast.yml'
+            core:
+              - 'meridian-core/**'
+              - 'Cargo.toml'
+              - 'Cargo.lock'
+              - 'rust-toolchain.toml'
+              - '.cargo/**'
+              - '.github/workflows/pr-fast.yml'
+            oauth:
+              - 'meridian-oauth/**'
+              - 'Cargo.toml'
+              - 'Cargo.lock'
+              - 'rust-toolchain.toml'
+              - '.cargo/**'
+              - '.github/workflows/pr-fast.yml'
+            daemon:
+              - 'src/**'
+              - 'Cargo.toml'
+              - 'Cargo.lock'
+              - 'build.rs'
+              - 'rust-toolchain.toml'
+              - '.cargo/**'
+              - '.github/workflows/pr-fast.yml'
+            tray:
+              - 'tray/src-tauri/**'
+              - 'Cargo.toml'
+              - 'Cargo.lock'
+              - 'rust-toolchain.toml'
+              - '.cargo/**'
+              - '.github/workflows/pr-fast.yml'
+            ui:
+              - 'ui/**'
+              - 'tray/src/**'
+              - '.github/workflows/pr-fast.yml'
+            migrations:
+              - 'src/migrations/**'
+              - '.github/workflows/pr-fast.yml'
+            installer:
+              - 'install.sh'
+              - 'scripts/**'
+              - 'tests/install/**'
+              - 'tray/src-tauri/tauri*.conf.json'
+              - 'tray/src-tauri/icons/**'
+              - '.github/workflows/pr-fast.yml'
+
+  rust-fmt:
+    name: Fast / Rust fmt
+    needs: changes
+    if: needs.changes.outputs.rust == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: "1.93.1"
+          components: rustfmt
+      - run: cargo fmt --check
+
+  rust-core:
+    name: Fast / meridian-core
+    needs: changes
+    if: needs.changes.outputs.core == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: "1.93.1"
+          components: clippy
+      - uses: Swatinem/rust-cache@v2
+        with:
+          add-job-id-key: false
+          shared-key: pr-fast-core
+          save-if: ${{ github.event_name == 'push' }}
+      - name: Lint changed crate
+        run: cargo clippy -p meridian-core --all-targets -- -D warnings
+      - name: Test changed crate
+        run: cargo test -p meridian-core
+
+  rust-oauth:
+    name: Fast / meridian-oauth
+    needs: changes
+    if: needs.changes.outputs.oauth == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: "1.93.1"
+          components: clippy
+      - uses: Swatinem/rust-cache@v2
+        with:
+          add-job-id-key: false
+          shared-key: pr-fast-oauth
+          save-if: false
+      - name: Lint changed crate
+        run: cargo clippy -p meridian-oauth --all-targets -- -D warnings
+      - name: Test changed crate
+        run: cargo test -p meridian-oauth
+
+  rust-daemon:
+    name: Fast / daemon
+    needs: changes
+    if: needs.changes.outputs.daemon == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: "1.93.1"
+          components: clippy
+      - uses: Swatinem/rust-cache@v2
+        with:
+          add-job-id-key: false
+          shared-key: pr-fast-daemon
+          save-if: ${{ github.event_name == 'push' }}
+      - name: Lint daemon library and CLI
+        run: cargo clippy -p meridian --lib --bin meridian -- -D warnings
+      - name: Run daemon library tests
+        run: cargo test -p meridian --lib
+
+  rust-tray:
+    name: Fast / tray compile
+    needs: changes
+    if: needs.changes.outputs.tray == 'true'
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: Authenticate private screenpipe fork
+        env:
+          GH_TOKEN: ${{ secrets.GH_TOKEN }}
+        run: |
+          git config --global             url."https://x-access-token:${GH_TOKEN}@github.com/Meridiona/screenpipe-fork".insteadOf             "https://github.com/Meridiona/screenpipe-fork"
+
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: "1.93.1"
+          components: clippy
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          add-job-id-key: false
+          shared-key: pr-fast-macos-tray
+          save-if: ${{ github.event_name == 'push' }}
+
+      - name: Stub bundled daemon resource
+        run: |
+          mkdir -p target/release
+          : > target/release/meridian
+
+      # Intentionally compile/lint the tray library only. Full tray tests and
+      # both shipped platforms remain in the exhaustive post-merge workflow.
+      - name: Lint tray library
+        run: cargo clippy -p meridian-tray --lib -- -D warnings
+
+  ui:
+    name: Fast / UI
+    needs: changes
+    if: needs.changes.outputs.ui == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: "24"
+          cache: npm
+          cache-dependency-path: ui/package-lock.json
+
+      - uses: oven-sh/setup-bun@v2
+
+      - uses: actions/cache@v6
+        with:
+          path: ui/.next/cache
+          key: fast-next-${{ hashFiles('ui/package-lock.json') }}-${{ hashFiles('ui/**/*.ts', 'ui/**/*.tsx') }}
+          restore-keys: |
+            fast-next-${{ hashFiles('ui/package-lock.json') }}-
+            fast-next-
+
+      - name: Install
+        working-directory: ui
+        run: npm ci --no-audit --no-fund
+
+      - name: Tests
+        working-directory: ui
+        run: bun test
+
+      - name: Typecheck
+        working-directory: ui
+        run: npm run typecheck
+
+      - name: Static production build
+        working-directory: ui
+        run: npm run build
+
+  install-package:
+    name: Fast / install package
+    needs: changes
+    if: needs.changes.outputs.installer == 'true'
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - run: bash tests/install/run.sh
+
+  migrations:
+    name: Fast / migrations append-only
+    needs: changes
+    if: github.event_name == 'pull_request' && needs.changes.outputs.migrations == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Reject modified, renamed, or deleted migrations
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        run: |
+          violations=$(git diff --name-status "$BASE_SHA"...HEAD -- src/migrations             | grep -E '^(M|D|R)' || true)
+          if [ -n "$violations" ]; then
+            echo "::error::Shipped migrations are immutable. Add a new numbered migration."
+            echo "$violations"
+            exit 1
+          fi
+
+  policy:
+    name: Fast / release + license policy
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: Keep release build dispatch-only
+        run: |
+          python3 - <<'PY'
+          import pathlib, sys, yaml
+          build = yaml.safe_load(pathlib.Path(".github/workflows/release-build.yml").read_text())
+          src = pathlib.Path(".github/workflows/release-build.yml").read_text()
+          prep = pathlib.Path(".github/workflows/release-prepare.yml").read_text()
+          triggers = build.get("on", build.get(True)) or {}
+          fail = []
+          if "push" in triggers:
+              fail.append("release-build.yml must remain workflow_dispatch-only")
+          dispatch = triggers.get("workflow_dispatch") or {}
+          if "tag" not in (dispatch.get("inputs") or {}):
+              fail.append("release-build.yml workflow_dispatch must keep its tag input")
+          if "refs/heads/main" not in src:
+              fail.append("release-build.yml must keep its main-ref guard")
+          if "--ref main" not in prep:
+              fail.append("release-prepare.yml must dispatch release-build against main")
+          if fail:
+              for message in fail:
+                  print(f"::error::{message}")
+              sys.exit(1)
+          PY
+
+      - name: Keep screenpipe fork on audited MIT-based revision
+        run: |
+          expected="61332b8a15f09a08876455ad45713eb3b1bfa2df"
+          file="tray/src-tauri/Cargo.toml"
+          fail=0
+          for crate in screenpipe-screen screenpipe-a11y; do
+            rev=$(grep -E "^${crate} = " "$file" | grep -oE 'rev = "[0-9a-f]+"' | cut -d'"' -f2)
+            if [ "$rev" != "$expected" ]; then
+              echo "::error file=$file::${crate} rev is '${rev}', expected audited MIT-based '${expected}'"
+              fail=1
+            fi
+          done
+          exit "$fail"
+
+  gate:
+    name: Fast PR gate
+    if: always()
+    needs:
+      - changes
+      - rust-fmt
+      - rust-core
+      - rust-oauth
+      - rust-daemon
+      - rust-tray
+      - ui
+      - install-package
+      - migrations
+      - policy
+    runs-on: ubuntu-latest
+    steps:
+      - name: Require every selected fast check
+        env:
+          CHANGES: ${{ needs.changes.result }}
+          RUST_FMT: ${{ needs.rust-fmt.result }}
+          CORE: ${{ needs.rust-core.result }}
+          OAUTH: ${{ needs.rust-oauth.result }}
+          DAEMON: ${{ needs.rust-daemon.result }}
+          TRAY: ${{ needs.rust-tray.result }}
+          UI: ${{ needs.ui.result }}
+          INSTALLER: ${{ needs.install-package.result }}
+          MIGRATIONS: ${{ needs.migrations.result }}
+          POLICY: ${{ needs.policy.result }}
+        run: |
+          fail=0
+          for pair in             "changes:$CHANGES"             "rust-fmt:$RUST_FMT"             "core:$CORE"             "oauth:$OAUTH"             "daemon:$DAEMON"             "tray:$TRAY"             "ui:$UI"             "installer:$INSTALLER"             "migrations:$MIGRATIONS"             "policy:$POLICY"
+          do
+            name="${pair%%:*}"
+            result="${pair#*:}"
+            printf '%-12s %s\n' "$name" "$result"
+            case "$result" in
+              success|skipped) ;;
+              *) fail=1 ;;
+            esac
+          done
+          exit "$fail"
