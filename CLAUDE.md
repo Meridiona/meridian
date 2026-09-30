@@ -751,6 +751,25 @@ fixtures that produce genuinely corrupt files live in `src/db/test_corrupt.rs`
 ### PR target branch — `main`
 
 - **Every feature/fix PR targets `main`** (`gh pr create --base main`). `main` is the development trunk.
-- Pull requests are gated by the Fast PR workflow and Merge Queue.
-- Full macOS/Windows validation runs after merge on `main`.
+- Pull requests are gated by the required `Fast PR gate` status check.
+- `.github/workflows/pr-fast.yml` also supports `merge_group` events, so it is compatible with GitHub Merge Queue when that repository setting is enabled.
+- Full macOS/Windows workspace validation runs after merge on `main`; it is deliberately not the PR merge blocker.
 - Merging to `main` does **not** publish production. RC and stable releases are explicit promotion actions.
+
+### CI/CD source of truth
+
+Read **`docs/ci-cd.md` before changing any workflow, release script, branch policy, cache key, updater channel, or product-smoke path.** It is the canonical description of the current pipeline.
+
+Load-bearing invariants:
+
+- `main` is the only development trunk; `pre-main` and staging release branches are retired.
+- PRs get fast, path-routed checks and aggregate into the required `Fast PR gate`.
+- exhaustive macOS/Windows validation is post-merge.
+- RC promotion builds/signs/notarizes/packages the product exactly once.
+- stable promotion reuses the exact proven RC binaries and rewrites only release/updater metadata; **stable must never rebuild the product**.
+- RC/stable is distribution metadata, not a compile-time binary channel.
+- PRs should consume shared caches rather than create durable per-PR target caches.
+- debug/test CI caches and release-profile caches stay separate.
+- `cache-audit.yml` is the observability tool for cache usage; `cache-prune.yml` is housekeeping.
+
+Do not reconstruct retired `pre-main`, `*-staging.*`, rolling staging updater, cache-warm, automatic branch-push release, or stable-rebuild architecture from git history or stale comments.
