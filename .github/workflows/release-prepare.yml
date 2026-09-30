@@ -192,71 +192,76 @@ jobs:
 
       - run: npm ci --no-audit --no-fund
 
-      - name: Select the release config for this branch
-        # .releaserc.json is the name semantic-release loads by default, and it
-        # is the committed PRODUCTION config (changelog + git plugins, so the
-        # version bump is committed back to main). For RC promotion we copy the
-        # prerelease config over it - ephemeral in this CI checkout only.
-        #
-        # The two configs are separate whole files rather than one parameterised
-        # file because they differ structurally, not just in values: RC cuts
-        # prereleases on the `rc` channel and deliberately has NO
-        # @semantic-release/changelog and NO @semantic-release/git (an RC tag
-        # must not rewrite the repo). That difference is also why the build's
-        # "tag matches the committed version" assertion only applies to stable.
+      - name: Select release strategy
         run: |
           set -euo pipefail
           if [ "${{ inputs.channel }}" = "stable" ]; then
-            echo "→ stable channel (.releaserc.json, as committed)"
+            echo "→ stable: semantic-release owns versioning/tagging"
           else
-            cp .releaserc.staging.json .releaserc.json
-            echo "→ RC channel (.releaserc.staging.json)"
+            echo "→ RC: semantic-release analyzes the next stable version; this workflow creates vX.Y.Z-rc.N itself"
           fi
 
-      # semantic-release requires a normal release branch (main) and a distinct
-      # prerelease branch. Keep main as the only development trunk: this branch
-      # is a disposable release-control ref pointing at the exact same commit.
-      - name: Prepare ephemeral semantic-release RC branch
-        if: ${{ inputs.channel == 'rc' }}
-        run: |
-          set -euo pipefail
-          git push --force origin HEAD:refs/heads/release-candidate
-          git checkout -B release-candidate origin/release-candidate
-          echo "→ release-candidate points at $(git rev-parse HEAD)"
-
-      - name: semantic-release
+      - name: Decide version and create release tag
         id: run
         env:
-          # *** GH_TOKEN (a PAT) IS LOAD-BEARING HERE, NOT A FALLBACK NICETY. ***
-          #
-          # GitHub deliberately does NOT re-trigger workflows for refs pushed
-          # using the default GITHUB_TOKEN — it is the recursion guard. This
-          # whole two-workflow design hangs on the tag push waking
-          # release-build.yml, so a run that tags with GITHUB_TOKEN would
-          # succeed, push the tag, and then NOTHING WOULD BUILD. Silent, and
-          # confusing to diagnose.
-          #
-          # secrets.GH_TOKEN is the org PAT already used elsewhere in this repo
-          # (it also authenticates the private screenpipe-fork fetch). A push
-          # made with it is attributed to a user, so downstream workflows fire
-          # normally.
-          #
-          # If GH_TOKEN is ever unavailable, the fallback still tags correctly
-          # but you must dispatch release-build.yml by hand against the tag.
           GITHUB_TOKEN: ${{ secrets.GH_TOKEN || secrets.GITHUB_TOKEN }}
+          GH_TOKEN: ${{ secrets.GH_TOKEN || secrets.GITHUB_TOKEN }}
           DRY_RUN: ${{ inputs.dry_run }}
           CHANNEL: ${{ inputs.channel }}
-        # Detect whether a tag actually appeared rather than parsing
-        # semantic-release's prose. Sorted by CREATION DATE, not version:
-        # semver sorts prereleases below their release, so a version sort could
-        # pick a stale tag and report "no release" on a successful run.
         run: |
           set -euo pipefail
+
+          if [ "${CHANNEL}" = "rc" ]; then
+            # Analyze main with the stable config, but do not let semantic-release
+            # create a release. This keeps one real release branch while RC tags
+            # remain an explicit workflow concern.
+            set +e
+            analysis="$(NO_COLOR=1 npx semantic-release --dry-run 2>&1)"
+            rc=$?
+            set -e
+            printf '%s\n' "${analysis}"
+
+            if [ "${rc}" -ne 0 ]; then
+              echo "::error::semantic-release version analysis failed"
+              exit "${rc}"
+            fi
+
+            base="$(printf '%s\n' "${analysis}" | sed -nE 's/.*The next release version is ([0-9]+\.[0-9]+\.[0-9]+).*/\1/p' | tail -1)"
+            if [ -z "${base}" ]; then
+              echo "released=false" >> "${GITHUB_OUTPUT}"
+              echo "→ no releasable commits; no RC needed"
+              exit 0
+            fi
+
+            last_n="$(git tag --list "v${base}-rc.*" | sed -nE 's/.*-rc\.([0-9]+)$/\1/p' | sort -n | tail -1)"
+            n=$(( ${last_n:-0} + 1 ))
+            tag="v${base}-rc.${n}"
+
+            echo "version=${base}-rc.${n}" >> "${GITHUB_OUTPUT}"
+            echo "tag=${tag}" >> "${GITHUB_OUTPUT}"
+
+            if [ "${DRY_RUN}" = "true" ]; then
+              echo "released=false" >> "${GITHUB_OUTPUT}"
+              echo "→ dry run; would create ${tag}"
+              exit 0
+            fi
+
+            git tag "${tag}" HEAD
+            git push origin "refs/tags/${tag}"
+            gh release create "${tag}" --repo "${GITHUB_REPOSITORY}" --target "$(git rev-parse HEAD)" --draft --prerelease --generate-notes --title "${tag}"
+
+            echo "released=true" >> "${GITHUB_OUTPUT}"
+            echo "→ created RC ${tag} from $(git rev-parse HEAD)"
+            exit 0
+          fi
+
+          # Stable channel: semantic-release remains authoritative and performs
+          # the version bump/changelog/tag/draft-release flow.
           before="$(git tag --list 'v*' --sort=-creatordate | head -1)"
 
           if [ "${DRY_RUN}" = "true" ]; then
             npx semantic-release --dry-run
-            echo "released=false" >> "$GITHUB_OUTPUT"
+            echo "released=false" >> "${GITHUB_OUTPUT}"
             echo "→ dry run; nothing tagged"
             exit 0
           fi
@@ -265,69 +270,14 @@ jobs:
 
           after="$(git tag --list 'v*' --sort=-creatordate | head -1)"
           if [ -n "${after}" ] && [ "${before}" != "${after}" ]; then
-            echo "released=true"      >> "$GITHUB_OUTPUT"
-            echo "version=${after#v}" >> "$GITHUB_OUTPUT"
-            echo "tag=${after}"       >> "$GITHUB_OUTPUT"
-            echo "→ tagged ${after} — release-build.yml will pick it up"
+            echo "released=true"      >> "${GITHUB_OUTPUT}"
+            echo "version=${after#v}" >> "${GITHUB_OUTPUT}"
+            echo "tag=${after}"       >> "${GITHUB_OUTPUT}"
+            echo "→ tagged ${after}"
           else
-            echo "released=false" >> "$GITHUB_OUTPUT"
-
-            # On the RC channel this is routine and fine: if there are no releasable
-            # commits since the previous release, there is nothing to tag.
-            #
-            # A stable promotion that produces no tag is a failure: the operator
-            # explicitly asked to ship, so a green no-op would be misleading.
-            #
-            # This is not hypothetical. It has now happened twice (#517, #522):
-            # both were SQUASH-merged, which collapses every conventional commit
-            # into one subject line — `release: …`, not a releasable type — so
-            # commit-analyzer found nothing and this step exited 0. Production
-            # sat on v1.74.0 while main carried the new code, and nothing in the
-            # UI indicated a problem.
-            #
-            # The cause is the merge method, so that is what the message names.
-            #
-            # ONE EXEMPTION: semantic-release's own version-bump commit. The
-            # stable config's @semantic-release/git plugin commits the bump back
-            # to main, and that push re-enters this workflow. There is
-            # legitimately nothing to release then — `chore(release): …` is not a
-            # releasable type, which is exactly what stops the loop — so failing
-            # would paint a red X on the tail end of a SUCCESSFUL release.
-            #
-            # Detected by the subject rather than a marker on purpose. That
-            # commit used to carry GitHub's skip-CI marker, which suppressed
-            # every workflow for the push — including the TAG push, since the tag
-            # points at this very commit. The tag landed and release-build never
-            # fired, so v1.74.1 tagged and built nothing. The marker is gone (see
-            # .releaserc.json); this check replaces the part of its job that was
-            # actually wanted.
-            subject="$(git log -1 --format=%s)"
-            if [ "${CHANNEL}" = "stable" ] && \
-               [ "${subject#chore(release): }" != "${subject}" ]; then
-              echo "→ semantic-release's own bump commit (${subject}); nothing to release, as expected"
-              exit 0
-            fi
-
-            if [ "${CHANNEL}" = "stable" ]; then
-              echo "::error::Stable promotion found no releasable commits — no version was tagged and NOTHING WILL BUILD."
-              {
-                echo "### Release prepare FAILED"
-                echo ""
-                echo "A merge to \`main\` produced no release."
-                echo ""
-                echo "The usual cause is a **squash merge** of the \`pre-main → main\` PR."
-                echo "Squashing collapses every \`feat:\`/\`fix:\` commit into a single"
-                echo "subject line, and semantic-release reads subject lines only —"
-                echo "so it sees nothing to release."
-                echo ""
-                echo "Use **Create a merge commit** for release PRs, so the commits"
-                echo "arrive on \`main\` intact. Feature PRs into \`pre-main\` should still"
-                echo "be squashed."
-              } >> "$GITHUB_STEP_SUMMARY"
-              exit 1
-            fi
-
-            echo "→ no releasable commits; nothing tagged"
+            echo "::error::Stable promotion produced no tag"
+            echo "released=false" >> "${GITHUB_OUTPUT}"
+            exit 1
           fi
 
       - name: Dispatch the build against main
@@ -392,14 +342,6 @@ jobs:
           else
             echo "::warning::could not dispatch release-build.yml; ${TAG} is tagged but NOTHING IS BUILDING. Run: gh workflow run release-build.yml --ref main -f tag=${TAG}"
           fi
-
-      - name: Remove ephemeral semantic-release RC branch
-        if: ${{ always() && inputs.channel == 'rc' }}
-        run: |
-          set -euo pipefail
-          git checkout --detach >/dev/null 2>&1 || true
-          git push origin --delete release-candidate 2>/dev/null || true
-          echo "→ release-candidate cleaned up"
 
       - name: Summary
         if: always()

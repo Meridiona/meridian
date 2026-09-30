@@ -58,9 +58,9 @@ jobs:
           TAG: ${{ inputs.tag }}
         run: |
           $proof = Join-Path $env:RUNNER_TEMP 'smoke-windows.ok'
-          @"
-tag=$env:TAG
-run_id=${{ github.run_id }}
-commit=${{ github.sha }}
-"@ | Set-Content -NoNewline $proof
+          @(
+            "tag=$env:TAG"
+            "run_id=${{ github.run_id }}"
+            "commit=${{ github.sha }}"
+          ) | Set-Content $proof
           gh release upload "$env:TAG" --repo Meridiona/meridian --clobber $proof
