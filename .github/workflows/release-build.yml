@@ -11,7 +11,7 @@ name: Release (build & publish)
 # branch HEAD, an immutable build ref demands the opposite, and a long build
 # makes the conflict certain rather than theoretical).
 #
-# THIS FILE REPLACES BOTH release-staging.yml AND the old monolithic
+# THIS FILE REPLACES THE OLD STAGING-SPECIFIC AND MONOLITHIC
 # release.yml, which have been deleted. It is now the ONLY build path, for both
 # channels, and the channel is derived from the tag — so stable and staging
 # cannot drift from each other:
@@ -132,7 +132,7 @@ name: Release (build & publish)
 # GitHub scopes the Actions cache by `github.ref`, and its rule for tags has no
 # workaround: "tags only have access to caches created in default branch"
 # (docs.github.com/en/actions/reference/workflows-and-actions/dependency-caching).
-# A tag-triggered build therefore cannot read `pre-main`'s cache, and cannot
+# A tag-triggered build therefore cannot read the integration branch's cache, and cannot
 # read a sibling tag's — and every release cuts a brand-new tag, so whatever it
 # saved was scoped to a ref nothing would ever restore from again.
 #
@@ -166,8 +166,8 @@ name: Release (build & publish)
 #     real `v*` tag and every job checks it out by name.
 #
 # THE ONE REAL TRADE-OFF: the workflow LOGIC now comes from `main` while the
-# SOURCE comes from the tag. A staging tag cut from `pre-main` is therefore
-# built by main's copy of this file. That is the same coupling as before (main's
+# SOURCE comes from the tag. RC and stable tags are both cut from `main` and
+# built by main's copy of this file. The workflow logic and source ref are
 # cache-warm.yml had to match the tag's release-build.yml) reduced to one file
 # on one branch, and made visible — but it does mean a change to the BUILD STEPS
 # only takes effect for releases once it has reached `main`.
