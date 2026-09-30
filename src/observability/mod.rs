@@ -451,7 +451,11 @@ fn try_build_otel_providers(
         // optimized packaged build reports "prod".
         KeyValue::new(
             "deployment.environment",
-            if cfg!(debug_assertions) { "dev" } else { "prod" },
+            if cfg!(debug_assertions) {
+                "dev"
+            } else {
+                "prod"
+            },
         ),
         // Platform shape. Without these, a Windows error and a macOS error are
         // indistinguishable in the central backend — every attribute above is
