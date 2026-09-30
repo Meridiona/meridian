@@ -117,6 +117,14 @@ jobs:
       - uses: actions/checkout@v7
         with:
           persist-credentials: false
+      - name: Authenticate private screenpipe fork
+        env:
+          GH_TOKEN: ${{ secrets.GH_TOKEN }}
+        run: |
+          git config --global \
+            url."https://x-access-token:${GH_TOKEN}@github.com/Meridiona/screenpipe-fork".insteadOf \
+            "https://github.com/Meridiona/screenpipe-fork"
+
       - uses: dtolnay/rust-toolchain@master
         with:
           toolchain: "1.93.1"
@@ -140,6 +148,14 @@ jobs:
       - uses: actions/checkout@v7
         with:
           persist-credentials: false
+      - name: Authenticate private screenpipe fork
+        env:
+          GH_TOKEN: ${{ secrets.GH_TOKEN }}
+        run: |
+          git config --global \
+            url."https://x-access-token:${GH_TOKEN}@github.com/Meridiona/screenpipe-fork".insteadOf \
+            "https://github.com/Meridiona/screenpipe-fork"
+
       - uses: dtolnay/rust-toolchain@master
         with:
           toolchain: "1.93.1"
@@ -163,6 +179,14 @@ jobs:
       - uses: actions/checkout@v7
         with:
           persist-credentials: false
+      - name: Authenticate private screenpipe fork
+        env:
+          GH_TOKEN: ${{ secrets.GH_TOKEN }}
+        run: |
+          git config --global \
+            url."https://x-access-token:${GH_TOKEN}@github.com/Meridiona/screenpipe-fork".insteadOf \
+            "https://github.com/Meridiona/screenpipe-fork"
+
       - uses: dtolnay/rust-toolchain@master
         with:
           toolchain: "1.93.1"
