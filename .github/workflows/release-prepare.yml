@@ -314,28 +314,7 @@ jobs:
           # metadata changes because its URLs name the public stable tag.
           for manifest in latest.json updater-aarch64-apple-darwin.json updater-windows.json; do
             if [ -f "${tmp}/${manifest}" ]; then
-              python3 - "${tmp}/${manifest}" "${CANDIDATE_TAG}" "${stable_tag}" "${version}" <<'PY'
-import json, sys
-path, old_tag, new_tag, version = sys.argv[1:]
-with open(path) as f:
-    data = json.load(f)
-
-def rewrite(v):
-    if isinstance(v, str):
-        return v.replace(f"/download/{old_tag}/", f"/download/{new_tag}/")
-    if isinstance(v, list):
-        return [rewrite(x) for x in v]
-    if isinstance(v, dict):
-        return {k: rewrite(x) for k, x in v.items()}
-    return v
-
-data = rewrite(data)
-if isinstance(data, dict) and "version" in data:
-    data["version"] = version
-with open(path, "w") as f:
-    json.dump(data, f, indent=2)
-    f.write("\n")
-PY
+              python3 -c 'import json,sys; p,o,n,v=sys.argv[1:]; d=json.load(open(p)); rw=lambda x: x.replace("/download/"+o+"/","/download/"+n+"/") if isinstance(x,str) else [rw(y) for y in x] if isinstance(x,list) else {k:rw(y) for k,y in x.items()} if isinstance(x,dict) else x; d=rw(d); d["version"]=v if isinstance(d,dict) and "version" in d else d.get("version") if isinstance(d,dict) else v; open(p,"w").write(json.dumps(d,indent=2)+"\\n")' "${tmp}/${manifest}" "${CANDIDATE_TAG}" "${stable_tag}" "${version}"
             fi
           done
 
