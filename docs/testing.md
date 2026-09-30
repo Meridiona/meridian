@@ -101,15 +101,16 @@ implementations, and CI runs a dedicated `rust-windows` job (clippy `-D warnings
 
 The source-level `tests/install/` suite is macOS/launchd-shaped, so Windows
 needs a separate installed-product check. `.github/workflows/windows-product-smoke.yml`
-now provides that check on a real GitHub-hosted Windows runner: it builds an NSIS
-package, installs it silently, launches the packaged tray, waits for backend staging,
-verifies Task Scheduler/Startup fallback registration, consumes `doctor --json`, runs
-the native uninstall cleanup, then runs the NSIS uninstaller and verifies cleanup.
+now provides that check on a real GitHub-hosted Windows runner. The manual workflow
+downloads the latest shipped `Meridian-x86_64-setup.exe` instead of recompiling the
+product, then installs it silently, launches the packaged tray, waits for backend
+staging, verifies Task Scheduler/Startup fallback registration, probes daemon health,
+runs the native uninstall cleanup, then runs the NSIS uninstaller and verifies cleanup.
 
-The workflow is **manual/non-blocking** for now (`workflow_dispatch`) so it does not
-add a release-sized Windows build to every PR while the CI architecture is being
-redesigned. Once proven stable, the same smoke harness should be called from the RC
-artifact workflow rather than rebuilt independently.
+The workflow is **manual/non-blocking** for now (`workflow_dispatch`). Using a
+prebuilt installer keeps this lifecycle check fast; when RC artifacts are introduced,
+the same smoke harness should consume the installer produced by that RC build rather
+than the latest stable release.
 
 **Daemon lifecycle** (`tray/src-tauri/src/commands/daemon_control.rs` — named pipe +
 Task Scheduler, where macOS uses a Unix socket + launchd):
