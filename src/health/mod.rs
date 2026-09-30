@@ -266,6 +266,62 @@ impl Report {
         out
     }
 
+    /// Strict health verdict for automation. Human-facing `doctor` treats
+    /// warnings as non-fatal; CI treats both warnings and criticals as a failed
+    /// product-health check so release smoke tests never silently accept
+    /// degraded state.
+    pub fn ci_healthy(&self) -> bool {
+        self.worst() < Severity::Warn
+    }
+
+    /// Stable JSON contract for installed-product automation.
+    ///
+    /// Keep this derived from the same `Report` as the human and porcelain
+    /// renderers so CI can never disagree with what an operator sees.
+    pub fn render_json(&self) -> String {
+        let (ok, info, warn, critical) = self.counts();
+        let status = match self.worst() {
+            Severity::Critical => "critical",
+            Severity::Warn => "warning",
+            _ => "healthy",
+        };
+        let checks: Vec<serde_json::Value> = self
+            .checks
+            .iter()
+            .map(|c| {
+                let severity = match c.severity {
+                    Severity::Ok => "ok",
+                    Severity::Info => "info",
+                    Severity::Warn => "warn",
+                    Severity::Critical => "critical",
+                };
+                serde_json::json!({
+                    "group": c.group,
+                    "layer": c.layer,
+                    "name": c.name,
+                    "status": severity,
+                    "detail": c.detail,
+                    "remedy": c.remedy,
+                })
+            })
+            .collect();
+
+        serde_json::to_string_pretty(&serde_json::json!({
+            "schema_version": 1,
+            "status": status,
+            "ci_healthy": self.ci_healthy(),
+            "counts": {
+                "ok": ok,
+                "info": info,
+                "warn": warn,
+                "critical": critical,
+            },
+            "checks": checks,
+        }))
+        .expect("serializing health report JSON cannot fail")
+            + "\n"
+    }
+
     /// Machine-readable output for the `meridian` CLI wrapper to ingest and fold
     /// into its by-daemon table. One TSV line per check:
     /// `status<TAB>group<TAB>name<TAB>detail<TAB>remedy`.
@@ -410,6 +466,30 @@ mod tests {
         assert_eq!(cols[0], "ok"); // status
         assert_eq!(cols[1], "capture"); // group
         assert_eq!(cols[2], "capture.frames"); // name (full, not stripped)
+    }
+
+    #[test]
+    fn json_contract_is_structured_and_ci_is_strict() {
+        let r = sample();
+        let v: serde_json::Value = serde_json::from_str(&r.render_json()).unwrap();
+        assert_eq!(v["schema_version"], 1);
+        assert_eq!(v["status"], "critical");
+        assert_eq!(v["ci_healthy"], false);
+        assert_eq!(v["counts"]["warn"], 1);
+        assert_eq!(v["counts"]["critical"], 1);
+        assert_eq!(v["checks"][0]["group"], "capture");
+        assert_eq!(v["checks"][0]["status"], "ok");
+        assert!(!r.ci_healthy());
+
+        let healthy = Report::new(vec![
+            Check::ok("db", "L1", "open").in_group("system"),
+            Check::info("note", "L1", "informational").in_group("system"),
+        ]);
+        assert!(healthy.ci_healthy());
+        assert_eq!(
+            serde_json::from_str::<serde_json::Value>(&healthy.render_json()).unwrap()["status"],
+            "healthy"
+        );
     }
 
     #[test]
