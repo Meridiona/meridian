@@ -1,0 +1,89 @@
+name: Dependency advisories
+
+# Fails when a dependency we actually build has a known RustSec advisory that is not
+# triaged in deny.toml. Dependabot scans manifests and cannot tell a crate that is
+# compiled from one that only sits in Cargo.lock (it reported glib and quinn-proto,
+# neither of which we build); cargo-deny checks the resolved tree.
+#
+# WHY THIS IS ITS OWN WORKFLOW AND NOT A JOB IN ci.yml
+# The result depends on the RustSec database, which changes without any commit here.
+# So it needs a schedule, and a schedule on ci.yml would re-run the whole compile
+# suite every night. It is also deliberately NOT a required status check: a new
+# advisory published overnight must not block an unrelated PR from merging. It shows
+# red on the PR, and the daily run keeps the signal fresh on the branches that matter.
+#
+# Only the advisories check runs. licenses/bans/sources are policy decisions that
+# deny.toml does not make yet.
+
+on:
+  pull_request:
+    branches: [pre-main]
+    paths:
+      - "Cargo.lock"
+      - "**/Cargo.toml"
+      - "deny.toml"
+      - ".github/workflows/cargo-deny.yml"
+  push:
+    branches: [main, pre-main]
+    paths:
+      - "Cargo.lock"
+      - "**/Cargo.toml"
+      - "deny.toml"
+  schedule:
+    - cron: "40 4 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: cargo-deny-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_NET_GIT_FETCH_WITH_CLI: "true"
+  CARGO_DENY_VERSION: "0.20.2"
+  # sha256 of cargo-deny-<version>-x86_64-unknown-linux-musl.tar.gz, taken from the
+  # GitHub release over HTTPS when this was written. Bump both together.
+  CARGO_DENY_SHA256: "9f12ed4c49936e09b48bf862b595cde2fe64fcbd9d74dfacac6131ca824c8d5f"
+
+jobs:
+  advisories:
+    name: cargo-deny advisories
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      # cargo-deny runs `cargo metadata`, which has to fetch the private
+      # screenpipe-fork git dependency. That is why this is not the Docker-based
+      # cargo-deny-action: a container cannot see this git rewrite.
+      - name: Authenticate git for the private screenpipe-fork dependency
+        env:
+          GH_TOKEN: ${{ secrets.GH_TOKEN }}
+        run: |
+          git config --global \
+            url."https://x-access-token:${GH_TOKEN}@github.com/Meridiona/screenpipe-fork".insteadOf \
+            "https://github.com/Meridiona/screenpipe-fork"
+
+      - name: Install Rust 1.93.1
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: "1.93.1"
+
+      - name: Install cargo-deny (pinned, checksum-verified)
+        run: |
+          set -euo pipefail
+          f="cargo-deny-${CARGO_DENY_VERSION}-x86_64-unknown-linux-musl"
+          curl --proto '=https' --tlsv1.2 -fsSL --retry 5 -o deny.tgz \
+            "https://github.com/EmbarkStudios/cargo-deny/releases/download/${CARGO_DENY_VERSION}/${f}.tar.gz"
+          echo "${CARGO_DENY_SHA256}  deny.tgz" | sha256sum -c -
+          tar xzf deny.tgz
+          mkdir -p "$HOME/.local/bin"
+          install -m 0755 "${f}/cargo-deny" "$HOME/.local/bin/cargo-deny"
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+
+      - name: Check advisories
+        run: cargo deny --workspace --all-features --locked check advisories

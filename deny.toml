@@ -1,0 +1,42 @@
+# cargo-deny policy. CI runs ONLY the advisories check (see .github/workflows/ci.yml,
+# job `cargo-deny`); licenses, bans and sources are deliberately not configured yet,
+# because turning them on is a separate policy decision, not a side effect of this file.
+#
+# HOW TO USE THIS FILE
+# A new advisory fails CI. Fix it first (`cargo update -p <crate>`). Only if the fix is
+# unavailable or the code path is unreachable, add it to `ignore` BELOW WITH A REASON THAT
+# NAMES WHY IT IS UNREACHABLE. An ignore without a reason is how a real vulnerability
+# gets waved through, so `reason` is not optional here. Re-read this list whenever a
+# dependency it names is upgraded: an ignore that no longer matches anything is dead
+# weight, and cargo-deny warns about it.
+#
+# Every entry was triaged against the resolved tree (`cargo tree -i <crate>`), not just
+# against the advisory text.
+
+[advisories]
+version = 2
+# The RustSec database is fetched fresh on each run, so a new advisory is caught
+# without any change to this repository.
+yanked = "warn"
+
+ignore = [
+    # ── sqlx 0.7: Postgres/MySQL binary-protocol bug, and a TLS stack that is never used ──
+    { id = "RUSTSEC-2024-0363", reason = "sqlx binary-protocol truncation affects the Postgres and MySQL drivers. Meridian uses SQLite only, so the code path is never reached. Upgrading sqlx 0.7 to 0.8 is a large migration tracked separately." },
+    { id = "RUSTSEC-2026-0098", reason = "rustls-webpki 0.101.7 is only reachable through sqlx-core 0.7's rustls 0.21. sqlx talks to a local SQLite file, so this TLS stack never performs a handshake. Goes away with the sqlx 0.8 upgrade." },
+    { id = "RUSTSEC-2026-0099", reason = "Same as RUSTSEC-2026-0098: rustls-webpki 0.101.7 via sqlx-core 0.7, TLS never used with SQLite." },
+    { id = "RUSTSEC-2026-0104", reason = "Same as RUSTSEC-2026-0098: rustls-webpki 0.101.7 via sqlx-core 0.7, TLS never used with SQLite. The rustls that carries real network traffic is 0.23 with rustls-webpki 0.103, which is patched." },
+    { id = "RUSTSEC-2025-0134", reason = "rustls-pemfile 1.0.4 is only pulled in by sqlx-core 0.7 (unused TLS path). Goes away with the sqlx 0.8 upgrade." },
+
+    # ── quick-xml: only ever parses files the OS or Tauri itself generated ──
+    { id = "RUSTSEC-2026-0194", reason = "quick-xml (0.30, 0.37, 0.39) parses only trusted local files: the Windows toast XML that tauri-winrt-notification builds, and Apple plists that tauri reads. No attacker-controlled XML reaches it. Fix needs 0.41, a breaking bump owned by tauri and its plugins." },
+    { id = "RUSTSEC-2026-0195", reason = "Same as RUSTSEC-2026-0194: quick-xml only parses trusted, locally generated XML and plists." },
+
+    # ── unmaintained crates: no fixed version exists, and none is reachable input ──
+    { id = "RUSTSEC-2024-0436", reason = "paste is an unmaintained proc-macro used at compile time by candle's gemm. No runtime code. No replacement offered upstream." },
+    { id = "RUSTSEC-2024-0370", reason = "proc-macro-error is an unmaintained compile-time macro pulled in only by glib-macros (Linux GTK, not built on macOS or Windows)." },
+    { id = "RUSTSEC-2025-0081", reason = "unic-* crates are unmaintained compile-time Unicode tables (via unic-ucd-ident). No runtime input, no vulnerability, just no further releases." },
+    { id = "RUSTSEC-2025-0075", reason = "unic-char-range: unmaintained compile-time Unicode table crate, same as RUSTSEC-2025-0081." },
+    { id = "RUSTSEC-2025-0080", reason = "unic-common: unmaintained compile-time Unicode table crate, same as RUSTSEC-2025-0081." },
+    { id = "RUSTSEC-2025-0100", reason = "unic-ucd-ident: unmaintained compile-time Unicode table crate, same as RUSTSEC-2025-0081." },
+    { id = "RUSTSEC-2025-0098", reason = "unic-ucd-version: unmaintained compile-time Unicode table crate, same as RUSTSEC-2025-0081." },
+]
