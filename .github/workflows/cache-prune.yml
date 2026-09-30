@@ -11,7 +11,7 @@ name: Cache prune
 # It existed because release-build.yml was triggered by a TAG, and GitHub scopes
 # the Actions cache by `github.ref` with no workaround for tags: "tags only have
 # access to caches created in default branch". A tag build could not read
-# pre-main's cache, and every release cut a new tag, so nothing it saved was
+# the former integration branch's cache, and every release cut a new tag, so nothing it saved was
 # ever restorable.
 #
 # The warm workflow paid for that with a 25-minute compile it threw away, and
@@ -46,7 +46,7 @@ on:
   # promptly rather than sitting until the next night, and nightly as a backstop
   # for quiet stretches. 04:15 UTC.
   push:
-    branches: [main, pre-main]
+    branches: [main]
   schedule:
     - cron: "15 4 * * *"
   workflow_dispatch:
@@ -76,15 +76,13 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          # prefix|ref pairs. Release caches live on main (this workflow's own
-          # target); ci.yml's caches save on pre-main (see ci.yml's rust/
-          # rust-windows jobs' save-if) — a different ref, so each pair is
-          # queried separately rather than assuming one ref for everything.
+          # prefix|ref pairs. Release and post-merge CI caches now all live on
+          # main, so every retained prefix is pruned in the same ref scope.
           pairs=(
             "v0-rust-macos-release-aarch64-apple-darwin|refs/heads/main"
             "v0-rust-windows-release-x86_64-pc-windows-msvc|refs/heads/main"
-            "v0-rust-ci-macos-silicon|refs/heads/pre-main"
-            "v0-rust-ci-windows|refs/heads/pre-main"
+            "v0-rust-ci-macos-silicon|refs/heads/main"
+            "v0-rust-ci-windows|refs/heads/main"
           )
           # Counts so a SYSTEMATIC failure is loud. Every pair failing used to
           # look identical to a quiet, healthy run: see the `--jq` note below.
@@ -214,7 +212,7 @@ jobs:
           # the pool healthy, and failing it would page someone about a
           # condition it has already done everything it can about.
           if [ "${used}" -gt 8589934592 ]; then
-            echo "::warning::Actions cache pool is $((used / 1048576)) MiB of 10240 MiB. LRU eviction can drop the release tarballs, which costs a full cold release build. Biggest remaining lever: merge pre-main into main so release builds stop running the old sccache-enabled workflow."
+            echo "::warning::Actions cache pool is $((used / 1048576)) MiB of 10240 MiB. LRU eviction can drop the release tarballs, which costs a full cold release build."
           fi
 
       - name: Reap orphaned sccache objects

@@ -15,8 +15,8 @@ promotion pipeline:
   and publishes that exact tag.
 
 **Branch pushes never release.** Merging code and promoting a release are
-separate operations. Stable promotion is dispatched from `main`; staging
-promotion is dispatched from `pre-main`.
+separate operations. RC and stable promotion are both dispatched explicitly
+from `main`.
 
 ## Components & Version Files
 
@@ -45,23 +45,19 @@ manifest, verifies required assets, and publishes the draft. A later merge to
 tag-pinned.
 
 ### Release candidate (`main`)
-Config: `.releaserc.staging.json` (copied over `.releaserc.json` at CI
-runtime — never the committed file). The tray builds with the
-`tray/src-tauri/tauri.staging.conf.json` overlay (different updater endpoint)
-and cuts a prerelease version `X.Y.Z-rc.N`. No RC version-bump commit is written back to `main`. `publishCmd` runs
-`scripts/mirror-staging-release.sh <ver>`, which mirrors `latest.json` (and
-the DMG) onto a fixed, rolling `updater-staging` GitHub prerelease tag so it
-never leaks into production's "latest" pointer.
+Config: `.releaserc.staging.json` (historical filename; it is now the RC
+semantic-release config). RC promotion cuts `vX.Y.Z-rc.N` from the current
+`main` commit without writing a version-bump commit back to the branch.
 
-**Staging has NO `prepareCmd`** — unlike production, its config is a publisher
-only. `release-staging.yml` builds the two macOS arches on separate runners
-concurrently (`tauri build --no-bundle`), lipos them, then runs
-bundle/notarize/package/verify as explicit workflow steps *before* invoking
-semantic-release. Everything `prepareCmd` would have done is already on disk
-by then. This is what took a staging release from ~43m to ~29m; adding a
-`prepareCmd` back would recompile from scratch and undo it. The tradeoff is
-that the version gets computed twice (once to stamp the binaries, once to
-tag), so the workflow asserts the two agree before publishing.
+`release-build.yml` builds the immutable RC tag, signs/notarizes macOS and
+packages Windows, and keeps the GitHub Release **draft** while the exact DMG and
+NSIS installer are exercised. Successful product smokes attach
+`smoke-macos.ok` and `smoke-windows.ok`; only after both proofs exist does
+the workflow publish the prerelease and update the rolling staging updater
+channel.
+
+Stable promotion must name that proven RC tag and requires it to still resolve
+to current `main` HEAD. If `main` moved after the RC, cut and prove a new RC.
 
 ### 1. Check Current Versions
 ```bash
