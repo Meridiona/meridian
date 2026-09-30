@@ -1354,7 +1354,7 @@ jobs:
         # the versioned release, so the manifest has to be mirrored there.
         run: bash scripts/mirror-updater-channel.sh "$VERSION" "$CHANNEL"
 
-      - name: Dispatch exact-artifact Windows smoke for RC
+      - name: Dispatch exact-artifact product smokes for RC
         if: ${{ needs.prepare.outputs.prerelease == 'true' }}
         env:
           GH_TOKEN: ${{ secrets.GH_TOKEN || secrets.GITHUB_TOKEN }}
@@ -1362,4 +1362,5 @@ jobs:
         run: |
           set -euo pipefail
           gh workflow run windows-product-smoke.yml --ref main -f tag="${TAG}"
-          echo "→ dispatched Windows installed-product smoke for ${TAG}"
+          gh workflow run macos-product-smoke.yml --ref main -f tag="${TAG}"
+          echo "→ dispatched Windows + macOS installed-artifact smoke for ${TAG}"
