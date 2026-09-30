@@ -29,9 +29,10 @@ For anything beyond a small fix, **open an issue first**.
 | `tests/` | Rust integration tests |
 
 Start with **[ARCHITECTURE.md](ARCHITECTURE.md)** for how these fit together and why.
-**[CLAUDE.md](CLAUDE.md)** is the deeper reference - conventions, per-task recipes, and
-the failure modes that have already bitten someone. It's written for AI coding agents,
-so it reads as a list of directives, but it's the most complete document in the repo.
+For branches, pull-request checks, post-merge validation, caches, RCs, stable promotion,
+and product smokes, read **[docs/ci-cd.md](docs/ci-cd.md)**.
+**[CLAUDE.md](CLAUDE.md)** is the deeper coding-agent reference - conventions,
+per-task recipes, and failure modes that have already bitten someone.
 
 ---
 
