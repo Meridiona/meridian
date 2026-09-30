@@ -172,7 +172,7 @@ jobs:
             bad=()
             for path in "${changed[@]}"; do
               case "${path}" in
-                .github/workflows/release-build.yml|                .github/workflows/release-prepare.yml|                .github/workflows/windows-product-smoke.yml|                .github/workflows/macos-product-smoke.yml|                scripts/ci/windows-install-smoke.ps1|                scripts/mirror-updater-channel.sh)
+                .github/workflows/release-build.yml|                .github/workflows/release-prepare.yml|                .github/workflows/windows-product-smoke.yml|                .github/workflows/macos-product-smoke.yml|                scripts/ci/windows-install-smoke.ps1 )
                   ;;
                 *)
                   bad+=("${path}")
