@@ -30,7 +30,11 @@ jobs:
     steps:
       - uses: actions/checkout@v7
         with:
-          ref: ${{ inputs.tag }}
+          # The installer under test is selected by inputs.tag below. Keep the
+          # smoke harness itself on the workflow's main-branch revision so a
+          # diagnostics/lifecycle fix can validate an already-built RC without
+          # rebuilding that immutable tag.
+          ref: ${{ github.sha }}
           persist-credentials: false
 
       - name: Download exact tagged Windows installer

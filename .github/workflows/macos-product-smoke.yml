@@ -30,7 +30,10 @@ jobs:
     steps:
       - uses: actions/checkout@v7
         with:
-          ref: ${{ inputs.tag }}
+          # Artifact identity comes from inputs.tag. Keep the smoke harness on
+          # the current workflow revision so smoke fixes can validate an existing
+          # immutable RC without forcing a rebuild.
+          ref: ${{ github.sha }}
           persist-credentials: false
 
       - name: Download exact tagged DMG
@@ -69,24 +72,27 @@ jobs:
           spctl --assess --type execute --verbose=2 "${app}"
           xcrun stapler validate "${app}"
 
-          expected_daemon="${app}/Contents/Resources/backend/meridian"
-          if [ -x "${expected_daemon}" ]; then
-            daemon="${expected_daemon}"
-          else
+          bundled_daemon="${app}/Contents/Resources/backend/meridian"
+          if [ ! -f "${bundled_daemon}" ]; then
             echo "::group::Meridian.app resource tree"
             find "${app}/Contents/Resources" -maxdepth 5 -print | sort
             echo "::endgroup::"
-
-            candidates="$(find "${app}/Contents/Resources" -maxdepth 5 -type f -name meridian -perm -111 -print)"
-            count="$(printf '%s\n' "${candidates}" | sed '/^$/d' | wc -l | tr -d ' ')"
-            if [ "${count}" -ne 1 ]; then
-              echo "::error::Expected executable daemon at ${expected_daemon}; found ${count} executable 'meridian' candidates"
-              exit 1
-            fi
-            daemon="${candidates}"
-            echo "::warning::daemon was bundled at unexpected path: ${daemon}"
+            echo "::error::Bundled daemon missing at ${bundled_daemon}"
+            exit 1
           fi
-          echo "Daemon under test: ${daemon}"
+
+          # The product does not execute the resource in-place. On first launch
+          # backend_install::stage_binary copies it to ~/.meridian/bin and
+          # explicitly chmods the staged copy 0755 before launch. Mirror that
+          # lifecycle here so this smoke verifies the shipped bytes plus the
+          # execution contract rather than requiring Tauri's resource entry
+          # itself to retain an executable mode bit.
+          staged_daemon="${RUNNER_TEMP}/meridian-staged"
+          cp "${bundled_daemon}" "${staged_daemon}"
+          chmod 0755 "${staged_daemon}"
+          daemon="${staged_daemon}"
+          echo "Bundled daemon: ${bundled_daemon}"
+          echo "Staged daemon under test: ${daemon}"
 
           # Exercise the shipped daemon binary without requiring a configured
           # runner machine. JSON parsing is the contract here; a fresh CI host
