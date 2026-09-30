@@ -55,21 +55,55 @@ Assert-True ($daemonTaskExists -or $fallbackExists) "Neither the Meridian Daemon
 Write-Step "Waiting for daemon process"
 Wait-Until { $null -ne (Get-Process -Name 'meridian' -ErrorAction SilentlyContinue) } $StartupTimeoutSeconds "Meridian daemon process"
 
-Write-Step "Running machine-readable health probe"
+Write-Step "Running health probe"
 $healthText = & $daemonExe doctor --json 2>&1
 $doctorExit = $LASTEXITCODE
-Assert-True ($doctorExit -in 0,1) "doctor --json returned unexpected exit code $doctorExit"
-$health = ($healthText | Out-String) | ConvertFrom-Json
-Assert-True ($health.schema_version -eq 1) "doctor JSON schema_version must be 1"
-Assert-True ($null -ne $health.counts) "doctor JSON is missing counts"
-Assert-True ($health.checks.Count -gt 0) "doctor JSON contains no checks"
+$health = $null
+try {
+    $health = ($healthText | Out-String) | ConvertFrom-Json
+} catch {
+    $health = $null
+}
 
-# A clean CI machine has no tracker/AI configuration, so optional integration
-# warnings are not packaging failures. Assert the installer-owned daemon layer.
-$daemonChecks = @($health.checks | Where-Object { $_.group -eq 'meridian daemon' })
-Assert-True ($daemonChecks.Count -gt 0) "doctor JSON contains no meridian daemon checks"
-$daemonCritical = @($daemonChecks | Where-Object { $_.status -eq 'critical' })
-Assert-True ($daemonCritical.Count -eq 0) ("daemon health contains critical checks: " + ($daemonCritical | ConvertTo-Json -Compress))
+if ($null -ne $health -and $health.schema_version -eq 1) {
+    Write-Host "Using doctor JSON contract"
+    Assert-True ($doctorExit -in 0,1) "doctor --json returned unexpected exit code $doctorExit"
+    Assert-True ($null -ne $health.counts) "doctor JSON is missing counts"
+    Assert-True ($health.checks.Count -gt 0) "doctor JSON contains no checks"
+
+    # A clean CI machine has no tracker/AI configuration, so optional
+    # integration warnings are not packaging failures. Assert the
+    # installer-owned daemon layer.
+    $daemonChecks = @($health.checks | Where-Object { $_.group -eq 'meridian daemon' })
+    Assert-True ($daemonChecks.Count -gt 0) "doctor JSON contains no meridian daemon checks"
+    $daemonCritical = @($daemonChecks | Where-Object { $_.status -eq 'critical' })
+    Assert-True ($daemonCritical.Count -eq 0) ("daemon health contains critical checks: " + ($daemonCritical | ConvertTo-Json -Compress))
+} else {
+    # Stable releases published before the JSON contract still expose the
+    # five-column porcelain format. This path lets the fast workflow validate
+    # the actual Windows install lifecycle using the latest shipped installer.
+    Write-Host "doctor --json unavailable; falling back to porcelain"
+    $porcelain = & $daemonExe doctor --porcelain 2>&1
+    $porcelainExit = $LASTEXITCODE
+    Assert-True ($porcelainExit -in 0,1) "doctor --porcelain returned unexpected exit code $porcelainExit"
+
+    $rows = @($porcelain | ForEach-Object {
+        $cols = $_ -split "`t", 5
+        if ($cols.Count -eq 5) {
+            [pscustomobject]@{
+                status = $cols[0]
+                group = $cols[1]
+                name = $cols[2]
+                detail = $cols[3]
+                remedy = $cols[4]
+            }
+        }
+    })
+    $daemonRows = @($rows | Where-Object { $_.group -eq 'meridian daemon' })
+    Assert-True ($daemonRows.Count -gt 0) "doctor porcelain contains no meridian daemon checks"
+    $daemonFailures = @($daemonRows | Where-Object { $_.status -eq 'fail' })
+    Assert-True ($daemonFailures.Count -eq 0) ("daemon health contains failing checks: " + ($daemonFailures | ConvertTo-Json -Compress))
+}
 
 Write-Step "Verifying Meridian data directory"
 Assert-True (Test-Path $meridianDir) "~/.meridian was not created"
