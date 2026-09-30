@@ -720,7 +720,6 @@ jobs:
           # so a repo variable, not a secret. Unset → the tray never initialises
           # Sentry, exactly like a source build.
           MERIDIAN_SENTRY_DSN: ${{ vars.MERIDIAN_SENTRY_DSN }}
-          CHANNEL: ${{ needs.prepare.outputs.channel }}
         # ONE cargo invocation for both binaries — see the header comment
         # "WHY THE BUILD IS ONE CARGO INVOCATION, NOT TWO" for the full story
         # (why the earlier attempt through the Tauri CLI failed, why invoking
