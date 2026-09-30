@@ -18,10 +18,8 @@ name: Release (build & publish)
 #
 #     v1.75.0            -> stable   (browser-downloaded DMG; notarized;
 #                                     served from `releases/latest`)
-#     v1.72.0-staging.6  -> staging  (notarized too — a directly-downloaded
-#                                     staging DMG is quarantined exactly like
-#                                     a stable one, so it needs a ticket just
-#                                     the same; served from `updater-staging`)
+#     v1.92.2-rc.1      -> staging  (RC tag; same signing/notarization path,
+#                                     but served from `updater-staging`)
 #
 # Both channels are now notarized identically — the one remaining difference
 # keyed off `prepare`'s `channel` output is the staging tauri config (updater
@@ -365,12 +363,10 @@ jobs:
         # so the result is an update loop (install, report old version, see the
         # same update again).
         #
-        # On the STAGING channel the tag legitimately points at a tree where the
-        # version was never committed: .releaserc.staging.json carries no
-        # @semantic-release/git plugin, so the bump lives only in the release
-        # runner's working tree. There is therefore nothing to compare against —
-        # the build stamps the version itself from the tag. Only stable, whose
-        # config DOES commit the bump, can be checked.
+        # RC tags point at the exact main commit without a committed version bump,
+        # so there is nothing meaningful to compare against in the manifest tree.
+        # The build stamps the RC version from the immutable tag. Only stable,
+        # whose semantic-release flow commits the bump, can be checked here.
         run: |
           set -euo pipefail
           if [ "${CHANNEL}" != "stable" ]; then
