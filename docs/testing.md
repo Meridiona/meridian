@@ -179,9 +179,9 @@ feature PR -> Fast PR gate -> merge
 ```
 
 Branch updates are development state, not release events. `release-prepare.yml`
-is manual-only: stable promotion is dispatched from `main`, staging promotion
-from `pre-main`. That separation is what allows `main` to become the normal
-integration trunk without every merge attempting a production release.
+is manual-only: RC and stable promotion are both dispatched from `main`.
+An RC stays draft until the exact macOS and Windows artifacts pass their product
+smokes; stable promotion must name that proven RC and refuses if `main` moved.
 
 During the migration, the existing exhaustive `CI` workflow may still run on
 PRs because repository branch-protection settings must be switched from the old
