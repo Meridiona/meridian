@@ -1,182 +1,211 @@
 ---
 name: release
-description: "Release the Meridian monorepo. Bumps versions, builds/signs/notarizes the DMG, and publishes via semantic-release."
+description: "Operate Meridian's explicit RC-to-stable release promotion pipeline."
 allowed-tools: Bash, Read, Edit, Grep, Write
 ---
 
 # Meridian Release Skill
 
-Meridian uses **semantic-release** (not release-please) with an explicit
-promotion pipeline:
+Read `docs/ci-cd.md` first. It is the canonical description of branch, CI,
+cache, smoke-test, and release architecture.
 
-- `.github/workflows/release-prepare.yml` decides the version and creates an
-  immutable tag.
-- `.github/workflows/release-build.yml` builds, signs, notarizes, verifies,
-  and publishes that exact tag.
+Meridian uses semantic-release for **version analysis**, but production release
+publication is an explicit two-stage promotion pipeline:
 
-**Branch pushes never release.** Merging code and promoting a release are
-separate operations. RC and stable promotion are both dispatched explicitly
-from `main`.
+- `.github/workflows/release-prepare.yml` decides/validates the release and
+  creates tags/releases.
+- `.github/workflows/release-build.yml` builds, signs, notarizes, packages,
+  smoke-tests, and publishes an **RC**.
+- Stable promotion reuses the exact proven RC artifacts and does not dispatch a
+  product build.
 
-## Components & Version Files
+A push or merge to `main` never publishes a release.
 
-Bumped in lockstep by `scripts/set-version.sh <version>`:
+## Release invariants
 
-| Component | Version File |
-|-----------|--------------|
-| Rust daemon | `Cargo.toml` (`version = "X.Y.Z"`), `Cargo.lock` |
+- `main` is the only development trunk.
+- RCs are immutable candidate tags: `vX.Y.Z-rc.N`.
+- RC binaries are built with final application version `X.Y.Z`; there is no
+  compile-time staging channel.
+- macOS and Windows exact-artifact smokes must pass before an RC is published.
+- A proven RC carries `smoke-macos.ok` and `smoke-windows.ok`.
+- Stable promotion must name a proven RC.
+- Stable promotion creates `vX.Y.Z` at the RC's source commit.
+- Stable product artifacts must be byte-for-byte identical to the RC.
+- Only updater/release JSON metadata is expected to change during stable
+  promotion.
+- Never reintroduce a rolling staging updater tag or a stable rebuild.
+
+## Version files
+
+During an RC product build, `scripts/set-version.sh <X.Y.Z>` updates the
+checkout used for compilation so all shipped components agree on the final
+application version:
+
+| Component | Version file |
+|---|---|
+| Rust daemon/workspace | `Cargo.toml`, `Cargo.lock` |
 | UI | `ui/package.json` |
 | MCP server | `packages/meridian-mcp/package.json` |
-| Tray app | `tray/src-tauri/tauri.conf.json` |
+| Tray | `tray/src-tauri/tauri.conf.json` |
 
-## Release Workflow
+These build-worktree changes are not a separate release-branch model.
 
-### Production (`main`)
-Config: `.releaserc.json`. Conventional commits determine the next stable
-version. `release-prepare.yml` runs semantic-release only when a human
-explicitly dispatches `channel=stable` from `main`. semantic-release updates
-the version/changelog, creates the draft GitHub Release, commits the stable
-version bump back to `main`, and pushes the immutable `vX.Y.Z` tag.
+## Cut an RC
 
-The separate `release-build.yml` then builds that tag once on macOS Apple
-Silicon and Windows x86_64, signs/notarizes/packages it, composes the updater
-manifest, verifies required assets, and publishes the draft. A later merge to
-`main` cannot change the source of an in-flight release because the build is
-tag-pinned.
+First make sure the intended source is on `main` and post-merge validation is
+healthy.
 
-### Release candidate (`main`)
-RC promotion uses the committed stable semantic-release config in **dry-run
-analysis mode** to determine the next stable base version, then
-`release-prepare.yml` explicitly creates `vX.Y.Z-rc.N` from the current
-`main` commit. RC creation does not write a version-bump commit back to the
-branch.
-
-`release-build.yml` builds the immutable RC tag, signs/notarizes macOS and
-packages Windows, and keeps the GitHub Release **draft** while the exact DMG and
-NSIS installer are exercised. Successful product smokes attach
-`smoke-macos.ok` and `smoke-windows.ok`; only after both proofs exist does
-the workflow publish the prerelease and update the rolling staging updater
-channel.
-
-Stable promotion must name that proven RC tag and requires it to still resolve
-to current `main` HEAD. If `main` moved after the RC, cut and prove a new RC.
-
-### 1. Check Current Versions
-```bash
-grep '^version' Cargo.toml | head -1
-grep '"version"' packages/meridian-mcp/package.json | head -1
-grep '"version"' tray/src-tauri/tauri.conf.json | head -1
-```
-
-### 2. Verify Build & Tests Pass Locally First
-```bash
-cargo build --release
-cargo test
-cargo clippy -- -D warnings
-cd packages/meridian-mcp && npm run build && cd ../..
-```
-
-### 3. Trigger a Release
-
-A merge does **not** publish anything.
-
-Stable promotion requires the exact RC tag that passed both product smokes and
-still points at the current `main` commit:
+Trigger:
 
 ```bash
-gh workflow run release-prepare.yml --ref main -f channel=stable -f candidate_tag=vX.Y.Z-rc.N
+gh workflow run release-prepare.yml \
+  --repo Meridiona/meridian \
+  --ref main \
+  -f channel=rc
 ```
 
-RC promotion:
+`release-prepare.yml` runs semantic-release in analysis/dry-run mode to derive
+the next stable base version, chooses the next RC ordinal, creates
+`vX.Y.Z-rc.N`, and dispatches `release-build.yml`.
+
+The build workflow is dispatched on `main` for default-branch cache access,
+but checks out the immutable tag supplied as input. Do not change this cache/tag
+split casually.
+
+The RC workflow:
+
+1. validates the candidate tag and draft release;
+2. builds macOS aarch64 and Windows x86_64 in parallel;
+3. sets the product version to final `X.Y.Z`;
+4. signs updater payloads;
+5. signs/notarizes macOS;
+6. packages Windows;
+7. composes updater manifests;
+8. uploads candidate assets;
+9. runs exact-artifact macOS and Windows smokes;
+10. uploads proof assets;
+11. publishes the RC only after both proofs exist.
+
+## Promote a proven RC to stable
+
+Trigger:
 
 ```bash
-gh workflow run release-prepare.yml --ref main -f channel=rc
+gh workflow run release-prepare.yml \
+  --repo Meridiona/meridian \
+  --ref main \
+  -f channel=stable \
+  -f candidate_tag=vX.Y.Z-rc.N
 ```
 
-The release build stays **draft** while the exact macOS DMG and Windows NSIS
-installer are exercised. Each successful smoke uploads a proof asset
-(`smoke-macos.ok`, `smoke-windows.ok`) to that release. Only then does the
-workflow publish the release and update the rolling updater channel.
+Stable promotion is intentionally fast and build-free. It validates the
+candidate and allowed source drift, creates the stable tag/release at the RC
+source commit, downloads the RC assets, rewrites updater-manifest download URLs
+from the RC tag to the stable tag, uploads the unchanged binary artifacts plus
+rewritten manifests, and publishes stable.
 
-Dry-run either channel by adding `-f dry_run=true`.
+Do not run `release-build.yml` for stable.
 
-The workflow rejects mismatched channel/ref pairs. Stable tags are created by
-semantic-release; RC tags are created explicitly by `release-prepare.yml`
-after semantic-release version analysis. In both cases, `release-prepare.yml`
-dispatches `release-build.yml` against `main` for cache scope while the
-build itself checks out the immutable tag. The exact tagged source is therefore the exact source that
-gets signed and published.
+## Verify artifact identity
 
-### 4. Monitor Build Status
+For a promoted stable release, compare the GitHub asset SHA-256 digests of:
+
+- `Meridian-aarch64.app.tar.gz`
+- `Meridian-aarch64.app.tar.gz.sig`
+- `Meridian-aarch64.dmg`
+- `Meridian-x86_64-setup.exe`
+- `Meridian-x86_64-setup.exe.sig`
+- `smoke-macos.ok`
+- `smoke-windows.ok`
+
+They must match the candidate RC. `latest.json` and per-platform updater JSON
+files are allowed to differ because stable promotion rewrites tag URLs and
+stable metadata.
+
+## Monitor release runs
 
 ```bash
-gh run list --workflow=release-prepare.yml --limit=5
-gh run list --workflow=release-build.yml --limit=5
-gh run view <RUN_ID> --json status,conclusion,jobs
-gh run view <RUN_ID> --log-failed 2>&1 | tail -100
+gh run list --repo Meridiona/meridian --workflow=release-prepare.yml --limit=10
+gh run list --repo Meridiona/meridian --workflow=release-build.yml --limit=10
+
+gh run view <RUN_ID> --repo Meridiona/meridian --json status,conclusion,jobs
+gh run view <RUN_ID> --repo Meridiona/meridian --log-failed
 ```
 
-## Auto-Update
-
-Client-side update-check/apply logic lives in `tray/src-tauri/src/update.rs`
-(`tauri-plugin-updater`). Production is consent-based (in-app banner / tray
-menu "Check for Updates…"). A force-update floor exists
-(`enforce_minimum_version`, checked 30s after launch then every 6h) sourced
-from `tray/minimum-version` (plain `X.Y.Z`) — if that file is absent or
-empty, no release carries a `Minimum-Version:` marker and every update stays
-consent-based. Only touch `tray/minimum-version` to force-migrate users off a
-broken old version; empty/remove it afterward to go back to consent-based.
-
-## Required GitHub Secrets
-
-Signing/notarization needs: `APPLE_SIGNING_IDENTITY`, `APPLE_API_KEY`,
-`APPLE_API_ISSUER`, `APPLE_API_KEY_CONTENT`, `APPLE_CERTIFICATE`,
-`APPLE_CERTIFICATE_PASSWORD`. Update-manifest signing needs
-`TAURI_SIGNING_PRIVATE_KEY` / `TAURI_SIGNING_PRIVATE_KEY_PASSWORD`. Missing
-Apple secrets degrade gracefully to ad-hoc signing (which
-`verify-release-bundle.sh` then hard-fails on); missing Tauri signing keys
-make `package-updater.sh` skip `latest.json` generation (also caught by
-`verify-release-bundle.sh`).
-
-## Quick Reference
+Re-run only failed jobs when appropriate:
 
 ```bash
-# Check what changed since last release
-git log --oneline $(git describe --tags --abbrev=0)..HEAD
-
-# List recent releases
-gh release list --limit=5
-
-# Re-run failed jobs
-gh run rerun <RUN_ID> --failed
-
-# Cancel running build
-gh run cancel <RUN_ID>
-
-# Check configured release secrets
-gh secret list
+gh run rerun <RUN_ID> --repo Meridiona/meridian --failed
 ```
+
+## Auto-update
+
+Client update logic lives in `tray/src-tauri/src/update.rs`.
+
+Stable packaged apps read:
+
+`https://github.com/Meridiona/meridian/releases/latest/download/latest.json`
+
+There is no staging updater channel.
+
+`tray/minimum-version` is the emergency force-update floor. Empty/absent means
+normal consent-based updating. Set it only when older shipped versions must be
+forced forward; clear it again after the fleet has moved.
+
+## Product smokes
+
+Release qualification always tests uploaded artifacts, not a fresh rebuild.
+
+- macOS verifies the exact packaged signed application.
+- Windows installs the exact NSIS package, starts the product, validates daemon
+  lifecycle/health, and uninstalls it.
+- proof assets are part of the promotion contract.
+
+Manual product-smoke workflows may be used to re-check already published
+artifacts without rebuilding.
+
+## Required secrets
+
+Signing/notarization uses `APPLE_SIGNING_IDENTITY`, `APPLE_API_KEY`,
+`APPLE_API_ISSUER`, `APPLE_API_KEY_CONTENT`, `APPLE_CERTIFICATE`, and
+`APPLE_CERTIFICATE_PASSWORD`.
+
+Updater signing uses `TAURI_SIGNING_PRIVATE_KEY` and
+`TAURI_SIGNING_PRIVATE_KEY_PASSWORD`.
+
+OAuth/telemetry build secrets used by the product remain defined by the release
+workflow. Never print or copy secret values into release logs.
 
 ## Troubleshooting
 
-### Build Failed
+### RC build is unexpectedly cold
+
+Inspect the `Swatinem/rust-cache` restore output. The intended release cache
+families are documented in `docs/ci-cd.md`. Run the cache audit before
+inventing a new cache key:
+
 ```bash
-gh run view <RUN_ID> --log-failed 2>&1 | tail -100
+gh workflow run cache-audit.yml --repo Meridiona/meridian --ref main
 ```
 
-### SQLX Offline Mode
-If Rust build fails with sqlx errors:
-```bash
-SQLX_OFFLINE=true cargo build --release
-```
-`.cargo/config.toml` sets this automatically, but double-check it's present.
+### Stable promotion tries to build
 
-### MCP Build Failed
-```bash
-cd packages/meridian-mcp && npm install && npm run build
-```
+That is an architecture regression. Stable promotion must not dispatch
+`release-build.yml`.
 
-### Updater artifacts missing (`verify-release-bundle.sh` fails)
-Usually means `TAURI_SIGNING_PRIVATE_KEY`/`_PASSWORD` is wrong or unset —
-`tauri build` silently skips generating `.sig`/`latest.json` in that case
-instead of failing. Confirm the secrets with `gh secret list`.
+### Candidate rejected because source drift is unsafe
+
+Cut a new RC from current `main`. Only narrowly defined CI/release-control
+changes are allowed after an RC; product/source drift requires a new candidate.
+
+### Updater artifacts are missing
+
+Check updater-signing secrets and the packaging/verification steps in
+`release-build.yml`. Do not publish stable without a proven RC asset set.
+
+## Historical warning
+
+Ignore old references to `pre-main`, `release-staging.yml`, rolling
+`updater-staging`, automatic branch-push releases, or rebuilding stable.
+Those are retired designs.
