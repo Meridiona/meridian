@@ -260,8 +260,8 @@ pub const SPECS: &[Spec] = &[
     },
     Spec {
         name: "doctor",
-        flags: &["--dry-run", "--fix", "--porcelain"],
-        usage: "meridian doctor [--fix] [--dry-run] [--porcelain]",
+        flags: &["--ci", "--dry-run", "--fix", "--json", "--porcelain"],
+        usage: "meridian doctor [--fix] [--dry-run] [--porcelain|--json] [--ci]",
     },
     Spec {
         name: "uninstall",
