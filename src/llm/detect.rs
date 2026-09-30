@@ -1137,9 +1137,12 @@ const VERIFY_POLL_INTERVAL: Duration = Duration::from_secs(10);
 fn drain_lines(
     pipe: Option<impl tokio::io::AsyncRead + Unpin + Send + 'static>,
     stream: &'static str,
-) -> std::sync::Arc<std::sync::Mutex<String>> {
+) -> (
+    std::sync::Arc<std::sync::Mutex<String>>,
+    Option<tokio::task::JoinHandle<()>>,
+) {
     let seen = std::sync::Arc::new(std::sync::Mutex::new(String::new()));
-    if let Some(out) = pipe {
+    let task = pipe.map(|out| {
         let seen = seen.clone();
         tokio::spawn(async move {
             use tokio::io::{AsyncBufReadExt, BufReader};
@@ -1154,9 +1157,9 @@ fn drain_lines(
                 buf.push_str(&line);
                 buf.push('\n');
             }
-        });
-    }
-    seen
+        })
+    });
+    (seen, task)
 }
 
 /// The last `n` characters buffered by [`drain_lines`], char-safe - see [`tail`].
@@ -1277,8 +1280,8 @@ where
     // Both streams are drained live, not just via a final `wait_with_output` - see
     // `drain_lines`'s doc. stdout carries the verification URL / device code a stuck login
     // prints while it waits, which is exactly what the user needs to finish it by hand.
-    let stdout_buf = drain_lines(child.stdout.take(), "stdout");
-    let stderr_buf = drain_lines(child.stderr.take(), "stderr");
+    let (stdout_buf, mut stdout_drain) = drain_lines(child.stdout.take(), "stdout");
+    let (stderr_buf, mut stderr_drain) = drain_lines(child.stderr.take(), "stderr");
 
     enum Ended {
         Exited(std::process::ExitStatus),
@@ -1353,6 +1356,18 @@ where
             }
         }
         Ended::Exited(status) => {
+            // The process can exit before the background pipe readers get scheduled for
+            // their final read. Wait for EOF on both already-closed child pipes before
+            // inspecting the buffers; otherwise a fast failure can be reported as
+            // "no output" even though the CLI wrote a useful stderr line immediately
+            // before exiting. This is especially easy to reproduce on busy Linux CI.
+            if let Some(task) = stdout_drain.take() {
+                let _ = task.await;
+            }
+            if let Some(task) = stderr_drain.take() {
+                let _ = task.await;
+            }
+
             // stderr first (that is where the reason goes), but fall back to what the CLI
             // printed on stdout - on some failures the URL/device code is the only useful
             // thing said.
