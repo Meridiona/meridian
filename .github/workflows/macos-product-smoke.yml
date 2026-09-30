@@ -30,7 +30,10 @@ jobs:
     steps:
       - uses: actions/checkout@v7
         with:
-          ref: ${{ inputs.tag }}
+          # Artifact identity comes from inputs.tag. Keep the smoke harness on
+          # the current workflow revision so smoke fixes can validate an existing
+          # immutable RC without forcing a rebuild.
+          ref: ${{ github.sha }}
           persist-credentials: false
 
       - name: Download exact tagged DMG
