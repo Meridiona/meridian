@@ -2,9 +2,9 @@ name: Fast PR
 
 on:
   pull_request:
-    branches: [pre-main]
+    branches: [pre-main, main]
   push:
-    branches: [pre-main]
+    branches: [pre-main, main]
 
 permissions:
   contents: read
@@ -320,28 +320,44 @@ jobs:
         with:
           persist-credentials: false
 
-      - name: Keep release build dispatch-only
+      - name: Keep release promotion explicit and immutable
         run: |
           python3 - <<'PY'
           import pathlib, sys, yaml
-          build = yaml.safe_load(pathlib.Path(".github/workflows/release-build.yml").read_text())
-          src = pathlib.Path(".github/workflows/release-build.yml").read_text()
-          prep = pathlib.Path(".github/workflows/release-prepare.yml").read_text()
-          triggers = build.get("on", build.get(True)) or {}
+
+          build_src = pathlib.Path(".github/workflows/release-build.yml").read_text()
+          prep_src = pathlib.Path(".github/workflows/release-prepare.yml").read_text()
+          build = yaml.safe_load(build_src)
+          prep = yaml.safe_load(prep_src)
+
+          build_triggers = build.get("on", build.get(True)) or {}
+          prep_triggers = prep.get("on", prep.get(True)) or {}
           fail = []
-          if "push" in triggers:
+
+          if "push" in build_triggers:
               fail.append("release-build.yml must remain workflow_dispatch-only")
-          dispatch = triggers.get("workflow_dispatch") or {}
-          if "tag" not in (dispatch.get("inputs") or {}):
-              fail.append("release-build.yml workflow_dispatch must keep its tag input")
-          if "refs/heads/main" not in src:
-              fail.append("release-build.yml must keep its main-ref guard")
-          if "--ref main" not in prep:
-              fail.append("release-prepare.yml must dispatch release-build against main")
+          build_dispatch = build_triggers.get("workflow_dispatch") or {}
+          if "tag" not in (build_dispatch.get("inputs") or {}):
+              fail.append("release-build.yml workflow_dispatch must keep its immutable tag input")
+          if "refs/heads/main" not in build_src:
+              fail.append("release-build.yml must keep its main-ref cache-scope guard")
+
+          if "push" in prep_triggers:
+              fail.append("release-prepare.yml must not release on branch push; promotion is explicit")
+          prep_dispatch = prep_triggers.get("workflow_dispatch") or {}
+          inputs = prep_dispatch.get("inputs") or {}
+          if "channel" not in inputs:
+              fail.append("release-prepare.yml must require an explicit promotion channel")
+          if 'expected="main"' not in prep_src or 'expected="pre-main"' not in prep_src:
+              fail.append("release-prepare.yml must guard stable→main and staging→pre-main")
+          if "--ref main" not in prep_src:
+              fail.append("release-prepare.yml must dispatch release-build against main cache scope")
+
           if fail:
               for message in fail:
                   print(f"::error::{message}")
               sys.exit(1)
+          print("OK - merge is not release; promotion is explicit and builds immutable tags.")
           PY
 
       - name: Keep screenpipe fork on audited MIT-based revision
