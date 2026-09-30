@@ -82,10 +82,11 @@ cd packages/meridian-mcp && npm run build && cd ../..
 
 A merge does **not** publish anything.
 
-Stable promotion:
+Stable promotion requires the exact RC tag that passed both product smokes and
+still points at the current `main` commit:
 
 ```bash
-gh workflow run release-prepare.yml --ref main -f channel=stable
+gh workflow run release-prepare.yml --ref main -f channel=stable -f candidate_tag=vX.Y.Z-rc.N
 ```
 
 RC promotion:
@@ -93,6 +94,11 @@ RC promotion:
 ```bash
 gh workflow run release-prepare.yml --ref main -f channel=rc
 ```
+
+The release build stays **draft** while the exact macOS DMG and Windows NSIS
+installer are exercised. Each successful smoke uploads a proof asset
+(`smoke-macos.ok`, `smoke-windows.ok`) to that release. Only then does the
+workflow publish the release and update the rolling updater channel.
 
 Dry-run either channel by adding `-f dry_run=true`.
 
