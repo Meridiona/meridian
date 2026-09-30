@@ -137,7 +137,11 @@ fn append_bundle_info<W: std::io::Write>(tar: &mut tar::Builder<W>) -> Result<()
          generated_unix_micros: {}\n",
         redact::local_host_pseudonym(),
         env!("CARGO_PKG_VERSION"),
-        option_env!("MERIDIAN_CHANNEL").unwrap_or("dev"),
+        if cfg!(debug_assertions) {
+            "dev"
+        } else {
+            "prod"
+        },
         std::env::consts::OS,
         std::env::consts::ARCH,
         SystemTime::now()

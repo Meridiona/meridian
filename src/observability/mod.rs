@@ -445,16 +445,17 @@ fn try_build_otel_providers(
             "host.name",
             gethostname::gethostname().to_string_lossy().into_owned(),
         ),
-        // Which release channel produced this build, so staging test traffic
-        // and real user errors are separable in the central backend — they
-        // share one endpoint and one Sentry project, and without this
-        // attribute there is no way to filter one out of the other. Baked at
-        // compile time from the release workflow's job-level `MERIDIAN_CHANNEL`
-        // (set for both the macOS and Windows build jobs); a source build has
-        // it unset and reports "dev".
+        // Release candidates and stable releases are deliberately the SAME
+        // compiled bytes. Channel is distribution metadata now, so it must not
+        // be a compile-time input. Debug/source builds report "dev"; every
+        // optimized packaged build reports "prod".
         KeyValue::new(
             "deployment.environment",
-            option_env!("MERIDIAN_CHANNEL").unwrap_or("dev"),
+            if cfg!(debug_assertions) {
+                "dev"
+            } else {
+                "prod"
+            },
         ),
         // Platform shape. Without these, a Windows error and a macOS error are
         // indistinguishable in the central backend — every attribute above is

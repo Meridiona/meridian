@@ -25,6 +25,7 @@ set -euo pipefail
 
 VERSION="${1:?usage: package-updater-windows.sh <version>}"
 VERSION="${VERSION#v}"
+RELEASE_TAG="${MERIDIAN_RELEASE_TAG:-v${VERSION}}"
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "${ROOT}"
 
@@ -75,7 +76,7 @@ PY
 fi
 
 SIG_CONTENT="$(cat "${SIG}")"
-URL="https://github.com/${REPO}/releases/download/v${VERSION}/${STABLE_SETUP}"
+URL="https://github.com/${REPO}/releases/download/${RELEASE_TAG}/${STABLE_SETUP}"
 PUB_DATE="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 
 # Two platform keys, not one, both pointing at the SAME installer + signature.

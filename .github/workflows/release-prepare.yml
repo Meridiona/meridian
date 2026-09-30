@@ -172,7 +172,11 @@ jobs:
             bad=()
             for path in "${changed[@]}"; do
               case "${path}" in
-                .github/workflows/release-build.yml|                .github/workflows/release-prepare.yml|                .github/workflows/windows-product-smoke.yml|                .github/workflows/macos-product-smoke.yml|                scripts/ci/windows-install-smoke.ps1|                scripts/mirror-updater-channel.sh)
+                .github/workflows/release-build.yml|\
+                .github/workflows/release-prepare.yml|\
+                .github/workflows/windows-product-smoke.yml|\
+                .github/workflows/macos-product-smoke.yml|\
+                scripts/ci/windows-install-smoke.ps1)
                   ;;
                 *)
                   bad+=("${path}")
@@ -208,18 +212,20 @@ jobs:
           echo "→ stable promotion pinned to proven RC ${CANDIDATE_TAG} at ${head_sha}"
 
       - uses: actions/setup-node@v7
+        if: ${{ inputs.channel == 'rc' }}
         with:
           node-version: "24"
           cache: "npm"
           cache-dependency-path: package-lock.json
 
       - run: npm ci --no-audit --no-fund
+        if: ${{ inputs.channel == 'rc' }}
 
       - name: Select release strategy
         run: |
           set -euo pipefail
           if [ "${{ inputs.channel }}" = "stable" ]; then
-            echo "→ stable: semantic-release owns versioning/tagging"
+            echo "→ stable: promote the exact proven RC artifacts; no compile/sign/notarize"
           else
             echo "→ RC: semantic-release analyzes the next stable version; this workflow creates vX.Y.Z-rc.N itself"
           fi
@@ -231,6 +237,7 @@ jobs:
           GH_TOKEN: ${{ secrets.GH_TOKEN || secrets.GITHUB_TOKEN }}
           DRY_RUN: ${{ inputs.dry_run }}
           CHANNEL: ${{ inputs.channel }}
+          CANDIDATE_TAG: ${{ inputs.candidate_tag }}
         run: |
           set -euo pipefail
 
@@ -278,33 +285,52 @@ jobs:
             exit 0
           fi
 
-          # Stable channel: semantic-release remains authoritative and performs
-          # the version bump/changelog/tag/draft-release flow.
-          before="$(git tag --list 'v*' --sort=-creatordate | head -1)"
+          # Stable promotion is metadata-only. RC artifacts are built with the
+          # final X.Y.Z app version and are channel-neutral, so recompiling here
+          # would only produce a second set of bytes that the RC never proved.
+          stable_tag="${CANDIDATE_TAG%%-rc.*}"
+          version="${stable_tag#v}"
+          candidate_sha="$(git rev-list -n1 "${CANDIDATE_TAG}")"
+
+          echo "version=${version}" >> "${GITHUB_OUTPUT}"
+          echo "tag=${stable_tag}" >> "${GITHUB_OUTPUT}"
 
           if [ "${DRY_RUN}" = "true" ]; then
-            npx semantic-release --dry-run
             echo "released=false" >> "${GITHUB_OUTPUT}"
-            echo "→ dry run; nothing tagged"
+            echo "→ dry run; would promote ${CANDIDATE_TAG} byte-for-byte to ${stable_tag}"
             exit 0
           fi
 
-          npx semantic-release
-
-          after="$(git tag --list 'v*' --sort=-creatordate | head -1)"
-          if [ -n "${after}" ] && [ "${before}" != "${after}" ]; then
-            echo "released=true"      >> "${GITHUB_OUTPUT}"
-            echo "version=${after#v}" >> "${GITHUB_OUTPUT}"
-            echo "tag=${after}"       >> "${GITHUB_OUTPUT}"
-            echo "→ tagged ${after}"
-          else
-            echo "::error::Stable promotion produced no tag"
-            echo "released=false" >> "${GITHUB_OUTPUT}"
+          if git rev-parse -q --verify "refs/tags/${stable_tag}" >/dev/null; then
+            echo "::error::stable tag ${stable_tag} already exists"
             exit 1
           fi
 
+          git tag "${stable_tag}" "${candidate_sha}"
+          git push origin "refs/tags/${stable_tag}"
+          gh release create "${stable_tag}" --repo "${GITHUB_REPOSITORY}" \
+            --target "${candidate_sha}" --draft --generate-notes --title "${stable_tag}"
+
+          tmp="$(mktemp -d)"
+          gh release download "${CANDIDATE_TAG}" --repo "${GITHUB_REPOSITORY}" --dir "${tmp}"
+
+          # Reuse every signed/notarized binary and smoke proof. Only updater
+          # metadata changes because its URLs name the public stable tag.
+          for manifest in latest.json updater-aarch64-apple-darwin.json updater-windows.json; do
+            if [ -f "${tmp}/${manifest}" ]; then
+              python3 -c 'import json,sys; p,o,n,v=sys.argv[1:]; d=json.load(open(p)); rw=lambda x: x.replace("/download/"+o+"/","/download/"+n+"/") if isinstance(x,str) else [rw(y) for y in x] if isinstance(x,list) else {k:rw(y) for k,y in x.items()} if isinstance(x,dict) else x; d=rw(d); d["version"]=v if isinstance(d,dict) and "version" in d else d.get("version") if isinstance(d,dict) else v; open(p,"w").write(json.dumps(d,indent=2)+"\\n")' "${tmp}/${manifest}" "${CANDIDATE_TAG}" "${stable_tag}" "${version}"
+            fi
+          done
+
+          gh release upload "${stable_tag}" --repo "${GITHUB_REPOSITORY}" --clobber "${tmp}"/*
+          gh release edit "${stable_tag}" --repo "${GITHUB_REPOSITORY}" --draft=false --prerelease=false
+
+          echo "released=true" >> "${GITHUB_OUTPUT}"
+          echo "→ promoted proven ${CANDIDATE_TAG} artifacts to stable ${stable_tag}"
+          exit 0
+
       - name: Dispatch the build against main
-        if: ${{ steps.run.outputs.released == 'true' }}
+        if: ${{ steps.run.outputs.released == 'true' && inputs.channel == 'rc' }}
         env:
           GH_TOKEN: ${{ secrets.GH_TOKEN || secrets.GITHUB_TOKEN }}
           TAG: ${{ steps.run.outputs.tag }}

@@ -15,7 +15,7 @@
 #   bash scripts/dev-signing.sh setup      # create the cert ONCE (idempotent)
 #   bash scripts/dev-signing.sh identity   # echo the identity for a build to use
 #
-# `npm run build` / `build:staging` call `identity` automatically (respecting an
+# `npm run build` calls `identity` automatically (respecting an
 # externally-set APPLE_SIGNING_IDENTITY first, e.g. CI's Developer ID): it returns
 # "Meridian Dev" when the cert exists, else ad-hoc "-" so CI / cert-less machines
 # still build. After `setup`, rebuild, grant the permissions ONCE, and every
@@ -56,7 +56,7 @@ EOF
       -P "$pw" -T /usr/bin/codesign >/dev/null
     rm -rf "$dir"; trap - EXIT
     echo "✓ created '$CN' code-signing identity (self-signed; 'not trusted' is expected & fine)."
-    echo "  Next: 'npm run build:staging' → grant the 3 macOS permissions ONCE → done."
+    echo "  Next: 'npm run build' → grant the 3 macOS permissions ONCE → done."
     echo "  Every future rebuild now keeps the grants (same stable identity)."
     ;;
   identity)

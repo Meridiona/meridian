@@ -56,6 +56,7 @@ set -euo pipefail
 
 VERSION="${1:?usage: package-updater.sh <version>}"
 VERSION="${VERSION#v}"
+RELEASE_TAG="${MERIDIAN_RELEASE_TAG:-v${VERSION}}"
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "${ROOT}"
 
@@ -179,7 +180,7 @@ fi
 # release tag the @semantic-release/git commit + @semantic-release/github release
 # will create; the app reaches it via the /latest/ redirect baked in tauri.conf.json.
 SIG_CONTENT="$(cat "${SIG}")"
-URL="https://github.com/${REPO}/releases/download/v${VERSION}/${UPDATER_ASSET}"
+URL="https://github.com/${REPO}/releases/download/${RELEASE_TAG}/${UPDATER_ASSET}"
 PUB_DATE="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 
 # Universal writes the finished manifest as ${MAC}/latest.json exactly as before.
