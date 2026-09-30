@@ -106,10 +106,10 @@ product, then installs it silently, launches the packaged tray, waits for backen
 staging, verifies Task Scheduler/Startup fallback registration, probes daemon health,
 runs the native uninstall cleanup, then runs the NSIS uninstaller and verifies cleanup.
 
-The workflow is **manual/non-blocking** for now (`workflow_dispatch`). Using a
-prebuilt installer keeps this lifecycle check fast; when RC artifacts are introduced,
-the same smoke harness should consume the installer produced by that RC build rather
-than the latest stable release.
+The workflow is **manual/non-blocking** (`workflow_dispatch`) when used as an
+operator smoke. The same harness is also used by the release pipeline against
+the exact Windows installer uploaded by an RC build; it never recompiles the
+product.
 
 **Daemon lifecycle** (`tray/src-tauri/src/commands/daemon_control.rs` — named pipe +
 Task Scheduler, where macOS uses a Unix socket + launchd):
@@ -150,44 +150,20 @@ Prompt and provider experimentation happens through the **dev-only LLM Lab** (`m
 
 ## Fast PR gate
 
-`.github/workflows/pr-fast.yml` is the developer-feedback gate for PRs targeting
-`main`. It also handles GitHub merge-queue `merge_group` events; merge-queue entries deliberately run the full fast suite rather than path-filtering a speculative combined tree.
+`.github/workflows/pr-fast.yml` is the required developer-feedback gate for
+PRs targeting `main`. It is path-routed and aggregates selected checks into the
+single required `Fast PR gate` status context.
 
-Its job is fast integration confidence, not release qualification:
+It intentionally does not perform full-platform release qualification. Full
+macOS/Windows workspace validation runs after merge on `main`; RC builds then
+sign, notarize, package, and smoke the exact release artifacts.
 
-- classify changes by crate/surface;
-- run `cargo fmt --check` for Rust changes;
-- lint + test only the changed Rust crate on Linux where possible;
-- compile/lint the Tauri tray library on macOS only when tray Rust changes;
-- run UI tests, typecheck, and static build only when UI changes;
-- run installer, migration, release-shape, and license-policy checks cheaply;
-- aggregate everything into one `Fast PR gate` result.
+The workflow also handles GitHub `merge_group` events and runs the complete
+fast suite for speculative merge-queue trees.
 
-The deliberate omissions are important: the fast gate does not run the full
-workspace on Windows, does not run the full macOS workspace, and does not
-package/sign product artifacts.
-
-The target architecture is:
-
-```text
-feature PR -> Fast PR gate -> merge
-                         -> full platform validation
-                         -> explicit release promotion
-                         -> immutable RC/stable tag
-                         -> signed artifact smoke
-                         -> publish
-```
-
-Branch updates are development state, not release events. `release-prepare.yml`
-is manual-only: RC and stable promotion are both dispatched from `main`.
-An RC stays draft until the exact macOS and Windows artifacts pass their product
-smokes; stable promotion must name that proven RC and refuses if `main` moved.
-
-During the migration, the existing exhaustive `CI` workflow may still run on
-PRs because repository branch-protection settings must be switched from the old
-required contexts to `Fast PR gate` before the old PR trigger can be removed.
-Once that protection cutover is made, exhaustive macOS/Windows validation moves
-entirely to the post-merge promotion path.
+For the authoritative CI/release/cache architecture, including which jobs own
+which caches and how RC artifacts are promoted to stable without rebuilding,
+read **`docs/ci-cd.md`**.
 
 ## CI health contract
 

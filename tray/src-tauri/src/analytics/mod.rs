@@ -173,7 +173,7 @@ impl Drop for InFlightGuard {
 /// see the PR #427 discussion). **Baked in at compile time**, never committed
 /// to source: the official release build injects it via the
 /// `MERIDIAN_POSTHOG_API_KEY` build env (a GitHub Actions secret — see
-/// `.github/workflows/release.yml` / `release-staging.yml`), mirroring
+/// `.github/workflows/release-build.yml`), mirroring
 /// `meridian-oauth`'s `DEFAULT_CLIENT_SECRET` pattern. A plain source build
 /// without that env compiles in an empty string, which disables analytics
 /// entirely (see [`posthog_api_key`]) rather than shipping a placeholder.

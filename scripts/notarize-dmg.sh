@@ -20,10 +20,9 @@
 #   MERIDIAN_TARGET=aarch64-apple-darwin bash scripts/notarize-dmg.sh <version>
 #
 # MERIDIAN_TARGET selects which `target/<triple>/release/bundle` tree to look in.
-# It defaults to universal-apple-darwin so every existing caller (semantic-release
-# prepareCmd, release-staging.yml) keeps working with no change at all. The
-# per-arch release path sets it to aarch64-apple-darwin / x86_64-apple-darwin,
-# one per runner; each runner notarizes only its own DMG.
+# It defaults to universal-apple-darwin for local/backward-compatible callers.
+# The current release pipeline sets it to the concrete release target; each
+# runner notarizes only the DMG it built.
 #
 # NO-OP unless APPLE_SIGNING_IDENTITY names a real Developer ID cert, so local
 # dev builds don't try (and fail) to reach Apple's notary service. When it IS a

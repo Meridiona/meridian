@@ -2,7 +2,7 @@
 fn main() {
     // Compile-time pin for the PostHog project API key (analytics.rs,
     // `option_env!("MERIDIAN_POSTHOG_API_KEY")`) — a GitHub Actions secret
-    // baked into the release binary; see .github/workflows/release.yml.
+    // baked into the release binary; see .github/workflows/release-build.yml.
     println!("cargo:rerun-if-env-changed=MERIDIAN_POSTHOG_API_KEY");
 
     // The notifications plugin's macOS layer is Swift (swift-bridge): its build

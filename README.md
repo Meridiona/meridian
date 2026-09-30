@@ -87,7 +87,7 @@ bash dev-start.sh            # starts the daemon and the tray in watch mode
 
 `dev-start.sh` opens two terminal windows, the Rust daemon and the Tauri tray, both of which rebuild automatically when you save a file. Capture runs in-process inside the tray, so nothing else needs to be installed or registered separately.
 
-Full setup details, including how to reset onboarding, re-download the embedder, and the exact checks CI runs before a pull request, are in **[CONTRIBUTING.md](CONTRIBUTING.md)**.
+Full setup details, including how to reset onboarding, re-download the embedder, and the exact checks CI runs before a pull request, are in **[CONTRIBUTING.md](CONTRIBUTING.md)**. The current branch, CI, cache, RC, and stable-promotion architecture is documented in **[docs/ci-cd.md](docs/ci-cd.md)**.
 
 ## Contributing
 

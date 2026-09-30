@@ -18,8 +18,8 @@
 #
 #   scripts/package-updater-windows.sh <version>
 #
-# Called from the `windows` job in .github/workflows/release-build.yml, right
-# after `npm run build:windows[:staging]` has produced the NSIS bundle.
+# Called from the Windows job in .github/workflows/release-build.yml after the
+# channel-neutral Windows build has produced the NSIS bundle.
 # Idempotent; safe to run locally (on Windows, via Git Bash) to inspect output.
 set -euo pipefail
 

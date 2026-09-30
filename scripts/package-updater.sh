@@ -105,8 +105,8 @@ fi
 # failure mode is a fragment the publish job silently does not find — a green
 # release missing an entire platform. The triple is the value MERIDIAN_TARGET
 # already carries, so it needs no mapping table at all. Universal keeps the
-# plain `latest.json` name every existing caller (.releaserc.json, the staging
-# workflow) already references.
+# plain `latest.json` name for backward-compatible/local callers; the current
+# release workflow composes per-platform fragments into the published manifest.
 if [[ "${TARGET}" == "universal-apple-darwin" ]]; then
   MANIFEST_NAME="latest.json"
 else
@@ -164,7 +164,7 @@ if [[ -f "${MIN_FILE}" ]]; then
   # published version would make old apps force-install a build that is itself
   # still below the minimum (self-terminating, but confusing). Always an
   # operator error, so fail loudly. Cores only (X.Y.Z), so a prerelease
-  # release version (1.70.0-staging.1) may carry a 1.70.0 floor.
+  # candidate tag/version (for example 1.92.2-rc.3) may carry a 1.92.2 floor.
   if [[ -n "${MINIMUM}" ]]; then
     python3 - "${MINIMUM}" "${VERSION}" <<'PY' || exit 1
 import sys

@@ -3,8 +3,8 @@ description: >
   Imports the Developer ID Application certificate into a throwaway keychain
   that codesign can reach, and materialises the App Store Connect notarization
   .p8 key on disk (its path exported as APPLE_API_KEY_PATH via GITHUB_ENV).
-  Shared verbatim by release.yml and release-staging.yml. No-ops gracefully
-  when no certificate is configured (fork PRs, or any build not meant to sign)
+  Used by the current release-build workflow. No-ops gracefully when no
+  certificate is configured (fork PRs, or any build not meant to sign)
   instead of crashing `security import` with an opaque error - matching the
   early-exit in sign-daemon.sh / notarize-dmg.sh.
 

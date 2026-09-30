@@ -66,7 +66,7 @@ pub const DEFAULT_CLIENT_ID: &str = "sXRB5rwKFX53DUgb9u5LO7gr0pRMwNDS";
 /// [known limitation](https://jira.atlassian.com/browse/OAUTH20-2491)), so — unlike
 /// a true public PKCE client — we must ship one. The official release build injects
 /// it via the `MERIDIAN_JIRA_OAUTH_CLIENT_SECRET` compile-time env (a GitHub Actions
-/// secret; see `.github/workflows/release.yml`); plain source builds compile in an
+/// secret; see `.github/workflows/release-build.yml`); plain source builds compile in an
 /// empty string, so a source-built binary must supply `JIRA_OAUTH_CLIENT_SECRET` at
 /// runtime or use the API-token fallback.
 ///
