@@ -152,17 +152,36 @@ Get-Process -ErrorAction SilentlyContinue |
     Stop-Process -Force -ErrorAction SilentlyContinue
 Start-Sleep -Seconds 2
 
+Write-Step "Stopping daemon before cleanup"
+& schtasks /End /TN "Meridian Daemon" *> $null
+Get-Process -Name 'meridian' -ErrorAction SilentlyContinue |
+    Where-Object { $_.Path -eq $daemonExe } |
+    Stop-Process -Force -ErrorAction SilentlyContinue
+Wait-Until { $null -eq (Get-Process -Name 'meridian' -ErrorAction SilentlyContinue | Where-Object { $_.Path -eq $daemonExe }) } 15 "daemon process exit"
+
 Write-Step "Running Meridian cleanup command"
-$uninstallOutput = & $daemonExe uninstall --purge --yes 2>&1
+# Run uninstall from a temporary copy. On Windows, executing the staged
+# ~/.meridian/bin/meridian.exe while asking it to delete itself necessarily
+# leaves that file locked until process exit. The product command is identical;
+# only its image path moves outside the tree being purged so the lifecycle can
+# prove the install really cleans up.
+$cleanupExe = Join-Path $env:RUNNER_TEMP 'meridian-uninstall.exe'
+Copy-Item -Force $daemonExe $cleanupExe
+$uninstallOutput = & $cleanupExe uninstall --purge --yes 2>&1
 $uninstallExit = $LASTEXITCODE
 Write-Host ($uninstallOutput | Out-String)
 Assert-True ($uninstallExit -eq 0) "meridian uninstall exited with code $uninstallExit"
+Remove-Item -Force $cleanupExe -ErrorAction SilentlyContinue
 
 Write-Step "Verifying daemon registration cleanup"
 & schtasks /Query /TN "Meridian Daemon" *> $null
 Assert-True ($LASTEXITCODE -ne 0) "Meridian Daemon scheduled task still exists after uninstall"
 Assert-True (-not (Test-Path $daemonFallback)) "MeridianDaemon.vbs still exists after uninstall"
 Assert-True (-not (Test-Path $trayFallback)) "MeridianTray.vbs still exists after uninstall"
+
+Write-Step "Verifying Meridian state cleanup"
+Assert-True (-not (Test-Path $daemonExe)) "staged daemon still exists after uninstall"
+Assert-True (-not (Test-Path $meridianDir)) "~/.meridian still exists after --purge"
 
 Write-Step "Running NSIS uninstaller"
 $uninstaller = Get-ChildItem -Path $installDir -Filter '*uninstall*.exe' -File -ErrorAction SilentlyContinue | Select-Object -First 1
@@ -180,3 +199,4 @@ Get-Process -Name 'Meridian','meridian','meridian-tray' -ErrorAction SilentlyCon
 
 Write-Host ""
 Write-Host "[ok] Windows installed-product smoke test passed"
+exit 0
