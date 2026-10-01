@@ -155,10 +155,10 @@ jobs:
         run: |
           set -euo pipefail
 
-          case "${CANDIDATE_SHA}" in
-            [0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f]) ;;
-            *) echo "::error::RC promotion requires candidate_sha=<full 40-character main SHA>"; exit 1 ;;
-          esac
+          if [[ ! "${CANDIDATE_SHA}" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "::error::RC promotion requires candidate_sha=<full 40-character main SHA>"
+            exit 1
+          fi
 
           head_sha="$(git rev-parse HEAD)"
           if [ "${CANDIDATE_SHA}" != "${head_sha}" ]; then
@@ -169,7 +169,7 @@ jobs:
 
           ci_run="$(
             gh api "repos/${GITHUB_REPOSITORY}/actions/runs?head_sha=${CANDIDATE_SHA}&branch=main&event=push&status=success&per_page=100" \
-              --jq '.workflow_runs[] | select(.name == "CI" and .head_sha == "'"${CANDIDATE_SHA}"'") | .id' \
+              | jq -r --arg sha "${CANDIDATE_SHA}" '.workflow_runs[] | select(.name == "CI" and .head_sha == $sha) | .id' \
               | head -1
           )"
           if [ -z "${ci_run}" ]; then
@@ -191,7 +191,6 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GH_TOKEN || secrets.GITHUB_TOKEN }}
           CANDIDATE_TAG: ${{ inputs.candidate_tag }}
-          CANDIDATE_SHA: ${{ inputs.candidate_sha }}
         run: |
           set -euo pipefail
 
@@ -287,6 +286,7 @@ jobs:
           DRY_RUN: ${{ inputs.dry_run }}
           CHANNEL: ${{ inputs.channel }}
           CANDIDATE_TAG: ${{ inputs.candidate_tag }}
+          CANDIDATE_SHA: ${{ inputs.candidate_sha }}
         run: |
           set -euo pipefail
 
