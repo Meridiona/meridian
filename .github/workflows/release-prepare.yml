@@ -72,6 +72,11 @@ on:
         options:
           - rc
           - stable
+      candidate_sha:
+        description: "For RC: exact successful main candidate SHA shown by CI"
+        type: string
+        required: false
+        default: ""
       candidate_tag:
         description: "For stable: exact proven RC tag from the same main commit (for example v1.93.0-rc.2)"
         type: string
@@ -142,11 +147,51 @@ jobs:
           # silent.
           token: ${{ secrets.GH_TOKEN || secrets.GITHUB_TOKEN }}
 
+      - name: Require RC to use the exact successful main candidate
+        if: ${{ inputs.channel == 'rc' }}
+        env:
+          GH_TOKEN: ${{ secrets.GH_TOKEN || secrets.GITHUB_TOKEN }}
+          CANDIDATE_SHA: ${{ inputs.candidate_sha }}
+        run: |
+          set -euo pipefail
+
+          case "${CANDIDATE_SHA}" in
+            [0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f]) ;;
+            *) echo "::error::RC promotion requires candidate_sha=<full 40-character main SHA>"; exit 1 ;;
+          esac
+
+          head_sha="$(git rev-parse HEAD)"
+          if [ "${CANDIDATE_SHA}" != "${head_sha}" ]; then
+            echo "::error::candidate ${CANDIDATE_SHA} is not current main HEAD ${head_sha}."
+            echo "::error::Do not release an older integrated state with version analysis from newer commits. Revert/fix main or cut a fresh candidate."
+            exit 1
+          fi
+
+          ci_run="$(
+            gh api "repos/${GITHUB_REPOSITORY}/actions/runs?head_sha=${CANDIDATE_SHA}&branch=main&event=push&status=success&per_page=100" \
+              --jq '.workflow_runs[] | select(.name == "CI" and .head_sha == "'"${CANDIDATE_SHA}"'") | .id' \
+              | head -1
+          )"
+          if [ -z "${ci_run}" ]; then
+            echo "::error::no successful post-merge CI run exists for candidate ${CANDIDATE_SHA}"
+            exit 1
+          fi
+
+          artifact_name="candidate-${CANDIDATE_SHA}"
+          if ! gh api "repos/${GITHUB_REPOSITORY}/actions/runs/${ci_run}/artifacts?per_page=100" \
+            | jq -e --arg n "${artifact_name}" '.artifacts[] | select(.name == $n and .expired == false)' >/dev/null; then
+            echo "::error::successful CI run ${ci_run} is missing unexpired ${artifact_name}"
+            exit 1
+          fi
+
+          echo "→ RC pinned to successful main candidate ${CANDIDATE_SHA} (CI run ${ci_run})"
+
       - name: Require stable promotion to come from a proven RC
         if: ${{ inputs.channel == 'stable' }}
         env:
           GH_TOKEN: ${{ secrets.GH_TOKEN || secrets.GITHUB_TOKEN }}
           CANDIDATE_TAG: ${{ inputs.candidate_tag }}
+          CANDIDATE_SHA: ${{ inputs.candidate_sha }}
         run: |
           set -euo pipefail
 
@@ -280,12 +325,12 @@ jobs:
               exit 0
             fi
 
-            git tag "${tag}" HEAD
+            git tag "${tag}" "${CANDIDATE_SHA}"
             git push origin "refs/tags/${tag}"
-            gh release create "${tag}" --repo "${GITHUB_REPOSITORY}" --target "$(git rev-parse HEAD)" --draft --prerelease --generate-notes --title "${tag}"
+            gh release create "${tag}" --repo "${GITHUB_REPOSITORY}" --target "${CANDIDATE_SHA}" --draft --prerelease --generate-notes --title "${tag}"
 
             echo "released=true" >> "${GITHUB_OUTPUT}"
-            echo "→ created RC ${tag} from $(git rev-parse HEAD)"
+            echo "→ created RC ${tag} from candidate ${CANDIDATE_SHA}"
             exit 0
           fi
 
