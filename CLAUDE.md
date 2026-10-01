@@ -639,14 +639,21 @@ The dashboard's "What's New" modal (`ui/components/timeline/WhatsNewModal.tsx`, 
 
 ### Make a DMG release mandatory (force-install on old versions)
 
-DMG auto-updates are consent-based (in-app banner + click) with one exception: when the update manifest declares a **minimum supported version** and the running app is below it, the app installs the update and relaunches automatically. Use this as a kill-switch for releases old versions must not keep running against (broken update path, data-corrupting bug) — not for routine releases.
+Minimum supported version is **post-stable fleet policy**, not source/build
+configuration. Do not add back `tray/minimum-version`.
 
-1. Commit `tray/minimum-version` containing the floor as plain `X.Y.Z` (usually the new release's own version, forcing everyone older) **before cutting the release**. File absent or empty = consent-based, the default; a malformed value fails the release loudly (`scripts/package-updater.sh`).
-2. The release ships it as a `Minimum-Version: X.Y.Z` line inside `latest.json`'s `notes` — the notes body is the transport because `tauri-plugin-updater` drops unknown manifest fields. RC candidates carry the same manifest metadata as stable; stable promotion rewrites only the release-tag URLs while reusing the exact signed artifacts.
-3. Installed apps below the floor force-update via `update::enforce_minimum_version` (`tray/src-tauri/src/update.rs`) — checked 30 s after launch and every 6 h thereafter, so long-running trays catch it without a relaunch. A failed forced install falls back to the consent banner and retries next cycle.
-4. Empty or remove `tray/minimum-version` afterwards if later releases should go back to consent-based — the floor ships with **every** release while the file has content.
+After a stable release is published, use GitHub Actions workflow
+`.github/workflows/minimum-version.yml`:
 
-Only affects the DMG channel; npm/CLI installs still update via `meridian update`.
+- `action=set`, `minimum_version=X.Y.Z` arms the floor after verifying that
+  `vX.Y.Z` is a published stable release and is not newer than latest.
+- `action=clear` removes the floor and restores consent-based updates.
+- The workflow mutates only the latest stable release's `latest.json`; it never
+  rebuilds, signs, tags, or republishes binaries.
+- Stable promotion preserves any existing floor across later stable releases.
+- `update::enforce_minimum_version` remains the app-side enforcer.
+
+Only the DMG/Tauri updater path uses this policy.
 
 ---
 
