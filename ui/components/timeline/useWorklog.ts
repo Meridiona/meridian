@@ -74,7 +74,8 @@ interface Entry {
   draft: DayTaskWorklogDraft | null
   phase: WorklogPhase
   error: string | null
-  /** True once the initial get has resolved for this key (don't re-load). */
+  /** True once at least one get has resolved for this key. A later panel open still
+   *  revalidates it: the daemon can auto-generate a draft while the webview lives. */
   loaded: boolean
 }
 
@@ -107,12 +108,24 @@ function subscribe(l: () => void): () => void {
   return () => listeners.delete(l)
 }
 
-/** Load the existing draft once per key. No-op if it's already loaded or a
- *  generate/approve is in flight (never clobber live state with a stale read). */
+/** Revalidate the existing draft whenever its panel opens.
+ *
+ * The store deliberately outlives the panel so an in-flight generate/approve
+ * survives navigation. It must NOT make a completed read permanent, though: the
+ * daemon auto-generates drafts in the background. A cached `null` from before the
+ * end-of-day pass otherwise disagrees with the summary's fresh badge read and makes
+ * a real draft look absent until the whole app restarts.
+ *
+ * `loading` also gates the read so React Strict Mode (or a quick unmount/remount)
+ * cannot start duplicate requests. Generate/approve remain stronger gates because
+ * a read begun alongside either could overwrite their result. */
 function ensureLoaded(day: string, taskId: string) {
   const key = keyOf(day, taskId)
   const e = store.get(key)
-  if (e && (e.loaded || e.phase === 'generating' || e.phase === 'approving')) return
+  if (
+    e &&
+    (e.phase === 'loading' || e.phase === 'generating' || e.phase === 'approving')
+  ) return
   patch(key, { phase: 'loading', error: null })
   load<DayTaskWorklogDraft | null>(API, 'get_day_task_worklog', { day, taskId })
     .then((r) => {
