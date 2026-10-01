@@ -765,6 +765,7 @@ Load-bearing invariants:
 - `main` is the only development trunk; `pre-main` and staging release branches are retired.
 - PRs get fast, path-routed checks and aggregate into the required `Fast PR gate`.
 - exhaustive macOS/Windows validation is post-merge.
+- every successful `main` CI run emits a traceable `candidate-<sha>` metadata artifact; RC creation must name that exact current-main candidate SHA.
 - RC promotion builds/signs/notarizes/packages the product exactly once.
 - stable promotion reuses the exact proven RC binaries and rewrites only release/updater metadata; **stable must never rebuild the product**.
 - RC/stable is distribution metadata, not a compile-time binary channel.
