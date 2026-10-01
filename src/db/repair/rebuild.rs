@@ -92,9 +92,19 @@ pub(super) async fn build_replacement(
         }
         None => format!("ATTACH DATABASE '{src_literal}' AS src KEY ''"),
     };
-    conn.execute(attach.as_str())
-        .await
-        .context("attaching the damaged database")?;
+    // ATTACH is an expected failure point for a page-1-damaged source. Do not
+    // use `?` here: on Windows, returning while the pooled connection is still
+    // alive leaves the replacement file locked. The caller retries the repair,
+    // sees the stale `.rebuilding-tmp`, and then fails deleting its OWN file
+    // with os error 32 before it can make a second attempt.
+    //
+    // Explicitly close both handles before propagating the ATTACH error. This
+    // mirrors the successful-path close below and makes retry cleanup portable.
+    if let Err(e) = conn.execute(attach.as_str()).await {
+        let _ = conn.close().await;
+        tmp_pool.close().await;
+        return Err(e).context("attaching the damaged database");
+    }
 
     let tables = table_names(&mut conn).await?;
     let mut report = RepairReport::default();
