@@ -609,3 +609,91 @@ jobs:
             fi
           done
           [ "$fail" -eq 0 ] && echo "OK — screenpipe-fork pinned to the last MIT-based rev ($expected)."
+
+
+  # A successful main commit becomes a traceable release candidate.
+  # This uploads metadata only; it does not build, sign, tag, or publish.
+  candidate-manifest:
+    name: Main candidate manifest
+    needs:
+      - changes
+      - install-package
+      - rust-macos
+      - rust
+      - rust-windows
+      - ui
+      - migration-guard
+      - release-trigger-shape
+      - screenpipe-license-pin
+    if: always()
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: read
+    steps:
+      - name: Require post-merge validation to have passed
+        env:
+          NEEDS_JSON: ${{ toJSON(needs) }}
+        run: |
+          python3 - <<'PY'
+          import json, os, sys
+          needs = json.loads(os.environ["NEEDS_JSON"])
+          bad = {
+              name: data.get("result")
+              for name, data in needs.items()
+              if data.get("result") not in ("success", "skipped")
+          }
+          if bad:
+              for name, result in bad.items():
+                  print(f"::error::{name} finished with {result}")
+              sys.exit(1)
+          print("all selected post-merge checks passed or were intentionally skipped")
+          PY
+
+      - name: Write candidate manifest
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          SHA: ${{ github.sha }}
+          RUN_ID: ${{ github.run_id }}
+          RUN_ATTEMPT: ${{ github.run_attempt }}
+          SERVER_URL: ${{ github.server_url }}
+        run: |
+          set -euo pipefail
+          prs="$(gh api "repos/${REPO}/commits/${SHA}/pulls" \
+            --jq '[.[] | {number, title, url: .html_url}]' 2>/dev/null || echo '[]')"
+
+          jq -n \
+            --arg repository "${REPO}" \
+            --arg sha "${SHA}" \
+            --arg run_url "${SERVER_URL}/${REPO}/actions/runs/${RUN_ID}" \
+            --argjson run_id "${RUN_ID}" \
+            --argjson run_attempt "${RUN_ATTEMPT}" \
+            --argjson prs "${prs}" \
+            '{
+              schema: 1,
+              repository: $repository,
+              sha: $sha,
+              branch: "main",
+              ci_run_id: $run_id,
+              ci_run_attempt: $run_attempt,
+              ci_run_url: $run_url,
+              included_merge_prs: $prs
+            }' > candidate.json
+
+          cat candidate.json
+          {
+            echo "### Main candidate"
+            echo ""
+            echo "- SHA: \`${SHA}\`"
+            echo "- Artifact: \`candidate-${SHA}\`"
+            echo "- This is metadata only; no release was published."
+          } >> "${GITHUB_STEP_SUMMARY}"
+
+      - name: Upload candidate manifest
+        uses: actions/upload-artifact@v7
+        with:
+          name: candidate-${{ github.sha }}
+          path: candidate.json
+          if-no-files-found: error
+          retention-days: 30
