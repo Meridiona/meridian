@@ -144,38 +144,12 @@ if [[ -n "${ARCH_LABEL}" ]]; then
   echo "✓ ${MAC}/${UPDATER_ASSET} (+ .sig) — arch-suffixed updater payload"
 fi
 
-# Optional mandatory-update floor. When tray/minimum-version contains a semver,
-# it ships as a `Minimum-Version: <v>` line inside the manifest notes — installed
-# apps running BELOW that version install this release automatically instead of
-# waiting for the banner click (tray/src-tauri/src/update.rs
-# enforce_minimum_version; the notes line is the transport because
-# tauri-plugin-updater drops unknown manifest fields). File absent or empty =
-# every update stays consent-based. A malformed value fails the release loudly:
-# a typo silently dropping the floor would defeat the point of setting it.
-MIN_FILE="tray/minimum-version"
+# Minimum-version enforcement is release policy, not build input. RC and fresh
+# stable manifests are produced without a floor. A maintainer may arm or clear
+# the floor after stable publication via .github/workflows/minimum-version.yml.
+# Stable promotion carries any already-armed floor forward from the previous
+# latest stable manifest.
 MINIMUM=""
-if [[ -f "${MIN_FILE}" ]]; then
-  MINIMUM="$(tr -d '[:space:]' < "${MIN_FILE}")"
-  if [[ -n "${MINIMUM}" && ! "${MINIMUM}" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
-    echo "✗ ${MIN_FILE} contains '${MINIMUM}' — not a plain semver (X.Y.Z)" >&2
-    exit 1
-  fi
-  # The floor must not exceed the release that carries it — a floor above every
-  # published version would make old apps force-install a build that is itself
-  # still below the minimum (self-terminating, but confusing). Always an
-  # operator error, so fail loudly. Cores only (X.Y.Z), so a prerelease
-  # candidate tag/version (for example 1.92.2-rc.3) may carry a 1.92.2 floor.
-  if [[ -n "${MINIMUM}" ]]; then
-    python3 - "${MINIMUM}" "${VERSION}" <<'PY' || exit 1
-import sys
-minimum, ver = sys.argv[1], sys.argv[2]
-core = lambda v: tuple(int(x) for x in v.split("-")[0].split("."))
-if core(minimum) > core(ver):
-    sys.exit(f"✗ tray/minimum-version {minimum} exceeds the release version {ver}")
-PY
-  fi
-fi
-
 # latest.json from the real signature. The tarball URL points at the v<version>
 # release tag the @semantic-release/git commit + @semantic-release/github release
 # will create; the app reaches it via the /latest/ redirect baked in tauri.conf.json.
@@ -189,13 +163,11 @@ PUB_DATE="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 # runners and joins into the real latest.json. The name says which runner
 # produced it, so a fragment that goes missing is a loud absence rather than a
 # manifest that quietly covers half the fleet.
-python3 - "${MAC}/${MANIFEST_NAME}" "${VERSION}" "${URL}" "${SIG_CONTENT}" "${PUB_DATE}" "${MINIMUM}" "${PLATFORM_KEYS[@]}" <<'PY'
+python3 - "${MAC}/${MANIFEST_NAME}" "${VERSION}" "${URL}" "${SIG_CONTENT}" "${PUB_DATE}" "${PLATFORM_KEYS[@]}" <<'PY'
 import json, sys
-out, ver, url, sig, pub, minimum = sys.argv[1:7]
-keys = sys.argv[7:]
+out, ver, url, sig, pub = sys.argv[1:6]
+keys = sys.argv[6:]
 notes = f"Meridian v{ver}"
-if minimum:
-    notes += f"\nMinimum-Version: {minimum}"
 # tauri-plugin-updater resolves the platform key from the RUNNING app's arch,
 # not from the manifest. A universal build passes BOTH keys here and they share
 # one payload + signature (the one universal tarball serves both arches); a
@@ -213,8 +185,4 @@ json.dump(
 )
 PY
 _covers="${PLATFORM_KEYS[*]}"
-if [[ -n "${MINIMUM}" ]]; then
-  echo "✓ ${MAC}/${MANIFEST_NAME} (v${VERSION} → ${URL}, covers ${_covers}, minimum supported v${MINIMUM})"
-else
-  echo "✓ ${MAC}/${MANIFEST_NAME} (v${VERSION} → ${URL}, covers ${_covers})"
-fi
+echo "✓ ${MAC}/${MANIFEST_NAME} (v${VERSION} → ${URL}, covers ${_covers})"

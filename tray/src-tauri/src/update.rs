@@ -34,8 +34,9 @@
 //!   (event_key `system.update`) instead of a direct bypass, so quiet-hours
 //!   and the master switch all apply — previously these six call sites
 //!   skipped that policy entirely.
-//! - `scripts/package-updater.sh` — the producer of the `Minimum-Version:` notes
-//!   line (reads the optional `tray/minimum-version` file at release time).
+//! - `.github/workflows/minimum-version.yml` — the post-stable policy control
+//!   that adds or removes the `Minimum-Version:` line in the latest stable
+//!   updater manifest without rebuilding the application.
 //! - Plan: Obsidian `Decisions/Public distribution + auto-update for the DMG`.
 
 use semver::Version;

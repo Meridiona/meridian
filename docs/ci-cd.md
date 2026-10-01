@@ -208,6 +208,28 @@ There is no rolling staging updater channel.
 A user installing an RC is testing an exact candidate artifact. RC-to-RC
 auto-update behavior is not a release invariant.
 
+## Minimum supported version policy
+
+Minimum-version enforcement is intentionally separate from building or promoting
+a release. First publish and validate stable. If the fleet later needs a forced
+upgrade, run `.github/workflows/minimum-version.yml` from GitHub Actions.
+
+The workflow accepts either `set` with a published stable `X.Y.Z`, or `clear`.
+`set` verifies that `vX.Y.Z` is a published non-prerelease and is not newer than
+the current latest stable release. It then edits only that latest stable release's
+`latest.json` asset, adding `Minimum-Version: X.Y.Z` to its notes. No binary is
+rebuilt, resigned, retagged, or republished.
+
+The running DMG app checks that line shortly after launch and periodically.
+Clients below the floor automatically install the latest stable update and
+relaunch. Clients at or above the floor retain normal update behavior.
+
+Stable promotion carries an already-armed floor forward from the previous latest
+stable manifest, so the policy survives future stable releases until explicitly
+changed or cleared. RC manifests do not carry the fleet floor.
+
+The old source-controlled `tray/minimum-version` mechanism is retired.
+
 `tray/minimum-version` remains the emergency force-update floor. Empty or absent
 means normal consent-based updating.
 

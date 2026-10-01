@@ -1,0 +1,132 @@
+name: Set minimum supported version
+
+on:
+  workflow_dispatch:
+    inputs:
+      action:
+        description: "Set or clear the forced-update floor"
+        type: choice
+        required: true
+        default: set
+        options:
+          - set
+          - clear
+      minimum_version:
+        description: "For set: published stable X.Y.Z to use as the minimum supported version"
+        type: string
+        required: false
+        default: ""
+
+concurrency:
+  group: minimum-supported-version
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+
+jobs:
+  update-policy:
+    name: Update latest stable updater policy
+    runs-on: ubuntu-latest
+    steps:
+      - name: Validate and update latest stable manifest
+        env:
+          GH_TOKEN: ${{ secrets.GH_TOKEN || secrets.GITHUB_TOKEN }}
+          ACTION: ${{ inputs.action }}
+          MINIMUM_VERSION: ${{ inputs.minimum_version }}
+          REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+
+          latest_tag="$(gh api "repos/${REPO}/releases/latest" --jq '.tag_name')"
+          latest_meta="$(gh release view "${latest_tag}" --repo "${REPO}" --json isDraft,isPrerelease,assets)"
+          if [ "$(jq -r '.isDraft' <<<"${latest_meta}")" != "false" ] || \
+             [ "$(jq -r '.isPrerelease' <<<"${latest_meta}")" != "false" ]; then
+            echo "::error::latest release ${latest_tag} is not a published stable release"
+            exit 1
+          fi
+
+          if ! jq -e '.assets[] | select(.name == "latest.json")' <<<"${latest_meta}" >/dev/null; then
+            echo "::error::latest stable ${latest_tag} has no latest.json asset"
+            exit 1
+          fi
+
+          case "${ACTION}" in
+            set)
+              if [[ ! "${MINIMUM_VERSION}" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+                echo "::error::minimum_version must be plain X.Y.Z"
+                exit 1
+              fi
+
+              target_tag="v${MINIMUM_VERSION}"
+              target_meta="$(gh release view "${target_tag}" --repo "${REPO}" --json isDraft,isPrerelease 2>/dev/null || true)"
+              if [ -z "${target_meta}" ] || \
+                 [ "$(jq -r '.isDraft' <<<"${target_meta}")" != "false" ] || \
+                 [ "$(jq -r '.isPrerelease' <<<"${target_meta}")" != "false" ]; then
+                echo "::error::${target_tag} must already exist as a published stable release"
+                exit 1
+              fi
+
+              latest_version="${latest_tag#v}"
+              python3 - "${MINIMUM_VERSION}" "${latest_version}" <<'PY'
+              import sys
+              def core(v):
+                  return tuple(int(x) for x in v.split("."))
+              minimum, latest = map(core, sys.argv[1:])
+              if minimum > latest:
+                  raise SystemExit(f"minimum {sys.argv[1]} cannot exceed latest stable {sys.argv[2]}")
+              PY
+              ;;
+            clear)
+              if [ -n "${MINIMUM_VERSION}" ]; then
+                echo "::warning::minimum_version is ignored when action=clear"
+              fi
+              ;;
+            *)
+              echo "::error::unknown action ${ACTION}"
+              exit 1
+              ;;
+          esac
+
+          tmp="$(mktemp -d)"
+          gh release download "${latest_tag}" --repo "${REPO}" --pattern latest.json --dir "${tmp}"
+
+          python3 - "${tmp}/latest.json" "${ACTION}" "${MINIMUM_VERSION}" <<'PY'
+          import json, re, sys
+          path, action, minimum = sys.argv[1:]
+          data = json.load(open(path))
+          notes = data.get("notes") or ""
+          notes = re.sub(r"(?m)^Minimum-Version: [0-9]+\.[0-9]+\.[0-9]+\n?", "", notes).rstrip()
+          if action == "set":
+              notes = (notes + "\n" if notes else "") + f"Minimum-Version: {minimum}"
+          data["notes"] = notes
+          with open(path, "w") as f:
+              json.dump(data, f, indent=2)
+              f.write("\n")
+          PY
+
+          gh release upload "${latest_tag}" --repo "${REPO}" --clobber "${tmp}/latest.json"
+
+          floor="$(jq -r '.notes // ""' "${tmp}/latest.json" | sed -nE 's/^Minimum-Version: ([0-9]+\.[0-9]+\.[0-9]+)$/\1/p' | tail -1)"
+          if [ "${ACTION}" = "set" ] && [ "${floor}" != "${MINIMUM_VERSION}" ]; then
+            echo "::error::failed to write requested minimum version"
+            exit 1
+          fi
+          if [ "${ACTION}" = "clear" ] && [ -n "${floor}" ]; then
+            echo "::error::failed to clear minimum version"
+            exit 1
+          fi
+
+          {
+            echo "### Minimum supported version"
+            echo ""
+            echo "- Latest stable: \`${latest_tag}\`"
+            if [ "${ACTION}" = "set" ]; then
+              echo "- Forced-update floor: \`${MINIMUM_VERSION}\`"
+              echo "- Clients below the floor will force-update to the latest stable release."
+            else
+              echo "- Forced-update floor: cleared"
+              echo "- Updates are consent-based again."
+            fi
+            echo "- Product binaries were not changed."
+          } >> "${GITHUB_STEP_SUMMARY}"

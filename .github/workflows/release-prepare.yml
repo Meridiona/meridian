@@ -360,6 +360,18 @@ jobs:
           gh release create "${stable_tag}" --repo "${GITHUB_REPOSITORY}" \
             --target "${candidate_sha}" --draft --generate-notes --title "${stable_tag}"
 
+          # Minimum-version is mutable fleet policy. Read it from the CURRENT
+          # latest stable manifest before publishing this new stable release so
+          # an armed floor survives future releases until a maintainer clears it.
+          inherited_minimum=""
+          previous_latest="$(gh api "repos/${GITHUB_REPOSITORY}/releases/latest" --jq '.tag_name' 2>/dev/null || true)"
+          if [ -n "${previous_latest}" ]; then
+            policy_tmp="$(mktemp -d)"
+            if gh release download "${previous_latest}" --repo "${GITHUB_REPOSITORY}" --pattern latest.json --dir "${policy_tmp}" >/dev/null 2>&1; then
+              inherited_minimum="$(jq -r '.notes // ""' "${policy_tmp}/latest.json" | sed -nE 's/^Minimum-Version: ([0-9]+\.[0-9]+\.[0-9]+)$/\1/p' | tail -1)"
+            fi
+          fi
+
           tmp="$(mktemp -d)"
           gh release download "${CANDIDATE_TAG}" --repo "${GITHUB_REPOSITORY}" --dir "${tmp}"
 
@@ -370,6 +382,21 @@ jobs:
               python3 -c 'import json,sys; p,o,n,v=sys.argv[1:]; d=json.load(open(p)); rw=lambda x: x.replace("/download/"+o+"/","/download/"+n+"/") if isinstance(x,str) else [rw(y) for y in x] if isinstance(x,list) else {k:rw(y) for k,y in x.items()} if isinstance(x,dict) else x; d=rw(d); d["version"]=v if isinstance(d,dict) and "version" in d else d.get("version") if isinstance(d,dict) else v; open(p,"w").write(json.dumps(d,indent=2)+"\\n")' "${tmp}/${manifest}" "${CANDIDATE_TAG}" "${stable_tag}" "${version}"
             fi
           done
+
+          if [ -n "${inherited_minimum}" ] && [ -f "${tmp}/latest.json" ]; then
+            python3 - "${tmp}/latest.json" "${inherited_minimum}" <<'PY'
+            import json, re, sys
+            path, minimum = sys.argv[1:]
+            data = json.load(open(path))
+            notes = data.get("notes") or ""
+            notes = re.sub(r"(?m)^Minimum-Version: [0-9]+\.[0-9]+\.[0-9]+\n?", "", notes).rstrip()
+            data["notes"] = (notes + "\n" if notes else "") + f"Minimum-Version: {minimum}"
+            with open(path, "w") as f:
+                json.dump(data, f, indent=2)
+                f.write("\n")
+            PY
+            echo "→ carried forward minimum supported version ${inherited_minimum}"
+          fi
 
           gh release upload "${stable_tag}" --repo "${GITHUB_REPOSITORY}" --clobber "${tmp}"/*
           gh release edit "${stable_tag}" --repo "${GITHUB_REPOSITORY}" --draft=false --prerelease=false
