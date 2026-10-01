@@ -100,6 +100,24 @@ validation when their paths require it.
 A failure here means `main` needs to be fixed before cutting the next release.
 It does not retroactively change the PR gate into a release gate.
 
+## Main candidate manifests
+
+Every successful post-merge CI run on `main` uploads a small metadata artifact
+named `candidate-<full-sha>`. It records the exact integrated commit, CI run, and
+associated merge PRs. It does not contain product binaries and does not publish a
+GitHub Release.
+
+An RC must name that exact candidate SHA. `release-prepare.yml` verifies that:
+
+- the candidate is the current `main` HEAD;
+- a successful post-merge `CI` run exists for that exact SHA; and
+- the matching unexpired candidate manifest artifact exists.
+
+The current-HEAD restriction is deliberate. Semantic version analysis runs on
+current `main`; tagging an older SHA while analyzing newer commits could assign a
+version that does not describe the source being released. If current `main` is not
+releasable, fix/revert/feature-flag it and let CI create a new candidate.
+
 ## Release model
 
 ### Overview
@@ -123,7 +141,8 @@ Trigger:
 gh workflow run release-prepare.yml \
   --repo Meridiona/meridian \
   --ref main \
-  -f channel=rc
+  -f channel=rc \
+  -f candidate_sha=<full-successful-main-sha>
 ```
 
 `release-prepare.yml` uses semantic-release in version-analysis mode to derive
