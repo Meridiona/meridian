@@ -214,6 +214,16 @@ jobs:
         if: matrix.task == 'clippy'
         run: cargo clippy --workspace --all-targets -- -D warnings
 
+      - name: Rebuild native notification bridge
+        if: matrix.task == 'test'
+        # tauri-plugin-notifications builds a macOS native static library from
+        # its build script. rust-cache can legitimately restore Rust metadata
+        # from a compatible prefix key while that generated native archive is
+        # absent/stale, producing: "could not find native static library
+        # tauri-plugin-notifications". Clean ONLY this package so Cargo reruns
+        # its native build script; keep the rest of the ~1.4 GB dependency cache.
+        run: cargo clean -p tauri-plugin-notifications
+
       - name: test
         if: matrix.task == 'test'
         run: cargo test --workspace
