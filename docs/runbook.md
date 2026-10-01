@@ -2,7 +2,7 @@
 
 Operational procedures for the packaged desktop app, currently focused on **rollbacks**.
 Read alongside `docs/ci-cd.md` for the current CI/release architecture and
-`CLAUDE.md` (§ "Make a DMG release mandatory") for the emergency update floor.
+`CLAUDE.md` (§ "Make a DMG release mandatory") for the post-stable emergency update floor.
 
 > **Note:** Meridian no longer ships a separate on-device model runtime. Since
 > the Python/MLX removal, the only model Meridian downloads is the candle-based
@@ -29,8 +29,8 @@ Key code:
   `version_comparator`, so it is forward-only. A `latest.json` with a *lower*
   version returns "up to date" and nothing installs.
 - App forced-install floor: `update.rs::enforce_minimum_version` +
-  `scripts/package-updater.sh` (reads `tray/minimum-version`, bakes a
-  `Minimum-Version:` line into `latest.json`'s notes).
+  `.github/workflows/minimum-version.yml` (post-stable policy; edits only the
+  latest release's `latest.json` notes).
 - App release wiring: `.github/workflows/release-prepare.yml` creates an
   explicit RC candidate and dispatches `.github/workflows/release-build.yml`.
   The RC build signs/notarizes/packages and exact-artifact-smokes macOS + Windows.
@@ -67,31 +67,23 @@ that proven RC to stable. Stable promotion publishes a `latest.json` with a
 **higher** version while reusing the RC's exact signed binaries, and installed
 apps update normally (the in-app banner/card + tray-menu check).
 
-### A2 — Forced rollback (evict the bad build within ≤6 h)
+### A2 — Forced rollback (evict the bad build within <=6 h)
 
-Do everything in A1, **plus** arm the minimum-version floor in the *same* PR so
-old apps force-install without waiting for a click:
+Do A1 first and publish the rollback as a new stable version. After that stable
+release is live and verified, open GitHub Actions -> **Set minimum supported
+version**, choose `set`, and enter the rollback's stable version.
 
-```bash
-# Floor = the version this rollback will ship as.
-# A `revert:` is a patch bump, so: floor = <current released X.Y.Z, patch + 1>.
-printf '1.71.1\n' > tray/minimum-version        # example value
-git add tray/minimum-version
-```
+The workflow verifies that version is a published stable release, patches only
+the current latest stable `latest.json`, and arms `Minimum-Version: X.Y.Z`.
+Installed DMG apps below the floor force-install the latest stable release and
+relaunch. No new binary or release is created.
 
-- `package-updater.sh` bakes `Minimum-Version:` into `latest.json`;
-  `enforce_minimum_version` force-installs + relaunches (checked 30 s after
-  launch, then every 6 h), with **no consent prompt**.
-- `package-updater.sh` **fails the release loudly** if the floor exceeds the
-  release version, so an over-set value can't slip through.
-- **After it has propagated, empty `tray/minimum-version`** in a follow-up PR —
-  the floor ships with **every** release while the file has content, so leaving
-  it set keeps forcing later releases too.
+To end forced enforcement later, run the same workflow with `clear`. Stable
+promotion automatically carries an armed floor forward until it is cleared.
 
-> **Invariant:** `main` is the single development trunk. Reverts and hotfixes go through a PR to `main`; releases are separate explicit RC/stable promotions.
+> **Invariant:** `main` is the single development trunk. Reverts and hotfixes go through a PR to `main`; releases are separate explicit RC/stable promotions. Minimum-version enforcement happens only after stable publication.
 
 ---
-
 ## Quick decision guide
 
 | Situation | Action |
@@ -103,8 +95,8 @@ git add tray/minimum-version
 
 - [ ] App: confirmed `latest.json` on the GitHub `latest` release carries the
       higher (rollback) version, and `verify-release-bundle.sh` passed.
-- [ ] App (forced): `tray/minimum-version` emptied in a follow-up PR once the
-      fleet has moved.
+- [ ] App (forced): run **Set minimum supported version** with `clear` once
+      forced enforcement is no longer required.
 - [ ] Root cause captured (issue/ticket) so the reverted change can return
       safely.
 
