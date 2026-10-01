@@ -385,16 +385,16 @@ jobs:
 
           if [ -n "${inherited_minimum}" ] && [ -f "${tmp}/latest.json" ]; then
             python3 - "${tmp}/latest.json" "${inherited_minimum}" <<'PY'
-import json, re, sys
-path, minimum = sys.argv[1:]
-data = json.load(open(path))
-notes = data.get("notes") or ""
-notes = re.sub(r"(?m)^Minimum-Version: [0-9]+\.[0-9]+\.[0-9]+\n?", "", notes).rstrip()
-data["notes"] = (notes + "\n" if notes else "") + f"Minimum-Version: {minimum}"
-with open(path, "w") as f:
-    json.dump(data, f, indent=2)
-    f.write("\n")
-PY
+            import json, re, sys
+            path, minimum = sys.argv[1:]
+            data = json.load(open(path))
+            notes = data.get("notes") or ""
+            notes = re.sub(r"(?m)^Minimum-Version: [0-9]+\.[0-9]+\.[0-9]+\n?", "", notes).rstrip()
+            data["notes"] = (notes + "\n" if notes else "") + f"Minimum-Version: {minimum}"
+            with open(path, "w") as f:
+                json.dump(data, f, indent=2)
+                f.write("\n")
+            PY
             echo "→ carried forward minimum supported version ${inherited_minimum}"
           fi
 
