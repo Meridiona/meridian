@@ -69,13 +69,13 @@ jobs:
 
               latest_version="${latest_tag#v}"
               python3 - "${MINIMUM_VERSION}" "${latest_version}" <<'PY'
-import sys
-def core(v):
-    return tuple(int(x) for x in v.split("."))
-minimum, latest = map(core, sys.argv[1:])
-if minimum > latest:
-    raise SystemExit(f"minimum {sys.argv[1]} cannot exceed latest stable {sys.argv[2]}")
-PY
+              import sys
+              def core(v):
+                  return tuple(int(x) for x in v.split("."))
+              minimum, latest = map(core, sys.argv[1:])
+              if minimum > latest:
+                  raise SystemExit(f"minimum {sys.argv[1]} cannot exceed latest stable {sys.argv[2]}")
+              PY
               ;;
             clear)
               if [ -n "${MINIMUM_VERSION}" ]; then
@@ -92,18 +92,18 @@ PY
           gh release download "${latest_tag}" --repo "${REPO}" --pattern latest.json --dir "${tmp}"
 
           python3 - "${tmp}/latest.json" "${ACTION}" "${MINIMUM_VERSION}" <<'PY'
-import json, re, sys
-path, action, minimum = sys.argv[1:]
-data = json.load(open(path))
-notes = data.get("notes") or ""
-notes = re.sub(r"(?m)^Minimum-Version: [0-9]+\.[0-9]+\.[0-9]+\n?", "", notes).rstrip()
-if action == "set":
-    notes = (notes + "\n" if notes else "") + f"Minimum-Version: {minimum}"
-data["notes"] = notes
-with open(path, "w") as f:
-    json.dump(data, f, indent=2)
-    f.write("\n")
-PY
+          import json, re, sys
+          path, action, minimum = sys.argv[1:]
+          data = json.load(open(path))
+          notes = data.get("notes") or ""
+          notes = re.sub(r"(?m)^Minimum-Version: [0-9]+\.[0-9]+\.[0-9]+\n?", "", notes).rstrip()
+          if action == "set":
+              notes = (notes + "\n" if notes else "") + f"Minimum-Version: {minimum}"
+          data["notes"] = notes
+          with open(path, "w") as f:
+              json.dump(data, f, indent=2)
+              f.write("\n")
+          PY
 
           gh release upload "${latest_tag}" --repo "${REPO}" --clobber "${tmp}/latest.json"
 
@@ -120,9 +120,9 @@ PY
           {
             echo "### Minimum supported version"
             echo ""
-            echo "- Latest stable: `${latest_tag}`"
+            echo "- Latest stable: \`${latest_tag}\`"
             if [ "${ACTION}" = "set" ]; then
-              echo "- Forced-update floor: `${MINIMUM_VERSION}`"
+              echo "- Forced-update floor: \`${MINIMUM_VERSION}\`"
               echo "- Clients below the floor will force-update to the latest stable release."
             else
               echo "- Forced-update floor: cleared"
