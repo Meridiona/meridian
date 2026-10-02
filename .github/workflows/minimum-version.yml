@@ -18,7 +18,9 @@ on:
         default: ""
 
 concurrency:
-  group: minimum-supported-version
+  # Shared with promote-rc.yml so a floor update cannot race stable promotion's
+  # read-and-carry-forward of this mutable updater policy.
+  group: stable-release-metadata
   cancel-in-progress: false
 
 permissions:

@@ -1,11 +1,12 @@
-name: Release (prepare)
+name: Release (prepare RC)
 
 # DECIDES THE VERSION AND PUSHES THE TAG. BUILDS NOTHING.
 #
-# This is one half of a two-workflow release. Its entire job is to run
-# semantic-release, bump the version manifests, push a `v*` tag, and then
+# This is one half of the RC pipeline. Its entire job is to run version
+# analysis, push an immutable `vX.Y.Z-rc.N` tag, create its draft release, and
 # DISPATCH release-build.yml against `main` with that tag as an input.
-# release-build does all the compiling, signing, notarizing and publishing.
+# release-build does all compiling, signing, notarizing, smoking and publishing.
+# Stable promotion is a separate, build-free workflow: promote-rc.yml.
 #
 # The dispatch is not decoration: release-build used to fire on the tag PUSH,
 # and because GitHub scopes the Actions cache by `github.ref` — and tags may
@@ -59,29 +60,15 @@ name: Release (prepare)
 # version cheaply (or read it from the repo), then build from an immutable ref.
 
 on:
-  # Promotion is explicit. A branch update is development state; it is not a
+  # RC preparation is explicit. A branch update is development state; it is not a
   # release event. This is what lets main become the integration trunk later
   # without every merge attempting to publish production.
   workflow_dispatch:
     inputs:
-      channel:
-        description: "Promotion channel"
-        type: choice
-        required: true
-        default: rc
-        options:
-          - rc
-          - stable
       candidate_sha:
-        description: "For RC: exact successful main candidate SHA shown by CI"
+        description: "Exact successful main candidate SHA shown by CI"
         type: string
-        required: false
-        default: ""
-      candidate_tag:
-        description: "For stable: exact proven RC tag from the same main commit (for example v1.93.0-rc.2)"
-        type: string
-        required: false
-        default: ""
+        required: true
       dry_run:
         description: "Analyse commits and report the next version without tagging"
         type: boolean
@@ -98,32 +85,27 @@ permissions:
 
 jobs:
   prepare:
-    name: Decide version + push tag
+    name: Decide RC version + push tag
     runs-on: ubuntu-latest
     permissions:
       contents: write # pushes the version-bump commit and the tag
       actions: write # dispatches release-build.yml once the tag exists
-    # Promotion is manual-only. RC and stable promotions both originate from main.
+    # RC creation is manual-only and always originates from main.
     outputs:
       released: ${{ steps.run.outputs.released }}
       version: ${{ steps.run.outputs.version }}
       tag: ${{ steps.run.outputs.tag }}
     steps:
-      - name: Validate promotion target
+      - name: Require RC preparation from main
         env:
-          CHANNEL: ${{ inputs.channel }}
           REF_NAME: ${{ github.ref_name }}
         run: |
           set -euo pipefail
-          case "${CHANNEL}" in
-            stable|rc) expected="main" ;;
-            *) echo "::error::unknown release channel '${CHANNEL}'"; exit 1 ;;
-          esac
-          if [ "${REF_NAME}" != "${expected}" ]; then
-            echo "::error::${CHANNEL} promotion must be dispatched from '${expected}', not '${REF_NAME}'."
+          if [ "${REF_NAME}" != "main" ]; then
+            echo "::error::RC preparation must be dispatched from 'main', not '${REF_NAME}'."
             exit 1
           fi
-          echo "→ ${CHANNEL} promotion from ${REF_NAME}"
+          echo "→ RC preparation from ${REF_NAME}"
 
       - uses: actions/checkout@v7
         with:
@@ -148,7 +130,6 @@ jobs:
           token: ${{ secrets.GH_TOKEN || secrets.GITHUB_TOKEN }}
 
       - name: Require RC to use the exact successful main candidate
-        if: ${{ inputs.channel == 'rc' }}
         env:
           GH_TOKEN: ${{ secrets.GH_TOKEN || secrets.GITHUB_TOKEN }}
           CANDIDATE_SHA: ${{ inputs.candidate_sha }}
@@ -156,7 +137,7 @@ jobs:
           set -euo pipefail
 
           if [[ ! "${CANDIDATE_SHA}" =~ ^[0-9a-f]{40}$ ]]; then
-            echo "::error::RC promotion requires candidate_sha=<full 40-character main SHA>"
+            echo "::error::RC preparation requires candidate_sha=<full 40-character main SHA>"
             exit 1
           fi
 
@@ -186,97 +167,13 @@ jobs:
 
           echo "→ RC pinned to successful main candidate ${CANDIDATE_SHA} (CI run ${ci_run})"
 
-      - name: Require stable promotion to come from a proven RC
-        if: ${{ inputs.channel == 'stable' }}
-        env:
-          GH_TOKEN: ${{ secrets.GH_TOKEN || secrets.GITHUB_TOKEN }}
-          CANDIDATE_TAG: ${{ inputs.candidate_tag }}
-        run: |
-          set -euo pipefail
-
-          case "${CANDIDATE_TAG}" in
-            v*-rc.*) ;;
-            *) echo "::error::stable promotion requires candidate_tag=vX.Y.Z-rc.N"; exit 1 ;;
-          esac
-
-          git fetch --quiet --tags --force
-          candidate_sha="$(git rev-list -n1 "${CANDIDATE_TAG}" 2>/dev/null || true)"
-          head_sha="$(git rev-parse HEAD)"
-          if [ -z "${candidate_sha}" ]; then
-            echo "::error::candidate RC tag ${CANDIDATE_TAG} does not exist"
-            exit 1
-          fi
-          if [ "${candidate_sha}" != "${head_sha}" ]; then
-            if ! git merge-base --is-ancestor "${candidate_sha}" "${head_sha}"; then
-              echo "::error::main diverged from ${CANDIDATE_TAG}: candidate=${candidate_sha}, main=${head_sha}"
-              exit 1
-            fi
-
-            mapfile -t changed < <(git diff --name-only "${candidate_sha}..${head_sha}")
-            bad=()
-            for path in "${changed[@]}"; do
-              case "${path}" in
-                .github/workflows/release-build.yml|\
-                .github/workflows/release-prepare.yml|\
-                .github/workflows/pr-fast.yml|\
-                .github/workflows/ci.yml|\
-                .github/workflows/cache-prune.yml|\
-                .github/workflows/cache-audit.yml|\
-                .github/workflows/windows-product-smoke.yml|\
-                .github/workflows/macos-product-smoke.yml|\
-                scripts/ci/windows-install-smoke.ps1)
-                  ;;
-                *)
-                  bad+=("${path}")
-                  ;;
-              esac
-            done
-
-            if [ "${#bad[@]}" -ne 0 ]; then
-              printf '::error::main contains product/source changes after %s:\n' "${CANDIDATE_TAG}"
-              printf '  %s\n' "${bad[@]}"
-              echo "::error::Cut and smoke a new RC before stable promotion."
-              exit 1
-            fi
-            printf '→ allowing release-control-plane-only drift after %s:\n' "${CANDIDATE_TAG}"
-            printf '  %s\n' "${changed[@]}"
-          fi
-
-          meta="$(gh release view "${CANDIDATE_TAG}" --json isDraft,isPrerelease,assets)"
-          if [ "$(jq -r '.isDraft' <<<"${meta}")" != "false" ] || \
-             [ "$(jq -r '.isPrerelease' <<<"${meta}")" != "true" ]; then
-            echo "::error::${CANDIDATE_TAG} must be a published prerelease"
-            exit 1
-          fi
-
-          assets="$(jq -r '[.assets[].name] | join(" ")' <<<"${meta}")"
-          for proof in smoke-windows.ok smoke-macos.ok; do
-            case " ${assets} " in
-              *" ${proof} "*) echo "✓ ${CANDIDATE_TAG} carries ${proof}" ;;
-              *) echo "::error::${CANDIDATE_TAG} is missing ${proof}; stable promotion refused"; exit 1 ;;
-            esac
-          done
-
-          echo "→ stable promotion pinned to proven RC ${CANDIDATE_TAG} at ${head_sha}"
-
       - uses: actions/setup-node@v7
-        if: ${{ inputs.channel == 'rc' }}
         with:
           node-version: "24"
           cache: "npm"
           cache-dependency-path: package-lock.json
 
       - run: npm ci --no-audit --no-fund
-        if: ${{ inputs.channel == 'rc' }}
-
-      - name: Select release strategy
-        run: |
-          set -euo pipefail
-          if [ "${{ inputs.channel }}" = "stable" ]; then
-            echo "→ stable: promote the exact proven RC artifacts; no compile/sign/notarize"
-          else
-            echo "→ RC: semantic-release analyzes the next stable version; this workflow creates vX.Y.Z-rc.N itself"
-          fi
 
       - name: Decide version and create release tag
         id: run
@@ -284,129 +181,52 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GH_TOKEN || secrets.GITHUB_TOKEN }}
           GH_TOKEN: ${{ secrets.GH_TOKEN || secrets.GITHUB_TOKEN }}
           DRY_RUN: ${{ inputs.dry_run }}
-          CHANNEL: ${{ inputs.channel }}
-          CANDIDATE_TAG: ${{ inputs.candidate_tag }}
           CANDIDATE_SHA: ${{ inputs.candidate_sha }}
         run: |
           set -euo pipefail
 
-          if [ "${CHANNEL}" = "rc" ]; then
-            # Analyze main with the stable config, but do not let semantic-release
-            # create a release. This keeps one real release branch while RC tags
-            # remain an explicit workflow concern.
-            set +e
-            analysis="$(NO_COLOR=1 npx semantic-release --dry-run 2>&1)"
-            rc=$?
-            set -e
-            printf '%s\n' "${analysis}"
+          # Analyze main with the stable config, but do not let semantic-release
+          # create a release. RC tags remain an explicit workflow concern.
+          set +e
+          analysis="$(NO_COLOR=1 npx semantic-release --dry-run 2>&1)"
+          rc=$?
+          set -e
+          printf '%s\n' "${analysis}"
 
-            if [ "${rc}" -ne 0 ]; then
-              echo "::error::semantic-release version analysis failed"
-              exit "${rc}"
-            fi
+          if [ "${rc}" -ne 0 ]; then
+            echo "::error::semantic-release version analysis failed"
+            exit "${rc}"
+          fi
 
-            base="$(printf '%s\n' "${analysis}" | sed -nE 's/.*The next release version is ([0-9]+\.[0-9]+\.[0-9]+).*/\1/p' | tail -1)"
-            if [ -z "${base}" ]; then
-              echo "released=false" >> "${GITHUB_OUTPUT}"
-              echo "→ no releasable commits; no RC needed"
-              exit 0
-            fi
-
-            last_n="$(git tag --list "v${base}-rc.*" | sed -nE 's/.*-rc\.([0-9]+)$/\1/p' | sort -n | tail -1)"
-            n=$(( ${last_n:-0} + 1 ))
-            tag="v${base}-rc.${n}"
-
-            echo "version=${base}-rc.${n}" >> "${GITHUB_OUTPUT}"
-            echo "tag=${tag}" >> "${GITHUB_OUTPUT}"
-
-            if [ "${DRY_RUN}" = "true" ]; then
-              echo "released=false" >> "${GITHUB_OUTPUT}"
-              echo "→ dry run; would create ${tag}"
-              exit 0
-            fi
-
-            git tag "${tag}" "${CANDIDATE_SHA}"
-            git push origin "refs/tags/${tag}"
-            gh release create "${tag}" --repo "${GITHUB_REPOSITORY}" --target "${CANDIDATE_SHA}" --draft --prerelease --generate-notes --title "${tag}"
-
-            echo "released=true" >> "${GITHUB_OUTPUT}"
-            echo "→ created RC ${tag} from candidate ${CANDIDATE_SHA}"
+          base="$(printf '%s\n' "${analysis}" | sed -nE 's/.*The next release version is ([0-9]+\.[0-9]+\.[0-9]+).*/\1/p' | tail -1)"
+          if [ -z "${base}" ]; then
+            echo "released=false" >> "${GITHUB_OUTPUT}"
+            echo "→ no releasable commits; no RC needed"
             exit 0
           fi
 
-          # Stable promotion is metadata-only. RC artifacts are built with the
-          # final X.Y.Z app version and are channel-neutral, so recompiling here
-          # would only produce a second set of bytes that the RC never proved.
-          stable_tag="${CANDIDATE_TAG%%-rc.*}"
-          version="${stable_tag#v}"
-          candidate_sha="$(git rev-list -n1 "${CANDIDATE_TAG}")"
+          last_n="$(git tag --list "v${base}-rc.*" | sed -nE 's/.*-rc\.([0-9]+)$/\1/p' | sort -n | tail -1)"
+          n=$(( ${last_n:-0} + 1 ))
+          tag="v${base}-rc.${n}"
 
-          echo "version=${version}" >> "${GITHUB_OUTPUT}"
-          echo "tag=${stable_tag}" >> "${GITHUB_OUTPUT}"
+          echo "version=${base}-rc.${n}" >> "${GITHUB_OUTPUT}"
+          echo "tag=${tag}" >> "${GITHUB_OUTPUT}"
 
           if [ "${DRY_RUN}" = "true" ]; then
             echo "released=false" >> "${GITHUB_OUTPUT}"
-            echo "→ dry run; would promote ${CANDIDATE_TAG} byte-for-byte to ${stable_tag}"
+            echo "→ dry run; would create ${tag}"
             exit 0
           fi
 
-          if git rev-parse -q --verify "refs/tags/${stable_tag}" >/dev/null; then
-            echo "::error::stable tag ${stable_tag} already exists"
-            exit 1
-          fi
-
-          git tag "${stable_tag}" "${candidate_sha}"
-          git push origin "refs/tags/${stable_tag}"
-          gh release create "${stable_tag}" --repo "${GITHUB_REPOSITORY}" \
-            --target "${candidate_sha}" --draft --generate-notes --title "${stable_tag}"
-
-          # Minimum-version is mutable fleet policy. Read it from the CURRENT
-          # latest stable manifest before publishing this new stable release so
-          # an armed floor survives future releases until a maintainer clears it.
-          inherited_minimum=""
-          previous_latest="$(gh api "repos/${GITHUB_REPOSITORY}/releases/latest" --jq '.tag_name' 2>/dev/null || true)"
-          if [ -n "${previous_latest}" ]; then
-            policy_tmp="$(mktemp -d)"
-            if gh release download "${previous_latest}" --repo "${GITHUB_REPOSITORY}" --pattern latest.json --dir "${policy_tmp}" >/dev/null 2>&1; then
-              inherited_minimum="$(jq -r '.notes // ""' "${policy_tmp}/latest.json" | sed -nE 's/^Minimum-Version: ([0-9]+\.[0-9]+\.[0-9]+)$/\1/p' | tail -1)"
-            fi
-          fi
-
-          tmp="$(mktemp -d)"
-          gh release download "${CANDIDATE_TAG}" --repo "${GITHUB_REPOSITORY}" --dir "${tmp}"
-
-          # Reuse every signed/notarized binary and smoke proof. Only updater
-          # metadata changes because its URLs name the public stable tag.
-          for manifest in latest.json updater-aarch64-apple-darwin.json updater-windows.json; do
-            if [ -f "${tmp}/${manifest}" ]; then
-              python3 -c 'import json,sys; p,o,n,v=sys.argv[1:]; d=json.load(open(p)); rw=lambda x: x.replace("/download/"+o+"/","/download/"+n+"/") if isinstance(x,str) else [rw(y) for y in x] if isinstance(x,list) else {k:rw(y) for k,y in x.items()} if isinstance(x,dict) else x; d=rw(d); d["version"]=v if isinstance(d,dict) and "version" in d else d.get("version") if isinstance(d,dict) else v; open(p,"w").write(json.dumps(d,indent=2)+"\\n")' "${tmp}/${manifest}" "${CANDIDATE_TAG}" "${stable_tag}" "${version}"
-            fi
-          done
-
-          if [ -n "${inherited_minimum}" ] && [ -f "${tmp}/latest.json" ]; then
-            python3 - "${tmp}/latest.json" "${inherited_minimum}" <<'PY'
-            import json, re, sys
-            path, minimum = sys.argv[1:]
-            data = json.load(open(path))
-            notes = data.get("notes") or ""
-            notes = re.sub(r"(?m)^Minimum-Version: [0-9]+\.[0-9]+\.[0-9]+\n?", "", notes).rstrip()
-            data["notes"] = (notes + "\n" if notes else "") + f"Minimum-Version: {minimum}"
-            with open(path, "w") as f:
-                json.dump(data, f, indent=2)
-                f.write("\n")
-            PY
-            echo "→ carried forward minimum supported version ${inherited_minimum}"
-          fi
-
-          gh release upload "${stable_tag}" --repo "${GITHUB_REPOSITORY}" --clobber "${tmp}"/*
-          gh release edit "${stable_tag}" --repo "${GITHUB_REPOSITORY}" --draft=false --prerelease=false
+          git tag "${tag}" "${CANDIDATE_SHA}"
+          git push origin "refs/tags/${tag}"
+          gh release create "${tag}" --repo "${GITHUB_REPOSITORY}" --target "${CANDIDATE_SHA}" --draft --prerelease --generate-notes --title "${tag}"
 
           echo "released=true" >> "${GITHUB_OUTPUT}"
-          echo "→ promoted proven ${CANDIDATE_TAG} artifacts to stable ${stable_tag}"
-          exit 0
+          echo "→ created RC ${tag} from candidate ${CANDIDATE_SHA}"
 
       - name: Dispatch the build against main
-        if: ${{ steps.run.outputs.released == 'true' && inputs.channel == 'rc' }}
+        if: ${{ steps.run.outputs.released == 'true' }}
         env:
           GH_TOKEN: ${{ secrets.GH_TOKEN || secrets.GITHUB_TOKEN }}
           TAG: ${{ steps.run.outputs.tag }}
@@ -422,8 +242,8 @@ jobs:
         # `tag` travels as an INPUT that release-build checks out. main's cache
         # scope, the tag's source tree. release-build's `prepare` job hard-fails
         # if this is ever dispatched from anywhere else, so the two halves of
-        # that arrangement cannot drift apart. RC and stable tags both point
-        # into main history.
+        # that arrangement cannot drift apart. RC tags always point into main
+        # history.
         #
         # The PAT matters here for the same reason it matters for the tag push
         # above: a workflow dispatched with the default GITHUB_TOKEN is subject

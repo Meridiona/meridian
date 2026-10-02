@@ -34,8 +34,9 @@ Key code:
 - App release wiring: `.github/workflows/release-prepare.yml` creates an
   explicit RC candidate and dispatches `.github/workflows/release-build.yml`.
   The RC build signs/notarizes/packages and exact-artifact-smokes macOS + Windows.
-  Stable promotion then reuses those exact proven binaries and rewrites only
-  updater/release metadata. Stable does not rebuild the product.
+  After manual validation, `.github/workflows/promote-rc.yml` reuses those exact
+  proven binaries and rewrites only updater/release metadata. Stable does not
+  rebuild the product.
 
 ---
 

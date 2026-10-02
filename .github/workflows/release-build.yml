@@ -15,7 +15,7 @@ name: Release (build & publish)
 #
 # RC tags are immutable candidates (vX.Y.Z-rc.N), but the binaries are stamped
 # with the final X.Y.Z application version and are channel-neutral. Stable
-# promotion is handled by release-prepare.yml and reuses the exact proven RC
+# promotion is handled by promote-rc.yml and reuses the exact proven RC
 # artifacts; it does not dispatch this workflow or rebuild the product.
 #
 # See docs/ci-cd.md for the release invariants and cache topology.
@@ -149,13 +149,13 @@ name: Release (build & publish)
 #     real `v*` tag and every job checks it out by name.
 #
 # THE ONE REAL TRADE-OFF: the workflow LOGIC now comes from `main` while the
-# SOURCE comes from the tag. RC and stable tags are both cut from `main` and
+# SOURCE comes from the tag. RC tags are cut from `main` and
 # built by main's copy of this file. The workflow logic and source ref are
 # cache-warm.yml had to match the tag's release-build.yml) reduced to one file
 # on one branch, and made visible — but it does mean a change to the BUILD STEPS
 # only takes effect for releases once it has reached `main`.
 #
-# `release-prepare.yml` does the dispatch automatically after it pushes the tag,
+# `release-prepare.yml` does the RC dispatch automatically after it pushes the tag,
 # so cutting a release is still one action.
 #
 # ── WHERE THE TIME ACTUALLY GOES (measured, v1.84.0-staging.9, first warm run) ─
@@ -353,7 +353,7 @@ jobs:
         # RC tags point at the exact main commit without a committed version bump, so
         # there is nothing meaningful to compare against in the manifest tree.
         # The build stamps the final X.Y.Z version derived from the immutable RC
-        # tag. Stable promotion does not call this workflow.
+        # tag. promote-rc.yml never calls this workflow.
         run: |
           set -euo pipefail
           if [ "${CHANNEL}" != "stable" ]; then
@@ -1312,4 +1312,3 @@ jobs:
           set -euo pipefail
           gh release edit "${TAG}" --draft=false
           echo "→ published proven ${TAG} (${CHANNEL})"
-
