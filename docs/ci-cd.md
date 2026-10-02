@@ -200,6 +200,11 @@ a draft, publishes it, then verifies the published release and `latest` channel.
 Any missing asset, malformed proof, unexpected JSON asset, metadata mismatch, or
 integrity mismatch fails closed.
 
+If a run stops after creating the stable draft but before uploading anything, a
+retry may resume only that exact empty, non-prerelease draft at the proven RC
+commit. Any existing tag, published release, different target, or non-empty
+draft remains a hard stop; promotion never overwrites release state.
+
 It does **not** run `release-build.yml` and does **not** compile, sign, notarize,
 or package the product again.
 
