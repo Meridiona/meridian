@@ -298,6 +298,28 @@ def minimum(args: argparse.Namespace) -> None:
     print(floors[0] if floors else "")
 
 
+def update_policy(args: argparse.Namespace) -> None:
+    if not VERSION_RE.fullmatch(args.latest_version):
+        fail("latest-version must be canonical X.Y.Z")
+    manifest = read_json(args.manifest)
+    if not isinstance(manifest, dict) or manifest.get("version") != args.latest_version:
+        fail(f"latest.json must be stamped with latest stable version {args.latest_version}")
+    notes = manifest.get("notes") or ""
+    if not isinstance(notes, str):
+        fail("latest stable manifest notes must be a string")
+    policy_lines = MINIMUM_LINE_RE.findall(notes)
+    floors = MINIMUM_RE.findall(notes)
+    if len(policy_lines) != len(floors) or len(floors) > 1:
+        fail("latest stable manifest has malformed or duplicate Minimum-Version policy")
+
+    notes = MINIMUM_LINE_RE.sub("", notes).rstrip()
+    if args.action == "set-latest":
+        notes = (notes + "\n" if notes else "") + f"Minimum-Version: {args.latest_version}"
+    manifest["notes"] = notes
+    args.manifest.write_text(json.dumps(manifest, indent=2) + "\n")
+    print(args.latest_version if args.action == "set-latest" else "")
+
+
 def parser() -> argparse.ArgumentParser:
     result = argparse.ArgumentParser(description=__doc__)
     sub = result.add_subparsers(dest="command", required=True)
@@ -319,6 +341,11 @@ def parser() -> argparse.ArgumentParser:
     minimum_parser = sub.add_parser("minimum")
     minimum_parser.add_argument("--manifest", type=pathlib.Path, required=True)
     minimum_parser.set_defaults(func=minimum)
+    policy_parser = sub.add_parser("policy")
+    policy_parser.add_argument("--manifest", type=pathlib.Path, required=True)
+    policy_parser.add_argument("--action", choices=("set-latest", "clear"), required=True)
+    policy_parser.add_argument("--latest-version", required=True)
+    policy_parser.set_defaults(func=update_policy)
     return result
 
 

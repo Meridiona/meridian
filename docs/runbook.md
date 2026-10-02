@@ -72,7 +72,8 @@ apps update normally (the in-app banner/card + tray-menu check).
 
 Do A1 first and publish the rollback as a new stable version. After that stable
 release is live and verified, open GitHub Actions -> **Set minimum supported
-version**, choose `set`, and enter the rollback's stable version.
+version**, then choose `set-latest`. The workflow derives the current stable
+version automatically; there is no version field to type.
 
 The workflow verifies that version is a published stable release, patches only
 the current latest stable `latest.json`, and arms `Minimum-Version: X.Y.Z`.

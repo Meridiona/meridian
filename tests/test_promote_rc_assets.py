@@ -166,6 +166,64 @@ class PromoteRcAssetsTest(unittest.TestCase):
         self.assertNotEqual(rejected.returncode, 0)
         self.assertIn("cannot read valid JSON", rejected.stderr)
 
+    def test_minimum_policy_uses_latest_stable_without_free_text_version(self):
+        manifest = self.root / "latest.json"
+        manifest.write_text(json.dumps({"version": "1.92.3", "notes": "Meridian v1.92.3\nMinimum-Version: 1.92.0"}))
+        set_latest = subprocess.run(
+            [
+                sys.executable,
+                str(SCRIPT),
+                "policy",
+                "--manifest",
+                str(manifest),
+                "--action",
+                "set-latest",
+                "--latest-version",
+                "1.92.3",
+            ],
+            text=True,
+            capture_output=True,
+        )
+        self.assertEqual(set_latest.returncode, 0, set_latest.stderr)
+        self.assertEqual(json.loads(manifest.read_text())["notes"], "Meridian v1.92.3\nMinimum-Version: 1.92.3")
+
+        clear = subprocess.run(
+            [
+                sys.executable,
+                str(SCRIPT),
+                "policy",
+                "--manifest",
+                str(manifest),
+                "--action",
+                "clear",
+                "--latest-version",
+                "1.92.3",
+            ],
+            text=True,
+            capture_output=True,
+        )
+        self.assertEqual(clear.returncode, 0, clear.stderr)
+        self.assertEqual(json.loads(manifest.read_text())["notes"], "Meridian v1.92.3")
+
+        manifest.write_text(json.dumps({"version": "1.92.2", "notes": "Meridian v1.92.2"}))
+        mismatch = subprocess.run(
+            [
+                sys.executable,
+                str(SCRIPT),
+                "policy",
+                "--manifest",
+                str(manifest),
+                "--action",
+                "set-latest",
+                "--latest-version",
+                "1.92.3",
+            ],
+            text=True,
+            capture_output=True,
+        )
+        self.assertNotEqual(mismatch.returncode, 0)
+        self.assertIn("stamped with latest stable", mismatch.stderr)
+
 
 if __name__ == "__main__":
     unittest.main()

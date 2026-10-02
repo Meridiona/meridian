@@ -4,18 +4,13 @@ on:
   workflow_dispatch:
     inputs:
       action:
-        description: "Set or clear the forced-update floor"
+        description: "Forced-update policy"
         type: choice
         required: true
-        default: set
+        default: set-latest
         options:
-          - set
+          - set-latest
           - clear
-      minimum_version:
-        description: "For set: published stable X.Y.Z to use as the minimum supported version"
-        type: string
-        required: false
-        default: ""
 
 concurrency:
   # Shared with promote-rc.yml so a floor update cannot race stable promotion's
@@ -31,16 +26,26 @@ jobs:
     name: Update latest stable updater policy
     runs-on: ubuntu-latest
     steps:
+      - name: Check out the policy helper
+        uses: actions/checkout@v7
+        with:
+          ref: main
+          persist-credentials: false
+
       - name: Validate and update latest stable manifest
         env:
           GH_TOKEN: ${{ secrets.GH_TOKEN || secrets.GITHUB_TOKEN }}
           ACTION: ${{ inputs.action }}
-          MINIMUM_VERSION: ${{ inputs.minimum_version }}
           REPO: ${{ github.repository }}
         run: |
           set -euo pipefail
 
           latest_tag="$(gh api "repos/${REPO}/releases/latest" --jq '.tag_name')"
+          if [[ ! "${latest_tag}" =~ ^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]]; then
+            echo "::error::latest release tag ${latest_tag} is not canonical vX.Y.Z"
+            exit 1
+          fi
+          latest_version="${latest_tag#v}"
           latest_meta="$(gh release view "${latest_tag}" --repo "${REPO}" --json isDraft,isPrerelease,assets)"
           if [ "$(jq -r '.isDraft' <<<"${latest_meta}")" != "false" ] || \
              [ "$(jq -r '.isPrerelease' <<<"${latest_meta}")" != "false" ]; then
@@ -53,69 +58,27 @@ jobs:
             exit 1
           fi
 
-          case "${ACTION}" in
-            set)
-              if [[ ! "${MINIMUM_VERSION}" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
-                echo "::error::minimum_version must be plain X.Y.Z"
-                exit 1
-              fi
-
-              target_tag="v${MINIMUM_VERSION}"
-              target_meta="$(gh release view "${target_tag}" --repo "${REPO}" --json isDraft,isPrerelease 2>/dev/null || true)"
-              if [ -z "${target_meta}" ] || \
-                 [ "$(jq -r '.isDraft' <<<"${target_meta}")" != "false" ] || \
-                 [ "$(jq -r '.isPrerelease' <<<"${target_meta}")" != "false" ]; then
-                echo "::error::${target_tag} must already exist as a published stable release"
-                exit 1
-              fi
-
-              latest_version="${latest_tag#v}"
-              python3 - "${MINIMUM_VERSION}" "${latest_version}" <<'PY'
-              import sys
-              def core(v):
-                  return tuple(int(x) for x in v.split("."))
-              minimum, latest = map(core, sys.argv[1:])
-              if minimum > latest:
-                  raise SystemExit(f"minimum {sys.argv[1]} cannot exceed latest stable {sys.argv[2]}")
-              PY
-              ;;
-            clear)
-              if [ -n "${MINIMUM_VERSION}" ]; then
-                echo "::warning::minimum_version is ignored when action=clear"
-              fi
-              ;;
-            *)
-              echo "::error::unknown action ${ACTION}"
-              exit 1
-              ;;
-          esac
-
           tmp="$(mktemp -d)"
           gh release download "${latest_tag}" --repo "${REPO}" --pattern latest.json --dir "${tmp}"
 
-          python3 - "${tmp}/latest.json" "${ACTION}" "${MINIMUM_VERSION}" <<'PY'
-          import json, re, sys
-          path, action, minimum = sys.argv[1:]
-          data = json.load(open(path))
-          notes = data.get("notes") or ""
-          notes = re.sub(r"(?m)^Minimum-Version: [0-9]+\.[0-9]+\.[0-9]+\n?", "", notes).rstrip()
-          if action == "set":
-              notes = (notes + "\n" if notes else "") + f"Minimum-Version: {minimum}"
-          data["notes"] = notes
-          with open(path, "w") as f:
-              json.dump(data, f, indent=2)
-              f.write("\n")
-          PY
+          floor="$(python3 scripts/promote-rc-assets.py policy \
+            --manifest "${tmp}/latest.json" \
+            --action "${ACTION}" \
+            --latest-version "${latest_version}")"
 
           gh release upload "${latest_tag}" --repo "${REPO}" --clobber "${tmp}/latest.json"
 
-          floor="$(jq -r '.notes // ""' "${tmp}/latest.json" | sed -nE 's/^Minimum-Version: ([0-9]+\.[0-9]+\.[0-9]+)$/\1/p' | tail -1)"
-          if [ "${ACTION}" = "set" ] && [ "${floor}" != "${MINIMUM_VERSION}" ]; then
-            echo "::error::failed to write requested minimum version"
+          mkdir "${tmp}/verify"
+          gh release download "${latest_tag}" --repo "${REPO}" \
+            --pattern latest.json --dir "${tmp}/verify"
+          if ! cmp -s "${tmp}/latest.json" "${tmp}/verify/latest.json"; then
+            echo "::error::uploaded latest.json differs from the validated policy manifest"
             exit 1
           fi
-          if [ "${ACTION}" = "clear" ] && [ -n "${floor}" ]; then
-            echo "::error::failed to clear minimum version"
+          uploaded_floor="$(python3 scripts/promote-rc-assets.py minimum \
+            --manifest "${tmp}/verify/latest.json")"
+          if [ "${uploaded_floor}" != "${floor}" ]; then
+            echo "::error::uploaded minimum-version policy does not match the requested state"
             exit 1
           fi
 
@@ -123,8 +86,8 @@ jobs:
             echo "### Minimum supported version"
             echo ""
             echo "- Latest stable: \`${latest_tag}\`"
-            if [ "${ACTION}" = "set" ]; then
-              echo "- Forced-update floor: \`${MINIMUM_VERSION}\`"
+            if [ "${ACTION}" = "set-latest" ]; then
+              echo "- Forced-update floor: \`${latest_version}\`"
               echo "- Clients below the floor will force-update to the latest stable release."
             else
               echo "- Forced-update floor: cleared"
