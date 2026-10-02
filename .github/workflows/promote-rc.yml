@@ -96,6 +96,7 @@ jobs:
                 .github/workflows/macos-product-smoke.yml|\
                 scripts/promote-rc-assets.py|\
                 scripts/ci/windows-install-smoke.ps1|\
+                tests/test_promote_rc_assets.py|\
                 docs/ci-cd.md|\
                 docs/runbook.md)
                   ;;
