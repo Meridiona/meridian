@@ -47,10 +47,30 @@ def fail(message: str) -> NoReturn:
     raise SystemExit(f"::error::{message}")
 
 
-def read_json(path: pathlib.Path) -> Any:
+def read_json(path: pathlib.Path, *, allow_legacy_newline_marker: bool = False) -> Any:
     try:
-        return json.loads(path.read_text())
-    except (OSError, json.JSONDecodeError) as exc:
+        raw = path.read_text()
+    except OSError as exc:
+        fail(f"cannot read valid JSON from {path}: {exc}")
+    try:
+        return json.loads(raw)
+    except json.JSONDecodeError as exc:
+        # v1.92.2/latest.json was written by the retired inline promotion path,
+        # which accidentally appended the two literal bytes "\\n" after an
+        # otherwise valid object. Accept only that exact, known legacy suffix;
+        # every other parse failure remains fatal.
+        if allow_legacy_newline_marker and raw.endswith(r"\n"):
+            try:
+                value = json.loads(raw[:-2])
+            except json.JSONDecodeError:
+                pass
+            else:
+                print(
+                    f"::warning::{path} uses the legacy trailing \\n marker; "
+                    "the promoted stable manifest will be normalized",
+                    file=sys.stderr,
+                )
+                return value
         fail(f"cannot read valid JSON from {path}: {exc}")
 
 
@@ -264,6 +284,20 @@ def verify(args: argparse.Namespace) -> None:
     print(f"verified {len(expected)} uploaded assets on {inventory['stable_tag']}")
 
 
+def minimum(args: argparse.Namespace) -> None:
+    manifest = read_json(args.manifest, allow_legacy_newline_marker=True)
+    if not isinstance(manifest, dict):
+        fail("current stable latest.json must contain a JSON object")
+    notes = manifest.get("notes") or ""
+    if not isinstance(notes, str):
+        fail("current stable latest.json notes must be a string")
+    policy_lines = MINIMUM_LINE_RE.findall(notes)
+    floors = MINIMUM_RE.findall(notes)
+    if len(policy_lines) != len(floors) or len(floors) > 1:
+        fail("current stable manifest has malformed or duplicate Minimum-Version policy")
+    print(floors[0] if floors else "")
+
+
 def parser() -> argparse.ArgumentParser:
     result = argparse.ArgumentParser(description=__doc__)
     sub = result.add_subparsers(dest="command", required=True)
@@ -282,6 +316,9 @@ def parser() -> argparse.ArgumentParser:
     verify_parser.add_argument("--inventory", type=pathlib.Path, required=True)
     verify_parser.add_argument("--expect-draft", action=argparse.BooleanOptionalAction, required=True)
     verify_parser.set_defaults(func=verify)
+    minimum_parser = sub.add_parser("minimum")
+    minimum_parser.add_argument("--manifest", type=pathlib.Path, required=True)
+    minimum_parser.set_defaults(func=minimum)
     return result
 
 
