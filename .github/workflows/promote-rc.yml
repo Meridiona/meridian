@@ -175,16 +175,8 @@ jobs:
             mkdir -p "${WORK}/previous"
             gh release download "${previous_latest}" --repo "${REPO}" \
               --pattern latest.json --dir "${WORK}/previous"
-            minimum="$(python3 - "${WORK}/previous/latest.json" <<'PY'
-          import json, re, sys
-          notes = json.load(open(sys.argv[1])).get("notes") or ""
-          policy_lines = re.findall(r"(?m)^Minimum-Version:.*$", notes)
-          floors = re.findall(r"(?m)^Minimum-Version: ([0-9]+\.[0-9]+\.[0-9]+)\s*$", notes)
-          if len(policy_lines) != len(floors) or len(floors) > 1:
-              raise SystemExit("::error::current stable manifest has malformed or duplicate Minimum-Version policy")
-          print(floors[0] if floors else "")
-          PY
-            )"
+            minimum="$(python3 scripts/promote-rc-assets.py minimum \
+              --manifest "${WORK}/previous/latest.json")"
           fi
           echo "minimum=${minimum}" >> "${GITHUB_OUTPUT}"
           if [ -n "${minimum}" ]; then

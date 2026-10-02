@@ -145,6 +145,27 @@ class PromoteRcAssetsTest(unittest.TestCase):
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("does not attest", result.stderr)
 
+    def test_reads_known_legacy_newline_marker_and_rejects_other_trailing_data(self):
+        manifest = self.root / "previous-latest.json"
+        manifest.write_text(json.dumps({"notes": "Meridian v1.92.2\nMinimum-Version: 1.92.0"}) + r"\n")
+        accepted = subprocess.run(
+            [sys.executable, str(SCRIPT), "minimum", "--manifest", str(manifest)],
+            text=True,
+            capture_output=True,
+        )
+        self.assertEqual(accepted.returncode, 0, accepted.stderr)
+        self.assertEqual(accepted.stdout.strip(), "1.92.0")
+        self.assertIn("legacy trailing", accepted.stderr)
+
+        manifest.write_text(json.dumps({"notes": "Minimum-Version: 1.92.0"}) + " garbage")
+        rejected = subprocess.run(
+            [sys.executable, str(SCRIPT), "minimum", "--manifest", str(manifest)],
+            text=True,
+            capture_output=True,
+        )
+        self.assertNotEqual(rejected.returncode, 0)
+        self.assertIn("cannot read valid JSON", rejected.stderr)
+
 
 if __name__ == "__main__":
     unittest.main()
