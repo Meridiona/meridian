@@ -122,10 +122,11 @@ releasable, fix/revert/feature-flag it and let CI create a new candidate.
 
 ### Overview
 
-The release pipeline is two explicit workflows:
+The release pipeline is three explicit workflows:
 
 - `.github/workflows/release-prepare.yml`
 - `.github/workflows/release-build.yml`
+- `.github/workflows/promote-rc.yml`
 
 The key rule is:
 
@@ -141,7 +142,6 @@ Trigger:
 gh workflow run release-prepare.yml \
   --repo Meridiona/meridian \
   --ref main \
-  -f channel=rc \
   -f candidate_sha=<full-successful-main-sha>
 ```
 
@@ -166,24 +166,39 @@ The RC build:
 RC binaries are stamped with the final `X.Y.Z` application version. They are
 not compiled as a special "staging" binary.
 
+After automated exact-artifact smoke passes, a maintainer manually validates
+the published prerelease before promoting it. Promotion is intentionally a
+separate action; publishing an RC never makes it stable automatically.
+
 ### Stable promotion
 
 Trigger:
 
 ```bash
-gh workflow run release-prepare.yml \
+gh workflow run promote-rc.yml \
   --repo Meridiona/meridian \
   --ref main \
-  -f channel=stable \
-  -f candidate_tag=vX.Y.Z-rc.N
+  -f rc_tag=vX.Y.Z-rc.N
 ```
 
 Stable promotion is metadata/artifact promotion only.
 
-It verifies the named candidate is a published proven RC, validates allowed
-source drift, creates the stable tag at the candidate source commit, creates the
-stable release, downloads the RC assets, rewrites updater-manifest download URLs
-from the RC tag to the stable tag, and publishes the stable release.
+It verifies the named candidate is a published prerelease at the resolved RC
+tag commit, validates allowed source drift, and refuses to overwrite an existing
+stable tag or release. It downloads every RC asset and checks each byte against
+GitHub's SHA-256 digest, verifies both smoke proofs bind the RC tag and commit to
+the same successful `Release (build & publish)` run, and validates that the
+complete updater manifest exactly matches its signed platform fragments.
+
+Only after those checks does it create the stable tag/draft release and upload
+the staged asset set. Product binaries, signatures, and smoke proofs must remain
+byte-for-byte identical. The three updater JSON assets are rewritten only to
+retarget download URLs from the RC tag to the stable tag; `latest.json` also
+carries forward any currently armed `Minimum-Version` policy. The workflow
+checks every uploaded stable asset's SHA-256 and size while the release is still
+a draft, publishes it, then verifies the published release and `latest` channel.
+Any missing asset, malformed proof, unexpected JSON asset, metadata mismatch, or
+integrity mismatch fails closed.
 
 It does **not** run `release-build.yml` and does **not** compile, sign, notarize,
 or package the product again.
@@ -195,6 +210,10 @@ is expected to differ.
 The `v1.92.2-rc.3 -> v1.92.2` promotion proved this path in production: stable
 promotion completed in well under five minutes with identical product-artifact
 digests.
+
+After the stable release is verified, maintainers may optionally run **Set
+minimum supported version**. That policy step is deliberately separate from
+promotion and never changes product binaries.
 
 ## Updater model
 
@@ -295,8 +314,9 @@ When changing CI/release files, preserve these boundaries:
 
 - `pr-fast.yml`: pre-merge fast feedback only.
 - `ci.yml`: exhaustive post-merge validation.
-- `release-prepare.yml`: version/tag/release promotion orchestration.
+- `release-prepare.yml`: RC version analysis, tag creation, and build dispatch.
 - `release-build.yml`: RC product build/sign/notarize/package/smoke/publish.
+- `promote-rc.yml`: build-free, exact-artifact RC-to-stable promotion.
 - product-smoke workflows/scripts: test existing artifacts; do not rebuild.
 - cache workflows: observe/prune cache storage; do not compile the product.
 

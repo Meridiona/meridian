@@ -311,11 +311,15 @@ jobs:
 
           build_src = pathlib.Path(".github/workflows/release-build.yml").read_text()
           prep_src = pathlib.Path(".github/workflows/release-prepare.yml").read_text()
+          promote_src = pathlib.Path(".github/workflows/promote-rc.yml").read_text()
+          promote_helper_src = pathlib.Path("scripts/promote-rc-assets.py").read_text()
           build = yaml.safe_load(build_src)
           prep = yaml.safe_load(prep_src)
+          promote = yaml.safe_load(promote_src)
 
           build_triggers = build.get("on", build.get(True)) or {}
           prep_triggers = prep.get("on", prep.get(True)) or {}
+          promote_triggers = promote.get("on", promote.get(True)) or {}
           fail = []
 
           if "push" in build_triggers:
@@ -330,16 +334,35 @@ jobs:
               fail.append("release-prepare.yml must not release on branch push; promotion is explicit")
           prep_dispatch = prep_triggers.get("workflow_dispatch") or {}
           inputs = prep_dispatch.get("inputs") or {}
-          if "channel" not in inputs:
-              fail.append("release-prepare.yml must require an explicit promotion channel")
-          if "candidate_tag" not in inputs:
-              fail.append("release-prepare.yml must require a candidate_tag input for stable promotion")
-          if 'expected="main"' not in prep_src:
-              fail.append("release-prepare.yml must guard every promotion to main")
+          if "candidate_sha" not in inputs:
+              fail.append("release-prepare.yml must require an exact candidate_sha")
+          if '!= "main"' not in prep_src:
+              fail.append("release-prepare.yml must guard RC preparation to main")
           if 'expected="pre-main"' in prep_src:
-              fail.append("release-prepare.yml must not route any promotion through pre-main")
+              fail.append("release-prepare.yml must not route RC preparation through pre-main")
           if "--ref main" not in prep_src:
               fail.append("release-prepare.yml must dispatch release-build against main cache scope")
+
+          if "push" in promote_triggers:
+              fail.append("promote-rc.yml must remain manual-only")
+          promote_dispatch = promote_triggers.get("workflow_dispatch") or {}
+          if "rc_tag" not in (promote_dispatch.get("inputs") or {}):
+              fail.append("promote-rc.yml must require an explicit rc_tag")
+          for invariant in (
+              "refs/heads/main",
+              "published prerelease",
+              "already exists; promotion never overwrites",
+              "actions/runs/${smoke_run_id}",
+              "promote-rc-assets.py stage",
+              "promote-rc-assets.py verify",
+          ):
+              if invariant not in promote_src:
+                  fail.append(f"promote-rc.yml is missing invariant: {invariant}")
+          if "gh workflow run release-build.yml" in promote_src or "uses: ./.github/workflows/release-build.yml" in promote_src:
+              fail.append("promote-rc.yml must never dispatch the product build")
+          for proof in ("smoke-windows.ok", "smoke-macos.ok"):
+              if proof not in promote_helper_src:
+                  fail.append(f"promotion helper must require exact-artifact proof {proof}")
           for proof in ("smoke-windows.ok", "smoke-macos.ok"):
               if proof not in build_src:
                   fail.append(f"release-build.yml must require exact-artifact proof {proof} before publish")
@@ -350,7 +373,7 @@ jobs:
               for message in fail:
                   print(f"::error::{message}")
               sys.exit(1)
-          print("OK - merge is not release; promotion is explicit and builds immutable tags.")
+          print("OK - RC creation builds immutable tags; stable promotion reuses proven artifacts.")
           PY
 
       - name: Keep screenpipe fork on audited MIT-based revision

@@ -1,0 +1,318 @@
+name: Promote RC → Stable
+
+# Publishes a stable release from an already-built, already-smoked RC. This
+# workflow must never compile, sign, notarize, or package the product. Product
+# assets and smoke attestations remain byte-for-byte identical; only updater
+# JSON URLs (and the carried-forward minimum-version policy) may change.
+
+on:
+  workflow_dispatch:
+    inputs:
+      rc_tag:
+        description: "Published proven RC tag to promote (for example v1.92.3-rc.2)"
+        required: true
+        type: string
+
+concurrency:
+  # Shared with minimum-version.yml so a policy edit cannot race the read that
+  # carries the current floor into a newly promoted stable manifest.
+  group: stable-release-metadata
+  cancel-in-progress: false
+
+permissions:
+  actions: read
+  contents: write
+
+jobs:
+  promote:
+    name: Validate and promote exact RC artifacts
+    runs-on: ubuntu-latest
+    steps:
+      - name: Require main and derive the stable tag
+        id: context
+        env:
+          REF: ${{ github.ref }}
+          RC_TAG: ${{ inputs.rc_tag }}
+        run: |
+          set -euo pipefail
+          if [ "${REF}" != "refs/heads/main" ]; then
+            echo "::error::promotion must be dispatched with 'Use workflow from' set to main, not ${REF}"
+            exit 1
+          fi
+          if [[ ! "${RC_TAG}" =~ ^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)-rc\.([1-9][0-9]*)$ ]]; then
+            echo "::error::rc_tag must be canonical vX.Y.Z-rc.N"
+            exit 1
+          fi
+          stable_tag="${RC_TAG%%-rc.*}"
+          {
+            echo "rc_tag=${RC_TAG}"
+            echo "stable_tag=${stable_tag}"
+            echo "version=${stable_tag#v}"
+          } >> "${GITHUB_OUTPUT}"
+          echo "→ ${RC_TAG} will promote to ${stable_tag}"
+
+      - name: Check out the release control plane
+        uses: actions/checkout@v7
+        with:
+          ref: main
+          fetch-depth: 0
+          fetch-tags: true
+          persist-credentials: false
+
+      - name: Validate the RC release and source commit
+        id: source
+        env:
+          GH_TOKEN: ${{ secrets.GH_TOKEN || secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+          RC_TAG: ${{ steps.context.outputs.rc_tag }}
+        run: |
+          set -euo pipefail
+          git fetch --quiet --force origin "refs/tags/${RC_TAG}:refs/tags/${RC_TAG}"
+          candidate_sha="$(git rev-parse "refs/tags/${RC_TAG}^{commit}" 2>/dev/null || true)"
+          if [[ ! "${candidate_sha}" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "::error::RC tag ${RC_TAG} does not resolve to a commit"
+            exit 1
+          fi
+
+          head_sha="$(git rev-parse HEAD)"
+          if ! git merge-base --is-ancestor "${candidate_sha}" "${head_sha}"; then
+            echo "::error::RC commit ${candidate_sha} is not an ancestor of main ${head_sha}"
+            exit 1
+          fi
+          if [ "${candidate_sha}" != "${head_sha}" ]; then
+            mapfile -t changed < <(git diff --name-only "${candidate_sha}..${head_sha}")
+            bad=()
+            for path in "${changed[@]}"; do
+              case "${path}" in
+                .github/workflows/release-build.yml|\
+                .github/workflows/release-prepare.yml|\
+                .github/workflows/promote-rc.yml|\
+                .github/workflows/minimum-version.yml|\
+                .github/workflows/pr-fast.yml|\
+                .github/workflows/ci.yml|\
+                .github/workflows/cache-prune.yml|\
+                .github/workflows/cache-audit.yml|\
+                .github/workflows/windows-product-smoke.yml|\
+                .github/workflows/macos-product-smoke.yml|\
+                scripts/promote-rc-assets.py|\
+                scripts/ci/windows-install-smoke.ps1|\
+                tests/test_promote_rc_assets.py|\
+                docs/ci-cd.md|\
+                docs/runbook.md)
+                  ;;
+                *) bad+=("${path}") ;;
+              esac
+            done
+            if [ "${#bad[@]}" -ne 0 ]; then
+              printf '::error::main contains product/source changes after %s:\n' "${RC_TAG}"
+              printf '  %s\n' "${bad[@]}"
+              echo "::error::cut and smoke a new RC before stable promotion"
+              exit 1
+            fi
+            echo "→ only release-control-plane files changed after ${RC_TAG}"
+          fi
+
+          work="${RUNNER_TEMP}/rc-promotion"
+          mkdir -p "${work}/assets"
+          gh api "repos/${REPO}/releases/tags/${RC_TAG}" > "${work}/rc-release.json"
+          if [ "$(jq -r '.draft' "${work}/rc-release.json")" != "false" ] || \
+             [ "$(jq -r '.prerelease' "${work}/rc-release.json")" != "true" ]; then
+            echo "::error::${RC_TAG} must be an existing published prerelease"
+            exit 1
+          fi
+
+          release_target="$(jq -r '.target_commitish' "${work}/rc-release.json")"
+          resolved_target="$(git rev-parse "${release_target}^{commit}" 2>/dev/null || true)"
+          if [ "${release_target}" != "${candidate_sha}" ] && [ "${resolved_target}" != "${candidate_sha}" ]; then
+            echo "::error::RC release target ${release_target} does not resolve to tag commit ${candidate_sha}"
+            exit 1
+          fi
+          {
+            echo "candidate_sha=${candidate_sha}"
+            echo "work=${work}"
+          } >> "${GITHUB_OUTPUT}"
+          echo "✓ ${RC_TAG} is a published prerelease at ${candidate_sha}"
+
+      - name: Refuse to overwrite an existing stable tag or release
+        env:
+          GH_TOKEN: ${{ secrets.GH_TOKEN || secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+          STABLE_TAG: ${{ steps.context.outputs.stable_tag }}
+        run: |
+          set -euo pipefail
+          if git ls-remote --exit-code --tags origin "refs/tags/${STABLE_TAG}" >/dev/null 2>&1; then
+            echo "::error::stable tag ${STABLE_TAG} already exists; promotion never overwrites tags"
+            exit 1
+          fi
+          if gh api "repos/${REPO}/releases/tags/${STABLE_TAG}" >/dev/null 2>&1; then
+            echo "::error::stable release ${STABLE_TAG} already exists; promotion never overwrites releases"
+            exit 1
+          fi
+          echo "✓ ${STABLE_TAG} is unused"
+
+      - name: Download and hash every proven RC asset
+        env:
+          GH_TOKEN: ${{ secrets.GH_TOKEN || secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+          RC_TAG: ${{ steps.context.outputs.rc_tag }}
+          WORK: ${{ steps.source.outputs.work }}
+        run: |
+          set -euo pipefail
+          gh release download "${RC_TAG}" --repo "${REPO}" --dir "${WORK}/assets"
+          echo "→ downloaded $(find "${WORK}/assets" -maxdepth 1 -type f | wc -l | tr -d ' ') RC assets"
+
+      - name: Read the current minimum-version policy
+        id: policy
+        env:
+          GH_TOKEN: ${{ secrets.GH_TOKEN || secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+          WORK: ${{ steps.source.outputs.work }}
+        run: |
+          set -euo pipefail
+          previous_latest="$(gh api "repos/${REPO}/releases/latest" --jq '.tag_name' 2>/dev/null || true)"
+          minimum=""
+          if [ -n "${previous_latest}" ]; then
+            mkdir -p "${WORK}/previous"
+            gh release download "${previous_latest}" --repo "${REPO}" \
+              --pattern latest.json --dir "${WORK}/previous"
+            minimum="$(python3 - "${WORK}/previous/latest.json" <<'PY'
+          import json, re, sys
+          notes = json.load(open(sys.argv[1])).get("notes") or ""
+          policy_lines = re.findall(r"(?m)^Minimum-Version:.*$", notes)
+          floors = re.findall(r"(?m)^Minimum-Version: ([0-9]+\.[0-9]+\.[0-9]+)\s*$", notes)
+          if len(policy_lines) != len(floors) or len(floors) > 1:
+              raise SystemExit("::error::current stable manifest has malformed or duplicate Minimum-Version policy")
+          print(floors[0] if floors else "")
+          PY
+            )"
+          fi
+          echo "minimum=${minimum}" >> "${GITHUB_OUTPUT}"
+          if [ -n "${minimum}" ]; then
+            echo "→ carrying forward Minimum-Version: ${minimum}"
+          else
+            echo "→ no minimum-version policy is armed"
+          fi
+
+      - name: Validate proofs, manifests, and artifact integrity
+        env:
+          GH_TOKEN: ${{ secrets.GH_TOKEN || secrets.GITHUB_TOKEN }}
+          RC_TAG: ${{ steps.context.outputs.rc_tag }}
+          STABLE_TAG: ${{ steps.context.outputs.stable_tag }}
+          CANDIDATE_SHA: ${{ steps.source.outputs.candidate_sha }}
+          MINIMUM_VERSION: ${{ steps.policy.outputs.minimum }}
+          REPO: ${{ github.repository }}
+          WORK: ${{ steps.source.outputs.work }}
+        run: |
+          set -euo pipefail
+          python3 scripts/promote-rc-assets.py stage \
+            --assets-dir "${WORK}/assets" \
+            --release-json "${WORK}/rc-release.json" \
+            --inventory "${WORK}/inventory.json" \
+            --repository "${REPO}" \
+            --rc-tag "${RC_TAG}" \
+            --stable-tag "${STABLE_TAG}" \
+            --commit-sha "${CANDIDATE_SHA}" \
+            --minimum-version "${MINIMUM_VERSION}"
+
+          smoke_run_id="$(jq -r '.smoke_run_id' "${WORK}/inventory.json")"
+          gh api "repos/${REPO}/actions/runs/${smoke_run_id}" > "${WORK}/smoke-run.json"
+          if [ "$(jq -r '.name' "${WORK}/smoke-run.json")" != "Release (build & publish)" ] || \
+             [ "$(jq -r '.event' "${WORK}/smoke-run.json")" != "workflow_dispatch" ] || \
+             [ "$(jq -r '.conclusion' "${WORK}/smoke-run.json")" != "success" ] || \
+             [ "$(jq -r '.head_sha' "${WORK}/smoke-run.json")" != "${CANDIDATE_SHA}" ]; then
+            echo "::error::smoke proof run ${smoke_run_id} is not a successful release build for ${CANDIDATE_SHA}"
+            exit 1
+          fi
+          echo "✓ smoke proofs bind successful release-build run ${smoke_run_id}"
+          jq -r '.assets[] | "\(if .metadata_rewritten then "metadata" else "identical" end)  \(.sha256)  \(.name)"' "${WORK}/inventory.json"
+
+      - name: Create the stable tag and draft release
+        env:
+          GH_TOKEN: ${{ secrets.GH_TOKEN || secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+          STABLE_TAG: ${{ steps.context.outputs.stable_tag }}
+          CANDIDATE_SHA: ${{ steps.source.outputs.candidate_sha }}
+        run: |
+          set -euo pipefail
+          gh release create "${STABLE_TAG}" --repo "${REPO}" \
+            --target "${CANDIDATE_SHA}" --draft --generate-notes --title "${STABLE_TAG}"
+          git fetch --quiet --force origin "refs/tags/${STABLE_TAG}:refs/tags/${STABLE_TAG}"
+          actual_sha="$(git rev-parse "refs/tags/${STABLE_TAG}^{commit}")"
+          if [ "${actual_sha}" != "${CANDIDATE_SHA}" ]; then
+            echo "::error::created stable tag resolves to ${actual_sha}, expected ${CANDIDATE_SHA}"
+            exit 1
+          fi
+          echo "✓ draft ${STABLE_TAG} points to the proven RC commit"
+
+      - name: Upload the validated promotion set
+        env:
+          GH_TOKEN: ${{ secrets.GH_TOKEN || secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+          STABLE_TAG: ${{ steps.context.outputs.stable_tag }}
+          WORK: ${{ steps.source.outputs.work }}
+        run: |
+          set -euo pipefail
+          mapfile -t names < <(jq -r '.assets[].name' "${WORK}/inventory.json")
+          paths=()
+          for name in "${names[@]}"; do paths+=("${WORK}/assets/${name}"); done
+          gh release upload "${STABLE_TAG}" --repo "${REPO}" "${paths[@]}"
+
+      - name: Verify every uploaded asset before publication
+        env:
+          GH_TOKEN: ${{ secrets.GH_TOKEN || secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+          STABLE_TAG: ${{ steps.context.outputs.stable_tag }}
+          WORK: ${{ steps.source.outputs.work }}
+        run: |
+          set -euo pipefail
+          gh api "repos/${REPO}/releases/tags/${STABLE_TAG}" > "${WORK}/stable-draft.json"
+          python3 scripts/promote-rc-assets.py verify \
+            --release-json "${WORK}/stable-draft.json" \
+            --inventory "${WORK}/inventory.json" \
+            --expect-draft
+
+      - name: Publish the verified stable release
+        env:
+          GH_TOKEN: ${{ secrets.GH_TOKEN || secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+          STABLE_TAG: ${{ steps.context.outputs.stable_tag }}
+        run: |
+          set -euo pipefail
+          gh release edit "${STABLE_TAG}" --repo "${REPO}" --draft=false --prerelease=false
+          echo "→ published ${STABLE_TAG}; no product binary was rebuilt"
+
+      - name: Verify the published release and latest channel
+        env:
+          GH_TOKEN: ${{ secrets.GH_TOKEN || secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+          STABLE_TAG: ${{ steps.context.outputs.stable_tag }}
+          WORK: ${{ steps.source.outputs.work }}
+        run: |
+          set -euo pipefail
+          gh api "repos/${REPO}/releases/tags/${STABLE_TAG}" > "${WORK}/stable-published.json"
+          python3 scripts/promote-rc-assets.py verify \
+            --release-json "${WORK}/stable-published.json" \
+            --inventory "${WORK}/inventory.json" \
+            --no-expect-draft
+          latest="$(gh api "repos/${REPO}/releases/latest" --jq '.tag_name')"
+          if [ "${latest}" != "${STABLE_TAG}" ]; then
+            echo "::error::latest stable is ${latest}, expected ${STABLE_TAG}"
+            exit 1
+          fi
+
+      - name: Summarize the promotion
+        if: always()
+        env:
+          RC_TAG: ${{ steps.context.outputs.rc_tag }}
+          STABLE_TAG: ${{ steps.context.outputs.stable_tag }}
+          CANDIDATE_SHA: ${{ steps.source.outputs.candidate_sha }}
+        run: |
+          {
+            echo "### RC → Stable promotion"
+            echo ""
+            echo "- RC: \`${RC_TAG}\`"
+            echo "- Stable: \`${STABLE_TAG}\`"
+            echo "- Commit: \`${CANDIDATE_SHA}\`"
+            echo "- Product binaries: reused byte-for-byte; no build ran"
+            echo "- Updater metadata: validated and retargeted to the stable tag"
+          } >> "${GITHUB_STEP_SUMMARY}"
