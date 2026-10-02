@@ -313,13 +313,16 @@ jobs:
           prep_src = pathlib.Path(".github/workflows/release-prepare.yml").read_text()
           promote_src = pathlib.Path(".github/workflows/promote-rc.yml").read_text()
           promote_helper_src = pathlib.Path("scripts/promote-rc-assets.py").read_text()
+          minimum_src = pathlib.Path(".github/workflows/minimum-version.yml").read_text()
           build = yaml.safe_load(build_src)
           prep = yaml.safe_load(prep_src)
           promote = yaml.safe_load(promote_src)
+          minimum = yaml.safe_load(minimum_src)
 
           build_triggers = build.get("on", build.get(True)) or {}
           prep_triggers = prep.get("on", prep.get(True)) or {}
           promote_triggers = promote.get("on", promote.get(True)) or {}
+          minimum_triggers = minimum.get("on", minimum.get(True)) or {}
           fail = []
 
           if "push" in build_triggers:
@@ -368,6 +371,16 @@ jobs:
                   fail.append(f"release-build.yml must require exact-artifact proof {proof} before publish")
           if "Publish proven artifact set" not in build_src:
               fail.append("release-build.yml must publish only after reusable artifact smokes")
+
+          minimum_dispatch = minimum_triggers.get("workflow_dispatch") or {}
+          minimum_inputs = minimum_dispatch.get("inputs") or {}
+          action_input = minimum_inputs.get("action") or {}
+          if action_input.get("type") != "choice" or action_input.get("options") != ["set-latest", "clear"]:
+              fail.append("minimum-version.yml must offer only set-latest/clear dropdown choices")
+          if "minimum_version" in minimum_inputs:
+              fail.append("minimum-version.yml must derive latest stable instead of accepting free-text versions")
+          if "promote-rc-assets.py policy" not in minimum_src:
+              fail.append("minimum-version.yml must use the tested policy helper")
 
           if fail:
               for message in fail:

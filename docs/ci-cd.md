@@ -238,10 +238,11 @@ Minimum-version enforcement is intentionally separate from building or promoting
 a release. First publish and validate stable. If the fleet later needs a forced
 upgrade, run `.github/workflows/minimum-version.yml` from GitHub Actions.
 
-The workflow accepts either `set` with a published stable `X.Y.Z`, or `clear`.
-`set` verifies that `vX.Y.Z` is a published non-prerelease and is not newer than
-the current latest stable release. It then edits only that latest stable release's
-`latest.json` asset, adding `Minimum-Version: X.Y.Z` to its notes. No binary is
+The workflow presents a dropdown with `set-latest` or `clear`; maintainers never
+type a version. `set-latest` derives `X.Y.Z` from GitHub's current published
+latest stable release, then edits only that release's `latest.json` asset by
+adding `Minimum-Version: X.Y.Z` to its notes. It downloads the uploaded asset
+again and verifies the exact policy bytes before succeeding. No binary is
 rebuilt, resigned, retagged, or republished.
 
 The running DMG app checks that line shortly after launch and periodically.
