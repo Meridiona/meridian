@@ -133,22 +133,41 @@ jobs:
           } >> "${GITHUB_OUTPUT}"
           echo "✓ ${RC_TAG} is a published prerelease at ${candidate_sha}"
 
-      - name: Refuse to overwrite an existing stable tag or release
+      - name: Refuse overwrite or validate a resumable empty draft
+        id: destination
         env:
           GH_TOKEN: ${{ secrets.GH_TOKEN || secrets.GITHUB_TOKEN }}
           REPO: ${{ github.repository }}
           STABLE_TAG: ${{ steps.context.outputs.stable_tag }}
+          CANDIDATE_SHA: ${{ steps.source.outputs.candidate_sha }}
         run: |
           set -euo pipefail
           if git ls-remote --exit-code --tags origin "refs/tags/${STABLE_TAG}" >/dev/null 2>&1; then
             echo "::error::stable tag ${STABLE_TAG} already exists; promotion never overwrites tags"
             exit 1
           fi
-          if gh api "repos/${REPO}/releases/tags/${STABLE_TAG}" >/dev/null 2>&1; then
-            echo "::error::stable release ${STABLE_TAG} already exists; promotion never overwrites releases"
-            exit 1
+
+          # GitHub's /releases/tags/{tag} endpoint returns 404 for drafts. List
+          # authenticated releases instead so a retry can see its prior draft.
+          existing="$(
+            gh api --paginate --slurp "repos/${REPO}/releases?per_page=100" \
+              | jq -c --arg tag "${STABLE_TAG}" \
+                  '[.[][] | select(.tag_name == $tag)] | if length == 0 then empty elif length == 1 then .[0] else error("duplicate release tag") end'
+          )"
+          if [ -n "${existing}" ]; then
+            if [ "$(jq -r '.draft' <<<"${existing}")" != "true" ] || \
+               [ "$(jq -r '.prerelease' <<<"${existing}")" != "false" ] || \
+               [ "$(jq -r '.target_commitish' <<<"${existing}")" != "${CANDIDATE_SHA}" ] || \
+               [ "$(jq '.assets | length' <<<"${existing}")" != "0" ]; then
+              echo "::error::${STABLE_TAG} already exists and is not the exact empty draft this promotion may safely resume"
+              exit 1
+            fi
+            echo "reuse_draft=true" >> "${GITHUB_OUTPUT}"
+            echo "→ resuming empty ${STABLE_TAG} draft at ${CANDIDATE_SHA}"
+          else
+            echo "reuse_draft=false" >> "${GITHUB_OUTPUT}"
+            echo "✓ ${STABLE_TAG} is unused"
           fi
-          echo "✓ ${STABLE_TAG} is unused"
 
       - name: Download and hash every proven RC asset
         env:
@@ -218,23 +237,33 @@ jobs:
           echo "✓ smoke proofs bind successful release-build run ${smoke_run_id}"
           jq -r '.assets[] | "\(if .metadata_rewritten then "metadata" else "identical" end)  \(.sha256)  \(.name)"' "${WORK}/inventory.json"
 
-      - name: Create the stable tag and draft release
+      - name: Create or reuse the validated stable draft
         env:
           GH_TOKEN: ${{ secrets.GH_TOKEN || secrets.GITHUB_TOKEN }}
           REPO: ${{ github.repository }}
           STABLE_TAG: ${{ steps.context.outputs.stable_tag }}
           CANDIDATE_SHA: ${{ steps.source.outputs.candidate_sha }}
+          REUSE_DRAFT: ${{ steps.destination.outputs.reuse_draft }}
         run: |
           set -euo pipefail
-          gh release create "${STABLE_TAG}" --repo "${REPO}" \
-            --target "${CANDIDATE_SHA}" --draft --generate-notes --title "${STABLE_TAG}"
-          git fetch --quiet --force origin "refs/tags/${STABLE_TAG}:refs/tags/${STABLE_TAG}"
-          actual_sha="$(git rev-parse "refs/tags/${STABLE_TAG}^{commit}")"
-          if [ "${actual_sha}" != "${CANDIDATE_SHA}" ]; then
-            echo "::error::created stable tag resolves to ${actual_sha}, expected ${CANDIDATE_SHA}"
+          if [ "${REUSE_DRAFT}" != "true" ]; then
+            gh release create "${STABLE_TAG}" --repo "${REPO}" \
+              --target "${CANDIDATE_SHA}" --draft --generate-notes --title "${STABLE_TAG}"
+          fi
+
+          draft="$(
+            gh api --paginate --slurp "repos/${REPO}/releases?per_page=100" \
+              | jq -c --arg tag "${STABLE_TAG}" \
+                  '[.[][] | select(.tag_name == $tag)] | if length == 1 then .[0] else error("stable draft not found uniquely") end'
+          )"
+          if [ "$(jq -r '.draft' <<<"${draft}")" != "true" ] || \
+             [ "$(jq -r '.prerelease' <<<"${draft}")" != "false" ] || \
+             [ "$(jq -r '.target_commitish' <<<"${draft}")" != "${CANDIDATE_SHA}" ] || \
+             [ "$(jq '.assets | length' <<<"${draft}")" != "0" ]; then
+            echo "::error::stable draft state changed before upload"
             exit 1
           fi
-          echo "✓ draft ${STABLE_TAG} points to the proven RC commit"
+          echo "✓ empty draft ${STABLE_TAG} targets the proven RC commit"
 
       - name: Upload the validated promotion set
         env:
@@ -257,7 +286,10 @@ jobs:
           WORK: ${{ steps.source.outputs.work }}
         run: |
           set -euo pipefail
-          gh api "repos/${REPO}/releases/tags/${STABLE_TAG}" > "${WORK}/stable-draft.json"
+          gh api --paginate --slurp "repos/${REPO}/releases?per_page=100" \
+            | jq --arg tag "${STABLE_TAG}" \
+                '[.[][] | select(.tag_name == $tag)] | if length == 1 then .[0] else error("stable draft not found uniquely") end' \
+            > "${WORK}/stable-draft.json"
           python3 scripts/promote-rc-assets.py verify \
             --release-json "${WORK}/stable-draft.json" \
             --inventory "${WORK}/inventory.json" \
@@ -291,6 +323,13 @@ jobs:
             echo "::error::latest stable is ${latest}, expected ${STABLE_TAG}"
             exit 1
           fi
+          git fetch --quiet --force origin "refs/tags/${STABLE_TAG}:refs/tags/${STABLE_TAG}"
+          actual_sha="$(git rev-parse "refs/tags/${STABLE_TAG}^{commit}")"
+          if [ "${actual_sha}" != "$(jq -r '.commit_sha' "${WORK}/inventory.json")" ]; then
+            echo "::error::published stable tag resolves to ${actual_sha}, not the proven RC commit"
+            exit 1
+          fi
+          echo "✓ published stable tag points to the proven RC commit"
 
       - name: Summarize the promotion
         if: always()
