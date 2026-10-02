@@ -569,13 +569,10 @@ jobs:
       # `runs-on` note in the windows job). The same silence let cache-warm.yml
       # write an unreadable key for this pipeline's entire history.
       #
-      # Deliberately an `::error::` ANNOTATION that does NOT fail the step. The
-      # asymmetry matters: a cache miss must never block shipping a release -
-      # the build is slow, not wrong, and failing here would turn a GitHub image
-      # roll into a release outage. But it must be impossible to overlook, so it
-      # lands as a red annotation on the run page and as a section in
-      # `$GITHUB_STEP_SUMMARY`, both of which sit ABOVE the logs rather than
-      # inside a collapsed group.
+      # Report a cache miss as a WARNING, never an error. A cache miss is a
+      # performance problem, not a correctness failure; a red annotation hides
+      # the real build error and makes the run page misleading. The summary
+      # remains prominent without conflating slow with broken.
       #
       # The env dump is the other half, and it is what makes the NEXT occurrence
       # cheap. rust-cache hashes the NAMES AND VALUES of every
@@ -593,7 +590,7 @@ jobs:
             exit 0
           fi
           msg="rust-cache MISSED on ${{ runner.os }}: this build compiles from scratch (~35 min on Windows, ~20 min on macOS). The key drifted or the entry was evicted - compare the environment below against a run that hit."
-          echo "::error title=Cold Rust build (${{ runner.os }})::${msg}"
+          echo "::warning title=Cold Rust build (${{ runner.os }})::${msg}"
           {
             echo "### rust-cache miss - ${{ runner.os }}"
             echo
@@ -669,6 +666,16 @@ jobs:
         # explicitly now — generate_context! embeds ui/out at compile time and
         # panics ("frontendDist ... doesn't exist") if it's missing.
         run: cd ui && npm run build
+
+      - name: Rebuild native notification bridge
+        # The notification plugin's build script emits a Swift/native static
+        # archive under Cargo's target tree. A compatible prefix restore can
+        # preserve Rust fingerprints while that archive is absent, which makes
+        # the release compile fail with "could not find native static library
+        # tauri-plugin-notifications". Clean only this package/target/profile so
+        # Cargo deterministically reruns its native build without throwing away
+        # the rest of the warm release cache.
+        run: cargo clean -p tauri-plugin-notifications --release --target ${{ matrix.target }}
 
       - name: Stub the daemon so tauri-build's resource check passes
         # tauri-build only STATS bundle.resources during compilation (it reads
@@ -1004,13 +1011,10 @@ jobs:
       # `runs-on` note in the windows job). The same silence let cache-warm.yml
       # write an unreadable key for this pipeline's entire history.
       #
-      # Deliberately an `::error::` ANNOTATION that does NOT fail the step. The
-      # asymmetry matters: a cache miss must never block shipping a release -
-      # the build is slow, not wrong, and failing here would turn a GitHub image
-      # roll into a release outage. But it must be impossible to overlook, so it
-      # lands as a red annotation on the run page and as a section in
-      # `$GITHUB_STEP_SUMMARY`, both of which sit ABOVE the logs rather than
-      # inside a collapsed group.
+      # Report a cache miss as a WARNING, never an error. A cache miss is a
+      # performance problem, not a correctness failure; a red annotation hides
+      # the real build error and makes the run page misleading. The summary
+      # remains prominent without conflating slow with broken.
       #
       # The env dump is the other half, and it is what makes the NEXT occurrence
       # cheap. rust-cache hashes the NAMES AND VALUES of every
@@ -1028,7 +1032,7 @@ jobs:
             exit 0
           fi
           msg="rust-cache MISSED on ${{ runner.os }}: this build compiles from scratch (~35 min on Windows, ~20 min on macOS). The key drifted or the entry was evicted - compare the environment below against a run that hit."
-          echo "::error title=Cold Rust build (${{ runner.os }})::${msg}"
+          echo "::warning title=Cold Rust build (${{ runner.os }})::${msg}"
           {
             echo "### rust-cache miss - ${{ runner.os }}"
             echo
