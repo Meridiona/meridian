@@ -775,6 +775,32 @@ html.density-comfy   .density-pad { padding-top: 1.25rem; padding-bottom: 1.25re
   line-height: 1.1;
 }
 
+/* Day calendar (timeline/DayCalendar.tsx) - popover entrance + hover states.
+   Hover tints derive from --t-accent so they follow every theme. */
+@keyframes mt-cal-in {
+  from { opacity: 0; transform: translateY(-6px) scale(.97); }
+  to   { opacity: 1; transform: translateY(0) scale(1); }
+}
+.mt-cal-pop { animation: mt-cal-in .16s cubic-bezier(.2,.8,.2,1); transform-origin: top center; }
+.mt-cal-trigger,
+.mt-cal-arrow,
+.mt-cal-chip,
+.mt-cal-day { transition: background-color .12s, box-shadow .12s, transform .12s; }
+.mt-cal-trigger:hover,
+.mt-cal-arrow:hover:not(:disabled),
+.mt-cal-chip:hover:not(:disabled),
+.mt-cal-day:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--t-accent) 13%, transparent);
+}
+.mt-cal-day:active:not(:disabled) { transform: scale(.94); }
+.mt-cal-day:focus-visible,
+.mt-cal-trigger:focus-visible,
+.mt-cal-arrow:focus-visible { outline: 2px solid var(--t-accent); outline-offset: 1px; }
+.mt-cal-chip:disabled { opacity: .45; }
+@media (prefers-reduced-motion: reduce) {
+  .mt-cal-pop { animation: none; }
+}
+
 .mt-greeting {
   font: 800 20px/1.25 var(--font-sans);
   letter-spacing: -0.02em;

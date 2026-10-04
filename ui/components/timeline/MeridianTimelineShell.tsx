@@ -285,6 +285,14 @@ export default function MeridianTimelineShell() {
     setDay(d => shiftDay(d, delta))
   }
 
+  // Calendar jump: same selection reset as `shift`, but to an absolute day.
+  function pickDay(next: string) {
+    setSelectedHour(null)
+    setSelectedCardKey(null)
+    setSelectedDayTask(null)
+    setDay(next)
+  }
+
   // Row-level selection (Quiet/solo rows, or blank space in a row) — shows
   // every ticket in the hour and clears any single-card selection.
   function selectHour(hour: number | null) {
@@ -384,6 +392,7 @@ export default function MeridianTimelineShell() {
         day={day}
         isToday={isToday}
         onShiftDay={shift}
+        onPickDay={pickDay}
         isSolo={isSolo}
         connectedProviderName={connectedProviderName}
         connectedProviderIds={connectedProviderIds}
