@@ -25,17 +25,20 @@
 import { useCallback, useEffect, useState } from 'react'
 import { load } from '@/lib/bridge'
 import { formatDayLabel } from './types'
+import { DayCalendar } from './DayCalendar'
 import { ThemeSwatches } from './ThemeSwatches'
 import { ProviderIcon } from '@/components/ProviderIcon'
 import type { SettingsSection } from './settings/types'
 
 export function Toolbar({
-  day, isToday, onShiftDay, isSolo, connectedProviderName, connectedProviderIds, onOpenSettings, onOpenReport, onOpenWhatsNew, onOpenSummary,
+  day, isToday, onShiftDay, onPickDay, isSolo, connectedProviderName, connectedProviderIds, onOpenSettings, onOpenReport, onOpenWhatsNew, onOpenSummary,
   showLlmLab = false, onOpenLlmLab,
 }: {
   day: string
   isToday: boolean
   onShiftDay: (delta: number) => void
+  /** Jump straight to a day (`YYYY-MM-DD`, never after today) - the calendar popover. */
+  onPickDay: (day: string) => void
   isSolo: boolean
   connectedProviderName: string | null
   /** Every connected provider - each one gets its brand mark in the pill. */
@@ -71,9 +74,7 @@ export function Toolbar({
         {/* date nav */}
         <div className="flex items-center gap-1">
           <NavBtn glyph="‹" label="Previous day" onClick={() => onShiftDay(-1)} />
-          <span className="mt-toolbar-date px-2 min-w-32 text-center whitespace-nowrap" style={{ color: 'var(--t-title)' }}>
-            {isToday ? 'Today' : formatDayLabel(day)}
-          </span>
+          <DayCalendar day={day} isToday={isToday} label={isToday ? 'Today' : formatDayLabel(day)} onPick={onPickDay} />
           <NavBtn glyph="›" label="Next day" onClick={() => onShiftDay(1)} disabled={isToday} />
         </div>
 
