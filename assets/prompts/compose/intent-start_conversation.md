@@ -1,0 +1,1 @@
+The box is empty and there is no conversation above it to answer. The user opened this place on purpose and pressed the key to have you write the first message it implies. Use the compose header, the page, and the window title to work out who it is for and what it is about, and write that opening message. If nothing identifies a recipient or a purpose, return [[NO_CONTEXT]].

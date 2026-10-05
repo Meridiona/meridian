@@ -34,6 +34,7 @@ use serde_json::Value;
 use crate::coding_agent_session_ingest::summariser::prompts as sp;
 use crate::coding_agent_session_ingest::summariser::run_capture;
 
+use super::tuning::{self, Tuning};
 use super::{LlmBackend, LlmConfig, LlmError, LlmOutput, LlmProvider, PromptRequest};
 
 static SEQ: AtomicU64 = AtomicU64::new(0);
@@ -176,11 +177,20 @@ impl LlmBackend for CodexBackend {
     }
 
     async fn complete(&self, req: &PromptRequest) -> Result<LlmOutput, LlmError> {
-        let t0 = std::time::Instant::now();
-
         if let Some(msg) = signed_out(&self.cfg).await {
             return Err(LlmError::Failed(msg));
         }
+        tuning::complete_with_fallback(LlmProvider::Codex, |t| self.attempt(req, t)).await
+    }
+}
+
+impl CodexBackend {
+    async fn attempt(
+        &self,
+        req: &PromptRequest,
+        tuning: Option<Tuning>,
+    ) -> Result<LlmOutput, LlmError> {
+        let t0 = std::time::Instant::now();
 
         let td = std::env::temp_dir().join(format!(
             "meridian-llm-codex-{}-{}",
@@ -218,9 +228,18 @@ impl LlmBackend for CodexBackend {
             args.push("--output-schema".into());
             args.push(schema_path.display().to_string());
         }
-        if !self.cfg.model.is_empty() {
+        let model = self.cfg.model.as_str();
+        if !model.is_empty() {
             args.push("-m".into());
-            args.push(self.cfg.model.clone());
+            args.push(model.to_string());
+        }
+        if let Some(t) = tuning {
+            if let Some(m) = t.model.filter(|_| model.is_empty()) {
+                args.push("-m".into());
+                args.push(m.to_string());
+            }
+            args.push("--config".into());
+            args.push(format!("model_reasoning_effort={}", t.effort));
         }
 
         let stdin_text = codex_stdin(req);

@@ -199,8 +199,13 @@ objc2 = "0.6"
 block2 = "0.6"
 # Typed NSWorkspace/NSImage/NSBitmapImageRep bindings for real per-app icon
 # extraction (commands/app_icons.rs) — same generation family as objc2 0.6.
-objc2-app-kit = { version = "0.3", default-features = false, features = ["std", "NSWorkspace", "NSImage", "NSImageRep", "NSBitmapImageRep", "NSRunningApplication"] }
-objc2-foundation = { version = "0.3", default-features = false, features = ["std", "NSString", "NSData", "NSDictionary", "NSGeometry", "NSProcessInfo", "NSError", "NSObject", "NSValue"] }
+objc2-app-kit = { version = "0.3", default-features = false, features = ["std", "NSWorkspace", "NSImage", "NSImageRep", "NSBitmapImageRep", "NSRunningApplication", "NSPasteboard", "NSPasteboardItem", "NSSound"] }
+objc2-foundation = { version = "0.3", default-features = false, features = ["std", "NSString", "NSData", "NSDictionary", "NSGeometry", "NSProcessInfo", "NSError", "NSObject", "NSValue", "NSArray"] }
+# Compose (the key that writes into any text box): the Accessibility attribute values,
+# the listen-only event tap, and the paste keystroke. Both are already resolved in
+# Cargo.lock (tao/screenpipe pull them), so this adds no new download.
+core-foundation = "0.10"
+core-graphics = "0.25"
 # SMAppService — the sanctioned way to register a login item since macOS 13, and
 # the only one that puts a NAMED, user-togglable "Meridian" entry in System
 # Settings → General → Login Items & Extensions. Same objc2 generation (0.3.x)

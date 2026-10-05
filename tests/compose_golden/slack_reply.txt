@@ -1,0 +1,21 @@
+# scenario=slack_reply surface=direct_chat intent=reply version=compose-v2
+
+## Box
+A direct-message or group-chat composer. Write the next message the user would send in this conversation: short, in the register of the thread, usually with no greeting after the first message and no sign-off. Never write the other person's reply. If it is unclear who sent the last visible message, write a neutral next message from the user rather than guessing. For a LinkedIn message, greet the person being messaged by first name when it opens a conversation, and keep it to one short paragraph with no emojis unless the thread uses them.
+
+## Task
+The box is empty and there is a conversation or post above it. Write the message the user sends next, as the user, to the other person. Respond to what was actually said last; do not restate it, do not answer more points than the user plausibly would, and do not repeat the user's own earlier messages.
+
+## The user
+Name: Adithya Harish
+
+## Page
+App: Slack
+Window: platform-eng - Acme - Slack
+
+## Text above the box (closest to the box last)
+Alex: shipping the connector Thursday
+Priya: can you confirm the rollout plan for the three pilot workspaces?
+
+## The box
+(empty)

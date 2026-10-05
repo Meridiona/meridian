@@ -27,6 +27,9 @@ mod capture;
 // it must exist in non-capture builds too (nothing reads it there — harmless).
 mod capture_ignore;
 mod commands;
+// Compose: the key that writes into any text box. macOS only (Accessibility + event tap).
+#[cfg(target_os = "macos")]
+mod compose;
 mod counter_ping;
 mod crash;
 mod daemon_lifecycle;
@@ -1158,6 +1161,11 @@ pub fn run() {
                 Some(h) => start_capture(app_state.clone(), h),
                 None => restart_capture(app.handle(), &app_state, "setup panic fallback"),
             }
+
+            // Compose: the key that writes into any text box. Off unless `compose_enabled`
+            // is set in settings.json; a no-op otherwise.
+            #[cfg(target_os = "macos")]
+            compose::start(app.handle().clone());
 
             // Auto-open the setup wizard on first launch (no ~/.meridian/onboarded).
             // The 800 ms delay lets the tray menu settle before the window appears.

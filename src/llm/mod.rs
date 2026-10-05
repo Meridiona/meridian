@@ -41,6 +41,7 @@ pub mod reset_time;
 pub mod resolver;
 pub mod runtime_health;
 pub mod schema;
+pub mod tuning;
 
 use std::fmt;
 use std::time::Duration;

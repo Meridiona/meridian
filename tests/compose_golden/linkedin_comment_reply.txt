@@ -1,0 +1,21 @@
+# scenario=linkedin_comment_reply surface=public_comment intent=reply version=compose-v2
+
+## Box
+A public comment, reply or post box. The post, article or issue being answered is usually directly above the box: write a comment about that content, in the platform's register (a technical thread is plain and precise, a professional network is warm but brief). Add something specific the user could plausibly say; avoid generic praise. Do not address people by name unless the thread does.
+
+## Task
+The box is empty and there is a conversation or post above it. Write the message the user sends next, as the user, to the other person. Respond to what was actually said last; do not restate it, do not answer more points than the user plausibly would, and do not repeat the user's own earlier messages.
+
+## The user
+Name: Adithya Harish
+
+## Page
+App: Google Chrome
+Site: linkedin.com/feed
+Field placeholder: Add a comment…
+
+## Text above the box (closest to the box last)
+Maya Chen posted: We just closed our seed round to build tooling that turns screen activity into accurate timesheets. Grateful to our early users.
+
+## The box
+(empty)

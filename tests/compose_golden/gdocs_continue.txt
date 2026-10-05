@@ -1,0 +1,17 @@
+# scenario=gdocs_continue surface=document intent=continue version=compose-v2
+
+## Box
+A document body. Write prose that fits the document's existing voice and structure. When continuing, pick up exactly where the text stops and do not repeat what is already written. When there is a highlighted slice, change only that slice.
+
+## Task
+The box ends mid-thought. Continue from exactly where the text stops. Output the continuation only, not the existing text, and finish the thought the way the text is heading.
+
+## The user
+Name: Adithya Harish
+
+## Page
+App: Google Chrome
+Site: docs.google.com/document
+
+## Text in the box (the cursor is marked)
+The rollout begins with the three smallest workspaces so that we can▶ CURSOR ◀

@@ -1,0 +1,17 @@
+# scenario=chatgpt_refine surface=ai_prompt intent=refine version=compose-v2
+
+## Box
+The message box of an AI assistant. Write the prompt the user would send: clear, specific, with the context the assistant needs. If the user typed a rough request, turn it into a well-formed prompt that keeps their intent and every specific they gave. Do not answer the prompt yourself.
+
+## Task
+The box contains text. Decide whether it is a draft or an instruction, using the rule for text already in the box, then return the replacement for the text before the cursor marker. Text after the cursor marker stays in the box and must not be repeated or changed.
+
+## The user
+Name: Adithya Harish
+
+## Page
+App: Google Chrome
+Site: chatgpt.com/c
+
+## Text in the box (the cursor is marked)
+i want to test this with a real meridian task, what acceptance criteria for the missing signup emails▶ CURSOR ◀
