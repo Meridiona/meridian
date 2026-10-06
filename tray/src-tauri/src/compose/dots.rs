@@ -48,6 +48,8 @@ use super::reader::{self, FieldHandle};
 
 /// Pause between steps of the animation.
 const STEP: Duration = Duration::from_millis(380);
+/// Pause between the single Backspaces that take the dots out again.
+const ERASE_STEP: Duration = Duration::from_millis(40);
 /// How often a waiting thread checks whether it has been told to stop.
 const POLL: Duration = Duration::from_millis(15);
 /// Backspaces tried during cleanup before giving up.
@@ -143,9 +145,10 @@ fn typed_and_caret_ok(
 }
 
 fn run(stop: Arc<AtomicBool>, element: Element, original: String, caret: usize, pid: i32) {
-    while !sleep_unless_stopped(&stop, STEP) {
-        // Keys go to whatever has focus; never send them anywhere but the field's own app.
-        if reader::frontmost_pid() != Some(pid) {
+    let mut erasing = false;
+    while !sleep_unless_stopped(&stop, if erasing { ERASE_STEP } else { STEP }) {
+        // Keys go to whatever has focus; never send them anywhere but the field itself.
+        if reader::frontmost_pid() != Some(pid) || !reader::is_focused(&element, pid) {
             return;
         }
         let typed = match typed_and_caret_ok(&element, &original, caret) {
@@ -156,13 +159,21 @@ fn run(stop: Arc<AtomicBool>, element: Element, original: String, caret: usize, 
             }
         };
         if typed.stops >= 3 {
-            for _ in 0..typed.chars {
-                if stop.load(Ordering::SeqCst) || !keys::backspace() {
-                    return;
-                }
-                std::thread::sleep(Duration::from_millis(25));
-            }
-        } else if !keys::type_period() {
+            erasing = true;
+        }
+        if erasing && typed.chars == 0 {
+            // Fully erased: pause, then start typing again.
+            erasing = false;
+            continue;
+        }
+        // One key per step, with the box and the caret verified again before each, so a user
+        // who types or clicks mid-animation is never erased.
+        let sent = if erasing {
+            keys::backspace()
+        } else {
+            keys::type_period()
+        };
+        if !sent {
             return;
         }
     }
@@ -230,7 +241,10 @@ impl TypedDots {
             if typed.chars == 0 {
                 return true;
             }
-            if reader::frontmost_pid() != Some(self.pid) || !keys::backspace() {
+            if reader::frontmost_pid() != Some(self.pid)
+                || !reader::is_focused(&self.element, self.pid)
+                || !keys::backspace()
+            {
                 return false;
             }
             std::thread::sleep(APPLY);

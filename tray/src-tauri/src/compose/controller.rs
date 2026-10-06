@@ -108,7 +108,8 @@ fn supervise(tx: mpsc::Sender<()>) {
         let config = read_config();
         let wanted = config.enabled.then_some(config.key);
         if running.as_ref().map(|(key, _)| *key) != wanted {
-            // Dropping the old handle stops its thread.
+            // Stop the old tap before creating the new one, so the two never overlap.
+            drop(running.take());
             running = wanted.map(|key| {
                 tracing::info!(?key, "compose: writing key on");
                 let tx = tx.clone();

@@ -41,8 +41,34 @@ use super::reader::{self, FieldHandle};
 /// How long to wait for an app to show a write before calling the rung failed.
 const LAND_WINDOW: Duration = Duration::from_millis(250);
 const LAND_POLL: Duration = Duration::from_millis(25);
+/// Extra time given to an Accessibility write that showed nothing in [`LAND_WINDOW`], before it
+/// is taken as ignored. Electron and web apps apply these writes asynchronously; pasting while
+/// one is still on its way would insert the draft twice.
+const LATE_WRITE_GRACE: Duration = Duration::from_millis(450);
 /// How long the paste keystroke gets to be consumed before the clipboard is restored.
 const PASTE_SETTLE: Duration = Duration::from_millis(700);
+
+/// Apps and kinds of box that were seen to accept an Accessibility write and ignore it. Once an
+/// app is known to do that, later writes skip straight to pasting instead of paying the wait
+/// again. Keyed by process and role; lives for the life of the app, so a restart re-learns it.
+static IGNORES_AX_WRITES: std::sync::OnceLock<
+    std::sync::Mutex<std::collections::HashSet<(i32, String)>>,
+> = std::sync::OnceLock::new();
+
+fn ignored_set() -> std::sync::MutexGuard<'static, std::collections::HashSet<(i32, String)>> {
+    IGNORES_AX_WRITES
+        .get_or_init(Default::default)
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+
+fn ignores_ax_writes(pid: i32, role: &str) -> bool {
+    ignored_set().contains(&(pid, role.to_string()))
+}
+
+fn remember_ignores_ax_writes(pid: i32, role: &str) {
+    ignored_set().insert((pid, role.to_string()));
+}
 
 /// How a draft ended up in the field.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -85,7 +111,11 @@ impl WriteError {
 }
 
 fn wait_for_landing(handle: &FieldHandle, expected: &str) -> bool {
-    let deadline = Instant::now() + LAND_WINDOW;
+    wait_for_landing_within(handle, expected, LAND_WINDOW)
+}
+
+fn wait_for_landing_within(handle: &FieldHandle, expected: &str, window: Duration) -> bool {
+    let deadline = Instant::now() + window;
     loop {
         let observed = reader::visible_value(&handle.element);
         if landed(expected, observed.as_deref()) {
@@ -125,21 +155,33 @@ pub fn write(
 ) -> Result<Method, WriteError> {
     let expected = expected_value(&handle.value, range, text).ok_or(WriteError::RangeInvalid)?;
 
-    // Rung 1: select the span, set the selected text, and watch for it to land.
-    if select_exactly(handle, range) && handle.element.set_string("AXSelectedText", text).is_ok() {
-        if wait_for_landing(handle, &expected) {
+    // Rung 1: select the span, set the selected text, and watch for it to land. Skipped for an
+    // app already seen to ignore these writes.
+    let skip_ax = ignores_ax_writes(handle.pid, &handle.identity.role);
+    if !skip_ax
+        && select_exactly(handle, range)
+        && handle.element.set_string("AXSelectedText", text).is_ok()
+    {
+        // The write may land late: wait the normal window, then a grace period, before
+        // deciding the app ignored it. Only then is a paste safe.
+        if wait_for_landing(handle, &expected)
+            || wait_for_landing_within(handle, &expected, LATE_WRITE_GRACE)
+        {
             on_landed();
             tracing::Span::current().record("method", Method::SelectedText.as_str());
             return Ok(Method::SelectedText);
         }
-        // The app said yes but the field did not change within the window. Do NOT fall
-        // through if the value moved at all: a late write plus a paste would insert twice.
+        // Do NOT fall through if the value moved at all: a late write plus a paste would
+        // insert twice.
         if reader::visible_value(&handle.element).as_deref() != Some(handle.value.as_str()) {
             tracing::warn!(
                 "compose: selected-text write changed the field but not as expected; stopping"
             );
             return Err(WriteError::NotConfirmed);
         }
+        // Accepted and ignored: remember, so the next write in this app goes straight to paste.
+        tracing::info!("compose: this app ignores selected-text writes; pasting from now on");
+        remember_ignores_ax_writes(handle.pid, &handle.identity.role);
     }
 
     // Rung 2: paste over a span we can select exactly.
@@ -192,6 +234,11 @@ fn paste_and_confirm(
         clipboard::restore(saved, clipboard::change_count());
         return Err(WriteError::NotConfirmed);
     };
+    // The keys go to whatever has focus: check it is still our box, immediately before sending.
+    if !reader::is_focused(&handle.element, handle.pid) {
+        clipboard::restore(saved, ours);
+        return Err(WriteError::CouldNotSelect);
+    }
     let mut pressed = true;
     for key in keys {
         pressed = pressed && keys::press_command(*key);
@@ -255,5 +302,16 @@ mod tests {
     #[test]
     fn an_insert_into_an_empty_field_covers_it() {
         assert!(covers_whole_field("", r(0, 0)));
+    }
+
+    #[test]
+    fn an_app_seen_ignoring_ax_writes_is_remembered_per_role() {
+        // A pid no real test uses.
+        let (pid, role) = (987_654, "AXTextArea");
+        assert!(!ignores_ax_writes(pid, role));
+        remember_ignores_ax_writes(pid, role);
+        assert!(ignores_ax_writes(pid, role));
+        assert!(!ignores_ax_writes(pid, "AXTextField"));
+        assert!(!ignores_ax_writes(pid + 1, role));
     }
 }

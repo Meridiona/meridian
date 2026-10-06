@@ -1162,8 +1162,8 @@ pub fn run() {
                 None => restart_capture(app.handle(), &app_state, "setup panic fallback"),
             }
 
-            // Compose: the key that writes into any text box. Off unless `compose_enabled`
-            // is set in settings.json; a no-op otherwise.
+            // Compose: the key that writes into any text box. On by default; its supervisor
+            // removes the event tap while `compose_enabled` is false in settings.json.
             #[cfg(target_os = "macos")]
             compose::start(app.handle().clone());
 

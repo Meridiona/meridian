@@ -62,7 +62,7 @@ pub fn default_for(provider: LlmProvider) -> Option<Tuning> {
     }
 }
 
-/// Phrases a CLI uses when it refuses a flag or a model, lower case.
+/// Phrases that on their own mean a CLI refused a flag or a model, lower case.
 const REJECTION_PHRASES: &[&str] = &[
     "unknown option",
     "unknown argument",
@@ -73,13 +73,19 @@ const REJECTION_PHRASES: &[&str] = &[
     "unknown model",
     "model not found",
     "model_not_found",
-    "does not exist",
-    "may not exist",
     "issue with the selected model",
-    "not available",
-    "unsupported",
     "--effort",
     "reasoning_effort",
+];
+
+/// Broad phrases that also appear in failures unrelated to tuning ("service not available",
+/// "workspace does not exist"). They count as a rejection only when the same message names the
+/// model or the effort setting.
+const BROAD_REJECTION_PHRASES: &[&str] = &[
+    "not available",
+    "unsupported",
+    "does not exist",
+    "may not exist",
 ];
 
 /// True when a failure reads as the CLI refusing the tuning (a flag or a model), as opposed to
@@ -93,7 +99,11 @@ fn looks_like_tuning_rejection(error: &LlmError) -> bool {
     if message.contains("timed out") || message.contains("timeout") {
         return false;
     }
-    REJECTION_PHRASES.iter().any(|p| message.contains(p))
+    if REJECTION_PHRASES.iter().any(|p| message.contains(p)) {
+        return true;
+    }
+    let names_the_tuning = message.contains("model") || message.contains("effort");
+    names_the_tuning && BROAD_REJECTION_PHRASES.iter().any(|p| message.contains(p))
 }
 
 /// Run `attempt` with the provider's default tuning, and once more with none if the CLI
@@ -242,6 +252,35 @@ mod tests {
             "There's an issue with the selected model (claude-sonnet-5-5). It may not exist",
             "Model not found: claude-sonnet-5-5",
             "unexpected argument '-c' found",
+        ] {
+            assert!(
+                looks_like_tuning_rejection(&LlmError::Failed(m.into())),
+                "{m}"
+            );
+        }
+    }
+
+    #[test]
+    fn unrelated_failures_that_share_a_broad_phrase_are_not_retried() {
+        for m in [
+            "service not available",
+            "workspace does not exist",
+            "this feature is unsupported on your plan",
+            "claude: temporary directory does not exist",
+        ] {
+            assert!(
+                !looks_like_tuning_rejection(&LlmError::Failed(m.into())),
+                "{m}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_broad_phrase_counts_when_the_message_names_the_model() {
+        for m in [
+            "The model gpt-5.6-sol is not available for your account",
+            "reasoning effort low is unsupported by this model",
+            "model claude-sonnet-5-5 does not exist",
         ] {
             assert!(
                 looks_like_tuning_rejection(&LlmError::Failed(m.into())),

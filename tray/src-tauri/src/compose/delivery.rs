@@ -101,6 +101,8 @@ pub struct Origin {
 pub struct Now {
     pub frontmost_pid: i32,
     pub element_alive: bool,
+    /// The box still has keyboard focus, not just the app being in front.
+    pub focused: bool,
     pub value: Option<String>,
     pub identity: Option<FieldIdentity>,
 }
@@ -148,6 +150,10 @@ pub fn guard(origin: &Origin, now: &Now, surface: SurfaceKind, text: &str) -> Re
     }
     if !now.element_alive {
         return Err(Refusal::FieldGone);
+    }
+    // Focus moved to another box in the same app: a paste would land there.
+    if !now.focused {
+        return Err(Refusal::FieldChanged);
     }
     match &now.identity {
         Some(id) if id == &origin.identity => {}
@@ -227,6 +233,7 @@ mod tests {
         Now {
             frontmost_pid: 42,
             element_alive: true,
+            focused: true,
             value: Some(value.into()),
             identity: Some(id()),
         }
@@ -442,5 +449,15 @@ mod tests {
         assert!(landed("Hi there", Some("Hi\u{a0}there")));
         assert!(!landed("Hi there", Some("Hi there!")));
         assert!(!landed("Hi there", None));
+    }
+
+    #[test]
+    fn a_box_that_lost_keyboard_focus_blocks_the_write() {
+        let mut n = now("hello");
+        n.focused = false;
+        assert_eq!(
+            guard(&origin("hello"), &n, SurfaceKind::DirectChat, "hi"),
+            Err(Refusal::FieldChanged)
+        );
     }
 }

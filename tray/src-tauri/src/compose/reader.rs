@@ -167,16 +167,7 @@ pub struct ReadContext {
 /// Read the focused text field of the frontmost app.
 #[tracing::instrument(
     skip_all,
-    fields(
-        app,
-        role,
-        value_chars,
-        above_chars,
-        above_tail,
-        broad,
-        rest_chars,
-        other_windows
-    )
+    fields(app, role, value_chars, above_chars, broad, rest_chars, other_windows)
 )]
 pub fn read_focused_field(ctx: &ReadContext) -> Result<ReadField, ReadError> {
     if !ax::is_trusted() {
@@ -347,20 +338,6 @@ pub fn read_focused_field(ctx: &ReadContext) -> Result<ReadField, ReadError> {
     span.record("role", role.as_str());
     span.record("value_chars", value.chars().count());
     span.record("above_chars", snapshot.nearby.above.chars().count());
-    // The text nearest the box, kept as a span attribute: captured in full on this machine
-    // for debugging what the model was shown, and dropped from anything shipped (it is not
-    // on the allowlist).
-    let tail: String = snapshot
-        .nearby
-        .above
-        .chars()
-        .rev()
-        .take(300)
-        .collect::<Vec<_>>()
-        .into_iter()
-        .rev()
-        .collect();
-    span.record("above_tail", tail.as_str());
     span.record("broad", broad);
     span.record("rest_chars", snapshot.nearby.rest_of_window.chars().count());
     span.record("other_windows", snapshot.other_windows.len());
@@ -380,6 +357,17 @@ pub fn read_focused_field(ctx: &ReadContext) -> Result<ReadField, ReadError> {
     })
 }
 
+/// True when `element` is the box that currently has keyboard focus in app `pid`.
+///
+/// Every synthetic key goes to whatever has focus, and a paste lands there too. The frontmost
+/// app being the same is not enough: the user can click another box in the same window while
+/// the model works, and the key presses and the write would then go into that box.
+pub(super) fn is_focused(element: &Element, pid: i32) -> bool {
+    Element::application(pid)
+        .and_then(|app| focused_element(pid, &app))
+        .is_some_and(|focused| focused.same_as(element))
+}
+
 /// Re-read the pieces the write guard compares, for the field a press came from.
 pub fn current_state(handle: &FieldHandle) -> super::delivery::Now {
     let alive = handle.element.is_alive();
@@ -392,6 +380,7 @@ pub fn current_state(handle: &FieldHandle) -> super::delivery::Now {
     super::delivery::Now {
         frontmost_pid: frontmost_pid().unwrap_or(-1),
         element_alive: alive,
+        focused: alive && is_focused(&handle.element, handle.pid),
         value,
         identity,
     }
