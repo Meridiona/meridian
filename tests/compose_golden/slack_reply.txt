@@ -1,4 +1,4 @@
-# scenario=slack_reply surface=direct_chat intent=reply version=compose-v3
+# scenario=slack_reply surface=direct_chat intent=reply version=compose-v4
 
 ## Box
 A direct-message or group-chat composer. Write the next message the user would send in this conversation: short, in the register of the thread, usually with no greeting after the first message and no sign-off. Never write the other person's reply. If it is unclear who sent the last visible message, write a neutral next message from the user rather than guessing.

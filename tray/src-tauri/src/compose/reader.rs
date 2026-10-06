@@ -30,7 +30,7 @@ use objc2_app_kit::NSWorkspace;
 
 use super::ax::{self, Element};
 use super::delivery::FieldIdentity;
-use super::element_tree::{label_of, limits, whole_window_lines, TEXT_ROLES};
+use super::element_tree::{self, label_of, limits, whole_window_lines, TEXT_ROLES};
 use super::field_text;
 pub(super) use super::field_text::visible_value;
 use super::mention;
@@ -228,6 +228,8 @@ pub fn read_focused_field(ctx: &ReadContext) -> Result<ReadField, ReadError> {
     let placeholder = element.string("AXPlaceholderValue").unwrap_or_default();
     let url = page_url(&element);
 
+    // Where the window sits, so each line of the thread can be placed left or right in it.
+    element_tree::set_pane(app.element("AXFocusedWindow").and_then(|w| w.frame()));
     let around = walk::surrounding(&element, limits());
 
     // A tag the app pre-filled (replying to a comment) is not the user's draft: keep it, and

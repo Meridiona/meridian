@@ -1,4 +1,4 @@
-# scenario=google_chat_user_spoke_last surface=generic intent=reply version=compose-v3
+# scenario=google_chat_user_spoke_last surface=generic intent=reply version=compose-v4
 
 ## Box
 A text box in an app Meridian has no specific knowledge of. Infer the right register from the page and the text around the box, and write what fits. When in doubt, be brief and plain.

@@ -33,6 +33,7 @@ mod mention;
 pub(crate) mod ranges;
 mod reader;
 mod screen;
+mod sides;
 mod synth;
 mod tap;
 pub(crate) mod trigger;
