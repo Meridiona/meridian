@@ -26,6 +26,13 @@ export interface RuntimeSettings {
   // stream is pseudonymous and error-only, this one is identified by account
   // email and describes product usage.
   product_analytics_enabled: boolean
+  // The writing key: tap Left Option in a text box and Meridian writes there, using the
+  // text on screen as context. Mirrors the compose_* fields of RuntimeSettings in
+  // meridian-core/src/settings.rs. All on by default (opt-OUT); macOS only.
+  compose_enabled: boolean
+  compose_other_windows: boolean
+  compose_sound: boolean
+  compose_typing_dots: boolean
   // Whether Meridian starts itself at login and again each morning if it was
   // quit. Mirrors RuntimeSettings.autostart_enabled in
   // meridian-core/src/settings.rs. On by default (opt-OUT) - capture runs
@@ -103,6 +110,10 @@ export const SETTINGS_DEFAULTS: RuntimeSettings = {
   // Product analytics is opt-OUT too, and switchable independently of error
   // reporting. Must match RuntimeSettings::default() in meridian-core/src/settings.rs.
   product_analytics_enabled: true,
+  compose_enabled: true,
+  compose_other_windows: true,
+  compose_sound: true,
+  compose_typing_dots: true,
   // Autostart is opt-OUT: on by default, because the tray is what captures.
   // Must match RuntimeSettings::default() in meridian-core/src/settings.rs.
   autostart_enabled: true,

@@ -8,10 +8,11 @@
 //! than queued, because a stale trigger answered seconds later would write into whatever
 //! the user is doing by then.
 //!
-//! # Opt-in
-//! Off unless `compose_enabled` is true in `settings.json`. It is read at start-up (to
-//! decide whether to install the tap at all) and again at every press, so switching it off
-//! takes effect immediately. Settings UI comes later; for now the key is set by hand.
+//! # On by default, switchable
+//! On unless `compose_enabled` is false in `settings.json` (Settings, Capture and Privacy,
+//! Writing key). A supervisor thread re-reads the settings every couple of seconds and installs
+//! or removes the event tap to match, and every press re-reads them too, so switching it off
+//! stops it at once and switching it on needs no restart.
 //!
 //! # Who calls this
 //! [`start`] is called once from `lib.rs`'s setup hook.
@@ -20,13 +21,13 @@
 //! - [`meridian::compose::generate`] - the model half.
 //! - [`super::delivery`] - the safety checks run before every write.
 
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{mpsc, OnceLock};
 use std::time::{Duration, Instant};
 
 use meridian::compose::classify::{classify, Classification};
 use meridian::compose::generate::{draft, DraftOutcome};
 use meridian::compose::types::{DraftRequest, PreviousAttempt, SurfaceKind};
-use serde_json::Value;
 
 use super::delivery::{self, FieldIdentity, Origin};
 use super::dots::TypedDots;
@@ -54,25 +55,13 @@ struct Config {
 }
 
 fn read_config() -> Config {
-    let settings = meridian_core::settings::read_settings_value();
+    let settings = meridian_core::settings::load_runtime_settings();
     Config {
-        enabled: settings
-            .get("compose_enabled")
-            .and_then(Value::as_bool)
-            .unwrap_or(false),
-        key: TriggerKey::from_setting(settings.get("compose_trigger_key").and_then(Value::as_str)),
-        sound: settings
-            .get("compose_sound")
-            .and_then(Value::as_bool)
-            .unwrap_or(true),
-        other_windows: settings
-            .get("compose_other_windows")
-            .and_then(Value::as_bool)
-            .unwrap_or(true),
-        dots: settings
-            .get("compose_typing_dots")
-            .and_then(Value::as_bool)
-            .unwrap_or(true),
+        enabled: settings.compose_enabled,
+        key: TriggerKey::from_setting(settings.compose_trigger_key.as_deref()),
+        sound: settings.compose_sound,
+        other_windows: settings.compose_other_windows,
+        dots: settings.compose_typing_dots,
     }
 }
 
@@ -83,21 +72,18 @@ struct LastDraft {
     at: Instant,
 }
 
-/// Keeps the tap thread alive for the life of the process.
-static TAP: OnceLock<TapHandle> = OnceLock::new();
+/// Set once [`start`] has run, so a second call does nothing.
+static STARTED: AtomicBool = AtomicBool::new(false);
+/// How often the supervisor re-reads the settings to start or stop the key.
+const SETTINGS_POLL: Duration = Duration::from_secs(2);
 
-/// Start compose if it is enabled. Does nothing when it is off, and nothing on a second call.
+/// Start the writing key's threads. The worker is idle until a tap arrives; the supervisor
+/// installs the event tap while compose is enabled and removes it when it is switched off, so
+/// the Settings switch takes effect without a restart. Nothing happens on a second call.
 pub fn start(app: tauri::AppHandle) {
-    let config = read_config();
-    if !config.enabled {
-        tracing::info!("compose: disabled (set compose_enabled in settings.json to try it)");
+    if STARTED.swap(true, Ordering::SeqCst) {
         return;
     }
-    if TAP.get().is_some() {
-        return;
-    }
-    tracing::info!(key = ?config.key, "compose: enabled");
-
     let (tx, rx) = mpsc::channel::<()>();
     if let Err(e) = std::thread::Builder::new()
         .name("compose-worker".into())
@@ -106,11 +92,40 @@ pub fn start(app: tauri::AppHandle) {
         tracing::error!(error = %e, "compose: could not start the worker thread");
         return;
     }
-    let handle = tap::spawn(config.key, move || {
-        // A closed channel means the worker is gone; nothing useful to do.
-        let _ = tx.send(());
-    });
-    let _ = TAP.set(handle);
+    if let Err(e) = std::thread::Builder::new()
+        .name("compose-supervisor".into())
+        .spawn(move || supervise(tx))
+    {
+        tracing::error!(error = %e, "compose: could not start the supervisor thread");
+    }
+}
+
+/// Keep the event tap in step with the settings: on while enabled, off otherwise, replaced when
+/// the trigger key changes.
+fn supervise(tx: mpsc::Sender<()>) {
+    let mut running: Option<(TriggerKey, TapHandle)> = None;
+    loop {
+        let config = read_config();
+        let wanted = config.enabled.then_some(config.key);
+        if running.as_ref().map(|(key, _)| *key) != wanted {
+            // Dropping the old handle stops its thread.
+            running = wanted.map(|key| {
+                tracing::info!(?key, "compose: writing key on");
+                let tx = tx.clone();
+                // A closed channel means the worker is gone; nothing useful to do.
+                (
+                    key,
+                    tap::spawn(key, move || {
+                        let _ = tx.send(());
+                    }),
+                )
+            });
+            if running.is_none() {
+                tracing::info!("compose: writing key off");
+            }
+        }
+        std::thread::sleep(SETTINGS_POLL);
+    }
 }
 
 fn worker(rx: mpsc::Receiver<()>, app: tauri::AppHandle) {
