@@ -31,7 +31,7 @@ const SETTINGS_POLL: Duration = Duration::from_secs(2);
 /// Edge of the square badge window, in points.
 const SIZE: f64 = 22.0;
 /// Gap kept between the badge and the field's edge.
-const MARGIN: f64 = 6.0;
+const MARGIN: f64 = 10.0;
 /// Fields smaller than this are not worth marking (a tiny search or rename box).
 const MIN_WIDTH: f64 = 120.0;
 const MIN_HEIGHT: f64 = 20.0;
@@ -73,12 +73,20 @@ pub fn visible_box(field: Frame, ancestors: &[Frame]) -> Frame {
     best
 }
 
-/// Top-left of the badge for a box: just above its top-left corner, in the free space over
-/// the box. Beside the box it would land on a sidebar divider, an attach button or the text
-/// next to a form field, and for a tall field such as a mail body the bottom can be off
-/// screen; the strip above the corner is clear in all of them.
-pub fn badge_position((x, y, _w, _h): Frame) -> (f64, f64) {
-    (x.max(0.0), (y - SIZE - MARGIN).max(0.0))
+/// Top-left of the badge for a box: to its left with a clear gap of [`MARGIN`], level with the
+/// first line (centred when the box is one line tall, so it lines up with a chat input). A box
+/// with no room to its left (flush with the screen edge) gets the badge above its corner.
+pub fn badge_position((x, y, _w, h): Frame) -> (f64, f64) {
+    let left = x - SIZE - MARGIN;
+    if left < 0.0 {
+        return (x.max(0.0), (y - SIZE - MARGIN).max(0.0));
+    }
+    let top = if h < SIZE * 2.0 {
+        y + (h - SIZE) / 2.0
+    } else {
+        y + 4.0
+    };
+    (left, top)
 }
 
 /// Start following the focused field. Does nothing until the writing key is switched on.
@@ -174,19 +182,25 @@ mod tests {
     use super::*;
 
     #[test]
-    fn the_badge_sits_above_the_boxs_top_left_corner() {
-        assert_eq!(
-            badge_position((100.0, 200.0, 400.0, 120.0)),
-            (100.0, 200.0 - 22.0 - 6.0)
-        );
+    fn the_badge_sits_left_of_the_box_with_a_gap() {
+        // A one-line box: centred on its height.
         assert_eq!(
             badge_position((100.0, 200.0, 400.0, 32.0)),
-            (100.0, 200.0 - 22.0 - 6.0)
+            (100.0 - 22.0 - 10.0, 205.0)
+        );
+        // A tall box: level with the first line.
+        assert_eq!(
+            badge_position((100.0, 200.0, 400.0, 120.0)),
+            (100.0 - 22.0 - 10.0, 204.0)
         );
     }
 
     #[test]
-    fn the_badge_never_leaves_the_screen() {
+    fn a_box_at_the_screen_edge_gets_the_badge_above_its_corner() {
+        assert_eq!(
+            badge_position((10.0, 200.0, 400.0, 32.0)),
+            (10.0, 200.0 - 22.0 - 10.0)
+        );
         assert_eq!(badge_position((-5.0, 10.0, 400.0, 32.0)), (0.0, 0.0));
     }
 
