@@ -26,7 +26,7 @@ export interface RuntimeSettings {
   // stream is pseudonymous and error-only, this one is identified by account
   // email and describes product usage.
   product_analytics_enabled: boolean
-  // The writing key: tap Left Option in a text box and Meridian writes there, using the
+  // The writing key: tap Right Option in a text box and Meridian writes there, using the
   // text on screen as context. Mirrors the compose_* fields of RuntimeSettings in
   // meridian-core/src/settings.rs. All on by default (opt-OUT); macOS only.
   compose_enabled: boolean

@@ -1,7 +1,7 @@
 //ambient dev tool that watches what you do and updates your PM tickets automatically, boosting developer productivity
 //! Telling a deliberate tap of the trigger key from every other thing a modifier key does.
 //!
-//! The trigger is a bare modifier key (left Option by default), which is also how people
+//! The trigger is a bare modifier key (right Option by default), which is also how people
 //! type accented characters, hold shortcuts and drag with Option. A tap therefore has to
 //! be strict: the key goes down and up within [`TAP_MAX_MS`], with no other key, click or
 //! modifier in between. Anything else is the user doing something else and must never
@@ -19,8 +19,8 @@
 /// Longest a press may last and still count as a tap. Longer is a hold (edit mode, later).
 pub const TAP_MAX_MS: u64 = 400;
 
-/// Which Option key triggers a draft. Left is the default so right Option stays free for
-/// other tools while this is being compared against them.
+/// Which Option key triggers a draft. Right is the default: the left Option key is the one
+/// people use for accents and shortcuts.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TriggerKey {
     LeftOption,
@@ -28,11 +28,11 @@ pub enum TriggerKey {
 }
 
 impl TriggerKey {
-    /// Parse the settings value. Unknown or missing values fall back to left Option.
+    /// Parse the settings value. Unknown or missing values fall back to right Option.
     pub fn from_setting(value: Option<&str>) -> TriggerKey {
         match value.map(str::trim).map(str::to_ascii_lowercase).as_deref() {
-            Some("right_option") => TriggerKey::RightOption,
-            _ => TriggerKey::LeftOption,
+            Some("left_option") => TriggerKey::LeftOption,
+            _ => TriggerKey::RightOption,
         }
     }
 }
@@ -283,15 +283,15 @@ mod tests {
     }
 
     #[test]
-    fn setting_parser_defaults_to_left_option() {
-        assert_eq!(TriggerKey::from_setting(None), TriggerKey::LeftOption);
+    fn setting_parser_defaults_to_right_option() {
+        assert_eq!(TriggerKey::from_setting(None), TriggerKey::RightOption);
         assert_eq!(
             TriggerKey::from_setting(Some("nonsense")),
-            TriggerKey::LeftOption
+            TriggerKey::RightOption
         );
         assert_eq!(
-            TriggerKey::from_setting(Some(" Right_Option ")),
-            TriggerKey::RightOption
+            TriggerKey::from_setting(Some(" Left_Option ")),
+            TriggerKey::LeftOption
         );
     }
 
