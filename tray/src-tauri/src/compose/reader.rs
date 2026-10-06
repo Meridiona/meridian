@@ -237,7 +237,7 @@ pub fn read_focused_field(ctx: &ReadContext) -> Result<ReadField, ReadError> {
     let mut protected_prefix = mention::protected_prefix(&value, &links, &context);
     let (name_like, in_context, as_line) = mention::name_checks(&value, &context);
     // Sizes only, never text: why a pre-filled tag was or was not found.
-    tracing::info!(
+    tracing::debug!(
         value_chars = value.chars().count(),
         link_titles = links.len(),
         link_title_chars = ?links.iter().map(|t| t.chars().count()).collect::<Vec<_>>(),
