@@ -11,6 +11,8 @@
       opacity: 0.92; transition: opacity 0.12s ease;
     }
     #badge:hover { opacity: 1; }
+    #badge.spin img { animation: turn 1.1s linear infinite; }
+    @keyframes turn { to { transform: rotate(360deg); } }
     #badge img { width: 100%; height: 100%; display: block; pointer-events: none; }
   </style>
 </head>
@@ -20,6 +22,10 @@
     const invoke = (cmd, args) => window.__TAURI__.core.invoke(cmd, args);
     const note = (detail) => { try { invoke('compose_badge_log', { detail }).catch(() => {}); } catch (_) {} };
     note('loaded');
+    // Spin while Meridian is writing, until the draft lands.
+    window.__TAURI__.event.listen('compose-busy', (e) => {
+      document.getElementById('badge').classList.toggle('spin', !!e.payload);
+    });
     // Same as tapping the writing key. mousedown, not click, so the press lands before the
     // text box could lose anything.
     document.getElementById('badge').addEventListener('mousedown', (e) => {

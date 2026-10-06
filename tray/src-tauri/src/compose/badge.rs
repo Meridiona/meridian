@@ -18,7 +18,7 @@
 
 use std::time::{Duration, Instant};
 
-use tauri::{LogicalPosition, Manager};
+use tauri::{Emitter, LogicalPosition, Manager};
 
 use super::ax::{self, Element};
 use super::element_tree::TEXT_ROLES;
@@ -54,6 +54,25 @@ pub fn worth_marking((_, _, w, h): Frame, window: Option<Frame>) -> bool {
     w >= MIN_WIDTH && h >= MIN_HEIGHT && w * h <= MAX_AREA && !fills_window
 }
 
+/// The visible box around a field. The Accessibility frame of a text field is often only its
+/// inner input, with the rounded border, the attach button and the emoji button drawn by the
+/// ancestors, so the badge would land on top of them. This walks up through the ancestors that
+/// still wrap the field closely (a little taller, a little wider) and returns the outermost.
+pub fn visible_box(field: Frame, ancestors: &[Frame]) -> Frame {
+    let (fx, fy, fw, fh) = field;
+    let mut best = field;
+    for &(x, y, w, h) in ancestors {
+        let contains =
+            x <= fx + 1.0 && y <= fy + 1.0 && x + w >= fx + fw - 1.0 && y + h >= fy + fh - 1.0;
+        if contains && h <= fh * 2.0 + 16.0 && w <= fw * 1.8 + 120.0 {
+            best = (x, y, w, h);
+        } else {
+            break;
+        }
+    }
+    best
+}
+
 /// Top-left of the badge for a field: just outside its left edge, level with the bottom line
 /// of the field (centred when the field is only one line tall). A field flush against the
 /// left edge of the screen has no room outside, so the badge goes above its top-left corner.
@@ -85,8 +104,15 @@ fn run(app: tauri::AppHandle) {
     let mut enabled = false;
     let mut enabled_checked: Option<Instant> = None;
     let mut shown_at: Option<(i64, i64)> = None;
+    let mut was_working = false;
     loop {
         std::thread::sleep(POLL);
+        // Tell the icon's page to spin while a draft is being written.
+        let working = super::controller::is_working();
+        if working != was_working {
+            was_working = working;
+            let _ = app.emit_to("compose-badge", "compose-busy", working);
+        }
         if enabled_checked.is_none_or(|t| t.elapsed() >= SETTINGS_POLL) {
             enabled = meridian_core::settings::load_runtime_settings().compose_enabled;
             enabled_checked = Some(Instant::now());
@@ -119,7 +145,20 @@ fn target_for(own_pid: i32) -> Option<Frame> {
         return None;
     }
     let window = app.element("AXFocusedWindow").and_then(|w| w.frame());
-    element.frame().filter(|f| worth_marking(*f, window))
+    let field = element.frame().filter(|f| worth_marking(*f, window))?;
+    let mut ancestors = Vec::new();
+    let mut current = element;
+    for _ in 0..6 {
+        let Some(parent) = current.element("AXParent") else {
+            break;
+        };
+        match parent.frame() {
+            Some(f) => ancestors.push(f),
+            None => break,
+        }
+        current = parent;
+    }
+    Some(visible_box(field, &ancestors))
 }
 
 /// Move and show the badge, or hide it. Runs on the main thread.
@@ -158,6 +197,23 @@ mod tests {
     fn a_field_at_the_screen_edge_gets_it_above_the_corner() {
         let (x, y) = badge_position((10.0, 200.0, 400.0, 120.0));
         assert_eq!((x, y), (10.0, 200.0 - 22.0 - 4.0));
+    }
+
+    #[test]
+    fn the_badge_goes_around_the_visible_box_not_the_inner_input() {
+        // Messages: the input sits inside a wider row holding the + and emoji buttons.
+        let field = (386.0, 963.0, 1447.0, 31.0);
+        let row = (328.0, 963.0, 1592.0, 42.0);
+        assert_eq!(visible_box(field, &[row]), row);
+    }
+
+    #[test]
+    fn the_walk_up_stops_at_an_ancestor_that_is_much_bigger() {
+        let field = (386.0, 963.0, 600.0, 31.0);
+        let row = (360.0, 955.0, 700.0, 44.0);
+        let pane = (0.0, 30.0, 1920.0, 975.0);
+        assert_eq!(visible_box(field, &[row, pane]), row);
+        assert_eq!(visible_box(field, &[pane]), field);
     }
 
     #[test]
