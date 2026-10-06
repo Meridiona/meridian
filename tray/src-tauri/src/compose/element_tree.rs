@@ -105,7 +105,7 @@ impl Element {
             return false;
         }
         let mut current = self.clone();
-        for _ in 0..3 {
+        for _ in 0..2 {
             let Some(parent) = current.element("AXParent") else {
                 return false;
             };
@@ -148,13 +148,18 @@ impl Node for Element {
     }
 
     fn side(&self) -> Option<sides::Side> {
+        // Without a conversation frame nothing is marked, so skip the Accessibility reads.
+        let pane = PANE.with(|p| p.get())?;
+        let by_position = sides::side_of(self.frame()?, pane);
+        if by_position == Some(sides::Side::User) {
+            return by_position;
+        }
         // The bubble's own description names the sender when the app provides one
-        // ("Your iMessage, <text>, <time>"); that is firmer than where the bubble sits.
+        // ("Your iMessage, <text>, <time>"); that catches a user bubble the position missed.
         if self.is_described_as_own() {
             return Some(sides::Side::User);
         }
-        let pane = PANE.with(|p| p.get())?;
-        sides::side_of(self.frame()?, pane)
+        by_position
     }
 
     fn children(&self) -> Vec<Element> {
