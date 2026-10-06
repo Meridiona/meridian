@@ -52,18 +52,27 @@ fn looks_like_name(text: &str) -> bool {
     })
 }
 
-/// True when a line of the surrounding text is the name, or is the name followed by header
-/// decoration ("Name  \u{2022}  2nd", "Name, Title"), never by another word: a draft "Ann"
-/// must not match a line that begins "Ann Smith", nor "Great" a line "Great work".
+/// True when a line of the surrounding text is the name, or begins with it as a profile header
+/// does. A single word ("Ann", "Great") must be the whole line or be followed only by header
+/// decoration ("Ann  \u{2022}  2nd", "Ann, Title"), never by another word: a draft "Ann" must not
+/// match a line that begins "Ann Smith", nor "Great" a line "Great work". A full name of two
+/// or more words is specific enough to be followed by more header text ("Divya Srivastava
+/// Verified Profile 3rd+ Final Year CS Student"), as long as the name ends at a word boundary
+/// ("Ann Smith" does not match "Ann Smithson").
 fn appears_on_its_own_line(context: &str, name: &str) -> bool {
     let name = name.to_lowercase();
+    let full_name = name.split_whitespace().count() >= 2;
     context.lines().any(|l| {
         let line = l.trim_matches(is_blank).to_lowercase();
         line.strip_prefix(name.as_str()).is_some_and(|rest| {
-            rest.trim_start()
-                .chars()
-                .next()
-                .is_none_or(|c| !c.is_alphanumeric())
+            if full_name {
+                rest.chars().next().is_none_or(|c| !c.is_alphanumeric())
+            } else {
+                rest.trim_start()
+                    .chars()
+                    .next()
+                    .is_none_or(|c| !c.is_alphanumeric())
+            }
         })
     })
 }
@@ -205,5 +214,23 @@ mod tests {
             protected_prefix("Ann, thanks", &titles(&["Ann"]), ""),
             utf16_len("Ann")
         );
+    }
+    #[test]
+    fn a_full_name_may_be_followed_by_the_rest_of_a_profile_header() {
+        let ctx = "Divya Srivastava Verified Profile 3rd+ Final Year CS Student @ JIIT\n19h";
+        assert!(appears_on_its_own_line(ctx, "Divya Srivastava"));
+        assert_eq!(
+            protected_prefix("Divya Srivastava ", &[], ctx),
+            "Divya Srivastava ".encode_utf16().count()
+        );
+    }
+
+    #[test]
+    fn a_full_name_must_end_at_a_word_boundary() {
+        assert!(!appears_on_its_own_line(
+            "Ann Smithson wrote this",
+            "Ann Smith"
+        ));
+        assert!(appears_on_its_own_line("Ann Smith wrote this", "Ann Smith"));
     }
 }
