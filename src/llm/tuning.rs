@@ -15,8 +15,9 @@
 //!   model id, an older CLI without `--effort`) the call is retried once without them. Other
 //!   failures - a timeout, signed out, a crash - are not the tuning's fault and are returned
 //!   as they are, because a second attempt would only double the wait and the quota.
-//! - Providers not listed here are left alone on purpose: Cursor has its own tier ladder,
-//!   Copilot's CLI takes neither flag, and a custom endpoint's model is its own required field.
+//! - Providers not listed here are left alone on purpose: Copilot's CLI takes neither flag, and a
+//!   custom endpoint's model is its own required field (and `openai_compat` already asks gpt-oss
+//!   models for low reasoning).
 //! - The coding-agent session summariser is separate and keeps its own Haiku default
 //!   (`SUMMARISER_MODEL`); it does not read this table.
 //!
@@ -43,11 +44,20 @@ pub fn default_for(provider: LlmProvider) -> Option<Tuning> {
             model: Some("claude-sonnet-5-5"),
             effort: "low",
         }),
-        // No model pinned: Codex model ids differ by plan, and a wrong id fails the call.
+        // A model id the account does not have is rejected by the CLI and the call is retried
+        // without the tuning (see `complete_with_fallback`), so a plan without it still works.
         LlmProvider::Codex => Some(Tuning {
-            model: None,
+            model: Some("gpt-5.6-sol"),
             effort: "low",
         }),
+        // Cursor encodes the effort in the model name (`-low`); `effort` is informational.
+        // Its own degradation ladder (`cursor_cli::run_hardened`) handles a missing model.
+        LlmProvider::Cursor => Some(Tuning {
+            model: Some(super::cursor_cli::FAST_MODEL),
+            effort: "low",
+        }),
+        // Copilot's CLI takes neither flag, and a custom endpoint (Ollama, Groq...) keeps the
+        // model on its own settings row; `openai_compat` already caps gpt-oss reasoning at low.
         _ => None,
     }
 }
@@ -128,16 +138,23 @@ mod tests {
     }
 
     #[test]
-    fn codex_gets_low_effort_but_keeps_the_users_model() {
+    fn codex_is_pinned_to_gpt_5_6_sol_at_low_effort() {
         let t = default_for(LlmProvider::Codex).unwrap();
-        assert_eq!(t.model, None);
+        assert_eq!(t.model, Some("gpt-5.6-sol"));
         assert_eq!(t.effort, "low");
+    }
+
+    #[test]
+    fn cursor_uses_its_low_effort_model() {
+        let t = default_for(LlmProvider::Cursor).unwrap();
+        assert_eq!(t.model, Some(crate::llm::cursor_cli::FAST_MODEL));
+        assert!(crate::llm::cursor_cli::FAST_MODEL.ends_with("-low"));
     }
 
     #[test]
     fn providers_with_their_own_model_handling_are_left_alone() {
         assert_eq!(default_for(LlmProvider::Copilot), None);
-        assert_eq!(default_for(LlmProvider::Cursor), None);
+        assert_eq!(default_for(LlmProvider::Custom), None);
     }
 
     use std::sync::atomic::{AtomicU32, Ordering};

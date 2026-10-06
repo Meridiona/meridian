@@ -36,6 +36,7 @@ use crate::coding_agent_session_ingest::summariser::prompts as sp;
 use crate::coding_agent_session_ingest::summariser::{cap_transcript, run_capture};
 
 use super::cursor_cli;
+use super::tuning;
 use super::{prompts, LlmBackend, LlmConfig, LlmError, LlmOutput, LlmProvider, PromptRequest};
 
 const ARG_CAP: usize = 180_000;
@@ -211,7 +212,7 @@ impl LlmBackend for CursorBackend {
         let t0 = std::time::Instant::now();
         let prompt = build_prompt(req);
 
-        let model = resolve_model(&self.cfg.model, req.interactive);
+        let model = resolve_model(&self.cfg.model);
 
         // The degradation ladder lives in `cursor_cli` so the summariser inherits it too.
         let text =
@@ -248,19 +249,18 @@ impl LlmBackend for CursorBackend {
     }
 }
 
-/// Which model tier this call uses. An explicit user override (`cfg_model` non-empty) always
-/// wins, matching every other provider's "the user's choice is never silently swapped" rule -
-/// [`PromptRequest::interactive`] only ever picks between OUR two pinned tiers, never
-/// overrides what the user chose. Extracted so the choice is testable without spawning a
-/// process — see [`CursorBackend::complete`].
-fn resolve_model(cfg_model: &str, interactive: bool) -> &str {
+/// Which model this call uses. An explicit user override (`cfg_model` non-empty) always wins,
+/// matching every other provider's "the user's choice is never silently swapped" rule. Otherwise
+/// the model comes from the shared tuning table ([`super::tuning`]), which for Cursor is the
+/// pinned small model at low reasoning effort. Extracted so the choice is testable without
+/// spawning a process - see [`CursorBackend::complete`].
+fn resolve_model(cfg_model: &str) -> &str {
     if !cfg_model.is_empty() {
-        cfg_model
-    } else if interactive {
-        cursor_cli::FAST_MODEL
-    } else {
-        cursor_cli::DEFAULT_MODEL
+        return cfg_model;
     }
+    tuning::default_for(LlmProvider::Cursor)
+        .and_then(|t| t.model)
+        .unwrap_or(cursor_cli::DEFAULT_MODEL)
 }
 
 /// The exact text sent to `cursor-agent -p`.
@@ -295,21 +295,14 @@ mod tests {
     }
 
     #[test]
-    fn a_background_call_with_no_override_uses_the_default_tier() {
-        assert_eq!(resolve_model("", false), cursor_cli::DEFAULT_MODEL);
+    fn a_call_with_no_override_uses_the_tuned_low_effort_model() {
+        assert_eq!(resolve_model(""), cursor_cli::FAST_MODEL);
     }
 
+    /// THE property that matters: a user's explicit model choice is never silently swapped.
     #[test]
-    fn an_interactive_call_with_no_override_uses_the_fast_tier() {
-        assert_eq!(resolve_model("", true), cursor_cli::FAST_MODEL);
-    }
-
-    /// THE property that matters: a user's explicit model choice is never silently swapped
-    /// for a faster one just because the call happens to be interactive.
-    #[test]
-    fn an_explicit_override_always_wins_over_the_interactive_hint() {
-        assert_eq!(resolve_model("claude-opus-4-8", true), "claude-opus-4-8");
-        assert_eq!(resolve_model("claude-opus-4-8", false), "claude-opus-4-8");
+    fn an_explicit_override_always_wins() {
+        assert_eq!(resolve_model("claude-opus-4-8"), "claude-opus-4-8");
     }
 
     /// THE regression this parse exists for: verbatim shape captured live from
