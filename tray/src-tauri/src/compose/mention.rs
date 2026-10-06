@@ -52,14 +52,19 @@ fn looks_like_name(text: &str) -> bool {
     })
 }
 
-/// True when a line of the surrounding text is the name, or begins with it followed by a break
-/// (a comment header reads "Name  .  2nd" or "Name  Title at Company", not just "Name").
+/// True when a line of the surrounding text is the name, or is the name followed by header
+/// decoration ("Name  \u{2022}  2nd", "Name, Title"), never by another word: a draft "Ann"
+/// must not match a line that begins "Ann Smith", nor "Great" a line "Great work".
 fn appears_on_its_own_line(context: &str, name: &str) -> bool {
     let name = name.to_lowercase();
     context.lines().any(|l| {
         let line = l.trim_matches(is_blank).to_lowercase();
-        line.strip_prefix(name.as_str())
-            .is_some_and(|rest| rest.chars().next().is_none_or(|c| !c.is_alphanumeric()))
+        line.strip_prefix(name.as_str()).is_some_and(|rest| {
+            rest.trim_start()
+                .chars()
+                .next()
+                .is_none_or(|c| !c.is_alphanumeric())
+        })
     })
 }
 
@@ -150,6 +155,15 @@ mod tests {
     #[test]
     fn a_name_that_only_starts_a_longer_word_is_not_a_header_match() {
         assert_eq!(protected_prefix("Ann", &[], "Annabelle writes"), 0);
+    }
+
+    #[test]
+    fn a_draft_that_starts_a_line_of_ordinary_words_is_not_a_tag() {
+        assert_eq!(protected_prefix("Ann", &[], "Ann Smith\nSomething"), 0);
+        assert_eq!(
+            protected_prefix("Great", &[], "Great work on the launch"),
+            0
+        );
     }
 
     #[test]

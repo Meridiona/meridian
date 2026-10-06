@@ -109,10 +109,22 @@ struct Baseline {
 /// Longest run of typed full stops that can stand in for "the box was only a placeholder".
 const PLACEHOLDER_STOPS_MAX: usize = 6;
 
+/// Placeholders are short prompts that trail off: "Add a comment...", "Write a message\u{2026}".
+fn looks_like_placeholder(text: &str) -> bool {
+    const MAX_CHARS: usize = 80;
+    let text = canonical_blanks(text);
+    let text = text.trim();
+    text.chars().count() <= MAX_CHARS && (text.ends_with("...") || text.ends_with('\u{2026}'))
+}
+
 /// Some editors (LinkedIn's comment box) report their placeholder as the box's value and
 /// expose no hint that names it. Typing the first character makes the placeholder vanish, so
-/// the box then holds nothing but our full stops. That is unmistakable: the "text" we
-/// recorded was never the user's, and the real baseline is an empty box.
+/// the box then holds nothing but our full stops, so the "text" we recorded was never the
+/// user's and the real baseline is an empty box.
+///
+/// Both signs are required, because real text replaced by a lone "." must stay the user's:
+/// the box is now only full stops, and what it held before ends the way placeholders do
+/// ("Add a comment...", "Write a message\u{2026}") and is short.
 fn adopt_empty_baseline_if_placeholder(value: &str, base: &mut Baseline) {
     if typed_between(value, &base.original, base.caret).is_some() {
         return;
@@ -122,7 +134,7 @@ fn adopt_empty_baseline_if_placeholder(value: &str, base: &mut Baseline) {
     let only_stops = !value.is_empty()
         && value.chars().count() <= PLACEHOLDER_STOPS_MAX
         && value.chars().all(|c| c == '.' || c == '\u{2026}');
-    if only_stops && !canonical_blanks(&base.original).trim().is_empty() {
+    if only_stops && looks_like_placeholder(&base.original) {
         tracing::info!("compose: the box held only a placeholder; treating it as empty");
         base.empty_view = std::mem::take(&mut base.original);
         base.caret = 0;
@@ -170,20 +182,19 @@ fn typed_and_caret_ok(element: &Element, base: &Mutex<Baseline>) -> Result<Typed
     };
     let (original, caret) = (original.as_str(), caret);
     let typed = typed_between(&value, original, caret).ok_or_else(|| {
-        // Shape only, never text: where the reading first departs from what was read at the
-        // press, and the code points on each side of that spot.
+        // Shape only, never text: lengths, and where the reading first departs from what was
+        // read at the press.
         let (a, b) = (canonical_blanks(original), canonical_blanks(&value));
         let at = a.chars().zip(b.chars()).take_while(|(x, y)| x == y).count();
-        let near = |s: &str| -> Vec<u32> { s.chars().skip(at).take(3).map(|c| c as u32).collect() };
         tracing::info!(
             original_chars = a.chars().count(),
             now_chars = b.chars().count(),
             caret,
             first_difference = at,
-            original_next = ?near(&a),
-            now_next = ?near(&b),
             raw_now_chars = element.string("AXValue").map(|v| v.chars().count()),
-            hint_placeholder_chars = element.string("AXPlaceholderValue").map(|v| v.chars().count()),
+            hint_placeholder_chars = element
+                .string("AXPlaceholderValue")
+                .map(|v| v.chars().count()),
             hint_description_chars = element.string("AXDescription").map(|v| v.chars().count()),
             hint_title_chars = element.string("AXTitle").map(|v| v.chars().count()),
             "compose: box no longer matches"
@@ -364,6 +375,32 @@ mod tests {
             typed_between(".", &base.original, base.caret),
             Some(Typed { chars: 1, stops: 1 })
         );
+    }
+
+    #[test]
+    fn real_text_replaced_by_a_lone_full_stop_is_the_users_not_a_placeholder() {
+        for original in [
+            "hello",
+            "see you at 5",
+            "this is a long unfinished sentence that",
+        ] {
+            let mut base = Baseline {
+                original: original.into(),
+                caret: original.len(),
+                empty_view: String::new(),
+            };
+            adopt_empty_baseline_if_placeholder(".", &mut base);
+            assert_eq!(base.original, original, "{original}");
+            assert!(base.empty_view.is_empty());
+        }
+    }
+
+    #[test]
+    fn only_short_trailing_off_text_counts_as_placeholder_shaped() {
+        assert!(looks_like_placeholder("Add a comment..."));
+        assert!(looks_like_placeholder(" Write a message\u{2026} "));
+        assert!(!looks_like_placeholder("hello"));
+        assert!(!looks_like_placeholder(&format!("{}...", "x".repeat(100))));
     }
 
     #[test]
