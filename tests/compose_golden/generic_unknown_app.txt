@@ -1,4 +1,4 @@
-# scenario=generic_unknown_app surface=generic intent=start_conversation version=compose-v3
+# scenario=generic_unknown_app surface=generic intent=start_conversation version=compose-v4
 
 ## Box
 A text box in an app Meridian has no specific knowledge of. Infer the right register from the page and the text around the box, and write what fits. When in doubt, be brief and plain.

@@ -1,4 +1,4 @@
-# scenario=calendar_title_fill surface=structured_field intent=fill_field version=compose-v3
+# scenario=calendar_title_fill surface=structured_field intent=fill_field version=compose-v4
 
 ## Box
 A short form or title field, such as a subject line, calendar title, location or form value. Return only the value: no sentence around it, no label, no trailing punctuation unless the field would need it. Take the value from what the user has already decided elsewhere (the page or the compose header). If the value is not determinable from what you can see, return [[NO_CONTEXT]] rather than guessing.
