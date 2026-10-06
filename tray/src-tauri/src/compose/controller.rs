@@ -74,6 +74,16 @@ struct LastDraft {
 
 /// Set once [`start`] has run, so a second call does nothing.
 static STARTED: AtomicBool = AtomicBool::new(false);
+/// Sends a press to the worker, so the on-screen badge does exactly what the key does.
+static PRESS: OnceLock<mpsc::Sender<()>> = OnceLock::new();
+
+/// Ask for a draft as if the trigger key had been tapped. Ignored before [`start`].
+pub fn press() {
+    if let Some(tx) = PRESS.get() {
+        let _ = tx.send(());
+    }
+}
+
 /// How often the supervisor re-reads the settings to start or stop the key.
 const SETTINGS_POLL: Duration = Duration::from_secs(2);
 
@@ -85,6 +95,8 @@ pub fn start(app: tauri::AppHandle) {
         return;
     }
     let (tx, rx) = mpsc::channel::<()>();
+    let _ = PRESS.set(tx.clone());
+    super::badge::start(app.clone());
     if let Err(e) = std::thread::Builder::new()
         .name("compose-worker".into())
         .spawn(move || worker(rx, app))
@@ -137,7 +149,7 @@ fn worker(rx: mpsc::Receiver<()>, app: tauri::AppHandle) {
             // The typing sound starts before any slow work, so the user knows at once that
             // the tap was heard, and it keeps going until the draft is written or refused.
             let mut typing = config.sound.then(TypingSound::start);
-            let _busy = BusyTitle::show(&app);
+            let _working = WorkingFlag::set();
             let ctx = read_context(&app, config);
             // A panic in one press must not kill the worker: that would leave the key dead
             // until the app restarts.
@@ -190,34 +202,28 @@ fn user_name() -> Option<String> {
     .clone()
 }
 
-/// Shows "Writing..." next to the menu-bar icon for as long as a press is being handled,
-/// and removes it when dropped - including if the press ends early or panics.
-struct BusyTitle {
-    app: tauri::AppHandle,
+/// True while a press is being handled, so the on-screen icon can spin until the draft lands.
+static WORKING: AtomicBool = AtomicBool::new(false);
+
+/// Whether a press is in flight right now.
+pub fn is_working() -> bool {
+    WORKING.load(Ordering::SeqCst)
 }
 
-impl BusyTitle {
-    fn show(app: &tauri::AppHandle) -> BusyTitle {
-        set_tray_title(app, Some("Writing..."));
-        BusyTitle { app: app.clone() }
+/// Marks a press as in flight for as long as it lives, including when the press ends early or
+/// panics.
+struct WorkingFlag;
+
+impl WorkingFlag {
+    fn set() -> WorkingFlag {
+        WORKING.store(true, Ordering::SeqCst);
+        WorkingFlag
     }
 }
 
-impl Drop for BusyTitle {
+impl Drop for WorkingFlag {
     fn drop(&mut self) {
-        set_tray_title(&self.app, None);
-    }
-}
-
-fn set_tray_title(app: &tauri::AppHandle, title: Option<&str>) {
-    use tauri::Manager;
-    let Some(state) = app.try_state::<std::sync::Arc<std::sync::Mutex<crate::state::AppState>>>()
-    else {
-        return;
-    };
-    let id = state.lock().ok().and_then(|s| s.tray_id.clone());
-    if let Some(tray) = id.and_then(|id| app.tray_by_id(&id)) {
-        let _ = tray.set_title(title);
+        WORKING.store(false, Ordering::SeqCst);
     }
 }
 
@@ -266,13 +272,16 @@ fn handle_press(
     if !typed_dots.map(TypedDots::finish).unwrap_or(true) {
         // The box no longer provably holds what it did, so writing over it is not safe.
         tracing::warn!("compose: could not clear the typing dots; not writing");
+        hush(typing);
         if let DraftOutcome::Text { text, .. } = &outcome {
             writer::leave_on_clipboard(text);
+            feedback::stopped_with_draft(
+                "Meridian could not clear its typing dots safely, so it did not write the draft.",
+                text,
+            );
+        } else {
+            feedback::stopped("Meridian could not clear its typing dots safely.");
         }
-        hush(typing);
-        feedback::stopped(
-            "Meridian could not clear its typing dots safely, so the draft is on your clipboard.",
-        );
         return;
     }
 
@@ -289,21 +298,51 @@ fn handle_press(
             hush(typing);
             feedback::stopped(reason.user_message())
         }
-        DraftOutcome::NoContext => {
-            hush(typing);
-            feedback::stopped(
-                "Meridian could not read enough here to write something. Try typing a few words first.",
-            )
-        }
-        DraftOutcome::Unusable => {
-            hush(typing);
-            feedback::stopped("The model did not return anything usable. Try again.")
-        }
-        DraftOutcome::Failed { message } => {
-            hush(typing);
-            feedback::stopped(&message)
-        }
+        DraftOutcome::NoContext => say_in_box(
+            &read,
+            "Meridian could not read enough here to write something. Try typing a few words first.",
+            typing,
+        ),
+        DraftOutcome::Unusable => say_in_box(
+            &read,
+            "The model did not return anything usable. Try again.",
+            typing,
+        ),
+        DraftOutcome::Failed { message } => say_in_box(&read, &message, typing),
     }
+}
+
+/// Tell the user why nothing was drafted. The message goes into the box itself, where it is
+/// easiest to read, but only when the box is empty and safe to write in; anywhere else (text
+/// already there, a refused box, a write that does not land) it is a notification as before.
+fn say_in_box(read: &ReadField, message: &str, typing: &mut Option<TypingSound>) {
+    hush(typing);
+    if !write_note(read, message) {
+        feedback::stopped(message);
+    }
+}
+
+fn write_note(read: &ReadField, message: &str) -> bool {
+    let handle = &read.handle;
+    if !handle.value.trim().is_empty() || handle.protected_prefix > 0 {
+        return false;
+    }
+    let Classification::Ready(plan) = classify(&read.snapshot) else {
+        return false;
+    };
+    let origin = Origin {
+        identity: handle.identity.clone(),
+        value: handle.value.clone(),
+    };
+    let now = reader::current_state(handle);
+    if delivery::guard(&origin, &now, plan.surface, message).is_err() {
+        return false;
+    }
+    let empty = ranges::Utf16Range {
+        location: 0,
+        length: 0,
+    };
+    writer::write(handle, empty, message, &mut || {}).is_ok()
 }
 
 /// Whether real keystrokes may be typed into this box while waiting. Only where the press will
@@ -371,7 +410,7 @@ fn deliver(
         tracing::info!(reason = refusal.as_str(), "compose: draft not written");
         writer::leave_on_clipboard(text);
         hush(typing);
-        feedback::stopped(refusal.user_message());
+        feedback::stopped_with_draft(refusal.user_message(), text);
         return;
     }
     // The sound stops the moment the text is seen in the box.
@@ -397,9 +436,7 @@ fn deliver(
             tracing::warn!(reason = e.as_str(), "compose: draft could not be written");
             writer::leave_on_clipboard(text);
             hush(typing);
-            feedback::stopped(
-                "Meridian could not write into this box, so the draft is on your clipboard.",
-            );
+            feedback::stopped_with_draft("Meridian could not write into this box.", text);
         }
     }
 }

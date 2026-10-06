@@ -1,0 +1,40 @@
+<!doctype html>
+<!-- ambient dev tool that watches what you do and updates your PM tickets automatically, boosting developer productivity -->
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <title>Meridian</title>
+  <style>
+    html, body { margin: 0; width: 100%; height: 100%; background: transparent; overflow: hidden; }
+    #badge {
+      width: 22px; height: 22px; cursor: pointer; user-select: none; -webkit-user-select: none;
+      opacity: 0.92; transition: opacity 0.12s ease;
+    }
+    #badge:hover { opacity: 1; }
+    #badge.spin img { animation: turn 1.1s linear infinite; }
+    @keyframes turn { to { transform: rotate(360deg); } }
+    #badge img { width: 100%; height: 100%; display: block; pointer-events: none; }
+  </style>
+</head>
+<body>
+  <div id="badge" title="Write with Meridian"><img src="badge.png" alt="" draggable="false" /></div>
+  <script>
+    const invoke = (cmd, args) => window.__TAURI__.core.invoke(cmd, args);
+    const note = (detail) => { try { invoke('compose_badge_log', { detail }).catch(() => {}); } catch (_) {} };
+    note('loaded');
+    // Spin while Meridian is writing, until the draft lands.
+    window.__TAURI__.event.listen('compose-busy', (e) => {
+      document.getElementById('badge').classList.toggle('spin', !!e.payload);
+    });
+    // Same as tapping the writing key. mousedown, not click, so the press lands before the
+    // text box could lose anything.
+    document.getElementById('badge').addEventListener('mousedown', (e) => {
+      e.preventDefault();
+      // Only the primary button writes; a right or middle click does nothing.
+      if (e.button !== 0) return;
+      note('mousedown');
+      invoke('compose_badge_click').catch((err) => note('click failed: ' + err));
+    });
+  </script>
+</body>
+</html>

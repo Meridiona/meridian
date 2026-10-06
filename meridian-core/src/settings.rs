@@ -268,7 +268,7 @@ pub struct RuntimeSettings {
     // Existing settings.json files without this key load as `true` via the
     // struct-level `#[serde(default)]`.
     pub product_analytics_enabled: bool,
-    // The writing key (`tray/src-tauri/src/compose`): tap Left Option in a text box and Meridian
+    // The writing key (`tray/src-tauri/src/compose`): tap Right Option in a text box and Meridian
     // writes there, using the text on screen as context. macOS only; ignored elsewhere.
     // `compose_enabled` is the master switch and is on by default (opt-OUT). It reads the
     // focused window's accessibility text on each tap and sends it to the user's AI provider,
@@ -276,7 +276,7 @@ pub struct RuntimeSettings {
     // three other visible windows (still subject to the capture ignore list and a sensitivity
     // filter). `compose_sound` plays the typing sound while a draft is written and
     // `compose_typing_dots` types "..." in the box while waiting. `compose_trigger_key` is
-    // `left_option` (default) or `right_option`; there is no UI for it.
+    // `right_option` (default) or `left_option`; there is no UI for it.
     // Must match SETTINGS_DEFAULTS in ui/lib/settings.ts.
     pub compose_enabled: bool,
     pub compose_other_windows: bool,

@@ -14,6 +14,7 @@
 use std::time::{Duration, Instant};
 
 use super::ax::Element;
+use super::sides;
 use super::walk::{self, Limits, Node};
 use meridian::compose::types::HeaderField;
 
@@ -56,6 +57,69 @@ fn text_of(el: &Element, role: &str) -> Option<String> {
     (!t.is_empty()).then(|| t.to_string())
 }
 
+thread_local! {
+    /// The frame of the window being read, so each line can be placed left or right in it.
+    static PANE: std::cell::Cell<Option<sides::Frame>> = const { std::cell::Cell::new(None) };
+}
+
+/// The conversation's horizontal extent around `field`, read from its composer row.
+pub(super) fn conversation_pane_of(
+    field: &Element,
+    window: Option<sides::Frame>,
+) -> Option<sides::Frame> {
+    let Some(field_frame) = field.frame() else {
+        return window;
+    };
+    let mut ancestors = Vec::new();
+    let mut current = field.clone();
+    for _ in 0..6 {
+        let Some(parent) = current.element("AXParent") else {
+            break;
+        };
+        match parent.frame() {
+            Some(f) => ancestors.push(f),
+            None => break,
+        }
+        current = parent;
+    }
+    sides::conversation_pane(field_frame, &ancestors, window)
+}
+
+/// Remember the conversation frame for the reads that follow on this thread.
+pub(super) fn set_pane(frame: Option<sides::Frame>) {
+    PANE.with(|p| p.set(frame));
+}
+
+impl Element {
+    /// True when this text sits inside a group whose description starts with "Your" and
+    /// repeats the text: how Messages marks a message the user sent.
+    fn is_described_as_own(&self) -> bool {
+        let Some(text) = self
+            .string("AXValue")
+            .or_else(|| self.string("AXDescription"))
+        else {
+            return false;
+        };
+        let text = text.trim();
+        if text.is_empty() {
+            return false;
+        }
+        let mut current = self.clone();
+        for _ in 0..2 {
+            let Some(parent) = current.element("AXParent") else {
+                return false;
+            };
+            if let Some(desc) = parent.string("AXDescription") {
+                if sides::is_own_description(&desc, text) {
+                    return true;
+                }
+            }
+            current = parent;
+        }
+        false
+    }
+}
+
 impl Node for Element {
     fn role(&self) -> String {
         self.string("AXRole").unwrap_or_default()
@@ -81,6 +145,21 @@ impl Node for Element {
             .map(|v| v.trim().to_string())
             .filter(|v| !v.is_empty())?;
         Some(HeaderField { label, value })
+    }
+
+    fn side(&self) -> Option<sides::Side> {
+        // Without a conversation frame nothing is marked, so skip the Accessibility reads.
+        let pane = PANE.with(|p| p.get())?;
+        let by_position = sides::side_of(self.frame()?, pane);
+        if by_position == Some(sides::Side::User) {
+            return by_position;
+        }
+        // The bubble's own description names the sender when the app provides one
+        // ("Your iMessage, <text>, <time>"); that catches a user bubble the position missed.
+        if self.is_described_as_own() {
+            return Some(sides::Side::User);
+        }
+        by_position
     }
 
     fn children(&self) -> Vec<Element> {

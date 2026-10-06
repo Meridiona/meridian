@@ -26,6 +26,8 @@ use std::time::Instant;
 
 use meridian::compose::types::HeaderField;
 
+use super::sides::{self, Line, Side};
+
 /// What the walk needs to know about an element, independent of how it is stored.
 pub trait Node: Clone {
     /// The element's role, e.g. `AXStaticText`.
@@ -37,6 +39,10 @@ pub trait Node: Clone {
     fn children(&self) -> Vec<Self>;
     fn parent(&self) -> Option<Self>;
     fn same_as(&self, other: &Self) -> bool;
+    /// Which side of a chat this node's text sits on, when the screen shows it.
+    fn side(&self) -> Option<Side> {
+        None
+    }
 }
 
 /// Bounds on one walk.
@@ -85,7 +91,7 @@ impl<N: Node> Collector<'_, N> {
 
     /// The text of `root`'s subtree, in document order. When `Backward`, the node cap keeps
     /// the END of the subtree rather than the start.
-    fn collect(&mut self, root: &N, direction: Direction) -> Vec<String> {
+    fn collect(&mut self, root: &N, direction: Direction) -> Vec<Line> {
         let mut lines = Vec::new();
         let mut stack = vec![root.clone()];
         let mut visited = 0usize;
@@ -108,7 +114,10 @@ impl<N: Node> Collector<'_, N> {
                 }
             }
             if let Some(text) = node.own_text(&role) {
-                lines.push(text);
+                lines.push(Line {
+                    text,
+                    side: node.side(),
+                });
             }
             let children = node.children();
             match direction {
@@ -133,8 +142,8 @@ fn header_rank(label: &str) -> usize {
         .unwrap_or(4)
 }
 
-fn bytes(lines: &[String]) -> usize {
-    lines.iter().map(|l| l.len() + 1).sum()
+fn bytes(lines: &[Line]) -> usize {
+    lines.iter().map(|l| l.text.len() + 1).sum()
 }
 
 /// Climb from `field` through its ancestors, collecting the siblings before and after the
@@ -146,7 +155,7 @@ pub fn surrounding<N: Node>(field: &N, limits: Limits) -> Surround {
         header: Vec::new(),
     };
     // Per level, innermost first.
-    let mut above_levels: Vec<Vec<String>> = Vec::new();
+    let mut above_levels: Vec<Vec<Line>> = Vec::new();
     let mut below_levels: Vec<Vec<String>> = Vec::new();
     let (mut above_bytes, mut below_bytes) = (0usize, 0usize);
 
@@ -164,7 +173,7 @@ pub fn surrounding<N: Node>(field: &N, limits: Limits) -> Surround {
         if let Some(index) = siblings.iter().position(|s| s.same_as(&child)) {
             // Nearest sibling first. Each sibling is collected from its end, then the level is
             // flipped back into document order.
-            let mut level_above: Vec<String> = Vec::new();
+            let mut level_above: Vec<Line> = Vec::new();
             for sibling in siblings[..index].iter().rev() {
                 if above_bytes >= limits.above_bytes || collector.out_of_time() {
                     break;
@@ -184,7 +193,7 @@ pub fn surrounding<N: Node>(field: &N, limits: Limits) -> Surround {
                 }
                 let lines = collector.collect(sibling, Direction::Forward);
                 below_bytes += bytes(&lines);
-                level_below.extend(lines);
+                level_below.extend(lines.into_iter().map(|l| l.text));
             }
             below_levels.push(level_below);
         }
@@ -197,7 +206,7 @@ pub fn surrounding<N: Node>(field: &N, limits: Limits) -> Surround {
     header.sort_by_key(|h| header_rank(&h.label));
     Surround {
         // Outer levels come earlier in the document than inner ones.
-        above: above_levels.into_iter().rev().flatten().collect(),
+        above: sides::label(above_levels.into_iter().rev().flatten().collect()),
         below: below_levels.into_iter().flatten().collect(),
         header,
     }
@@ -211,7 +220,7 @@ pub fn whole<N: Node>(root: &N, skip: Option<&N>, limits: Limits) -> Vec<String>
         focused: skip,
         header: Vec::new(),
     };
-    collector.collect(root, Direction::Forward)
+    sides::label(collector.collect(root, Direction::Forward))
 }
 
 /// The lines of `candidates` that are not already in `known`, in order. Used to give the
@@ -219,6 +228,11 @@ pub fn whole<N: Node>(root: &N, skip: Option<&N>, limits: Limits) -> Vec<String>
 /// case and runs of whitespace.
 pub fn lines_not_in(candidates: &[String], known: &[String]) -> Vec<String> {
     let canon = |l: &str| {
+        // A speaker mark added for the model is not part of the line being compared.
+        let l = l
+            .strip_prefix("You: ")
+            .or_else(|| l.strip_prefix("Them: "))
+            .unwrap_or(l);
         l.split_whitespace()
             .collect::<Vec<_>>()
             .join(" ")
@@ -452,6 +466,13 @@ mod tests {
         let known = vec!["hello world".to_string()];
         assert_eq!(lines_not_in(&candidates, &known), ["Sidebar", "Footer"]);
         assert_eq!(lines_not_in(&candidates, &[]), candidates);
+    }
+
+    #[test]
+    fn a_speaker_mark_does_not_hide_a_duplicate() {
+        let candidates = vec!["Hello".to_string(), "Other".to_string()];
+        let known = vec!["You: hello".to_string()];
+        assert_eq!(lines_not_in(&candidates, &known), ["Other"]);
     }
 
     #[test]

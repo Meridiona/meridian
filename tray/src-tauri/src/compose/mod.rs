@@ -21,6 +21,7 @@
 //! - [`crate::capture`] - the other Accessibility consumer; unrelated code path.
 
 mod ax;
+pub(crate) mod badge;
 mod clipboard;
 mod controller;
 pub(crate) mod delivery;
@@ -33,6 +34,7 @@ mod mention;
 pub(crate) mod ranges;
 mod reader;
 mod screen;
+mod sides;
 mod synth;
 mod tap;
 pub(crate) mod trigger;
@@ -40,4 +42,4 @@ mod typing;
 mod walk;
 mod writer;
 
-pub(crate) use controller::start;
+pub(crate) use controller::{press, start};

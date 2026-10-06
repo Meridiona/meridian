@@ -1,6 +1,6 @@
 //ambient dev tool that watches what you do and updates your PM tickets automatically, boosting developer productivity
 //
-// Settings → Capture & Privacy → "Writing key". The switches for the Left Option writing key
+// Settings → Capture & Privacy → "Writing key". The switches for the Right Option writing key
 // (`compose_*` in RuntimeSettings). It is on by default and reads on-screen text on every tap,
 // so the master switch and an honest description of what is read and sent live here, next to
 // the other "what leaves my machine" switches. macOS only: the card is not shown elsewhere.
@@ -31,7 +31,7 @@ export function WritingKeyCard({ settings, patch, save }: {
   return (
     <SectionCard>
       <SectionHeader>Writing key</SectionHeader>
-      <FieldRow label="Write with the Option key" description="Tap the left Option key in any text box and Meridian writes there: a reply, an opener, or a polish of what you typed. Each tap reads the text in the window you are in and sends it, with your Mac account name, to your AI provider to write the draft. A repeat tap within three minutes also sends the previous draft. Nothing else is sent - no history, no stored activity. On by default; turn it off here any time. Needs Accessibility and Input Monitoring access.">
+      <FieldRow label="Write with the ⌥ Option key" description="Tap your writing key (the right ⌥ Option key by default) in any text box and Meridian writes there: a reply, an opener, or a polish of what you typed. Each tap reads the text in the window you are in and sends it, with your Mac account name, to your AI provider to write the draft. A repeat tap within three minutes also sends the previous draft. Nothing else is sent - no history, no stored activity. On by default; turn it off here any time. Needs Accessibility and Input Monitoring access.">
         <Switch checked={settings.compose_enabled} onCheckedChange={v => patch({ compose_enabled: v })} />
       </FieldRow>
       <FieldRow label="Also read other open windows" description="Adds text from up to three other windows visible on screen, such as a document next to your chat, so a reply can use it. Password managers, banking and sign-in pages, private windows and anything on your capture ignore list are skipped.">

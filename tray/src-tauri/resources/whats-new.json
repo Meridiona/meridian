@@ -1,6 +1,24 @@
 {
   "releases": [
     {
+      "version": "1.95.0",
+      "date": "2026-10-06",
+      "items": [
+        {
+          "title": "Write anywhere with ⌥",
+          "body": "Tap the right ⌥ Option key in any text box and Meridian writes a reply, an opener or a polish in your voice."
+        },
+        {
+          "title": "A Meridian icon beside the box",
+          "body": "Prefer the mouse? Click the small Meridian icon next to a text box. It spins while Meridian writes."
+        },
+        {
+          "title": "Knows who said what in chats",
+          "body": "In Messages and other chats without names, Meridian now follows your own messages, so it no longer answers them."
+        }
+      ]
+    },
+    {
       "version": "1.91.0",
       "date": "2026-09-28",
       "items": [

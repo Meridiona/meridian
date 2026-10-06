@@ -97,10 +97,30 @@ const SCAFFOLDING: [&str; 3] = [
     crate::compose::prompt::OMITTED_AFTER,
 ];
 
+/// The line the prompt asks the model to open with, naming who wrote the last message. It
+/// only exists to make the model decide that before it writes, so it is never inserted.
+const LEAD_LINE: &str = "last message from:";
+
+fn strip_lead_line(s: &str) -> &str {
+    let t = s.trim_start();
+    let first = t.lines().next().unwrap_or("");
+    // Tolerate markup around the label (`**Last message from:** user`, a leading bracket).
+    let plain: String = first
+        .trim()
+        .trim_start_matches(|c: char| !c.is_alphanumeric())
+        .to_ascii_lowercase();
+    if plain.starts_with(LEAD_LINE) && first.len() <= 80 {
+        return t[first.len()..].trim_start_matches(['\r', '\n']);
+    }
+    t
+}
+
 /// Parse a model answer. `single_line` is true for fields that must hold one line (a
 /// terminal, a structured field): extra lines are dropped rather than inserted.
 pub fn parse(raw: &str, single_line: bool) -> Parsed {
-    let trimmed = raw.trim();
+    // An answer wrapped in a fence may carry the lead line inside it, so look past the fence.
+    let unfenced = strip_fence(raw);
+    let trimmed = strip_lead_line(&unfenced).trim();
     if trimmed.is_empty() {
         return Parsed::Unusable;
     }
@@ -144,6 +164,51 @@ mod tests {
             Parsed::Text(t) => t,
             other => panic!("expected Text, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn the_who_wrote_last_line_is_removed() {
+        assert_eq!(
+            text("Last message from: user\nHey, any update on this?"),
+            "Hey, any update on this?"
+        );
+        assert_eq!(
+            text("last message from: other\n\nSounds good."),
+            "Sounds good."
+        );
+    }
+
+    #[test]
+    fn a_marked_up_lead_line_is_removed_too() {
+        assert_eq!(
+            text("**Last message from:** user\nSee you then."),
+            "See you then."
+        );
+        assert_eq!(
+            text("[Last message from: other]\nSee you then."),
+            "See you then."
+        );
+    }
+
+    #[test]
+    fn a_lead_line_inside_a_fence_is_removed_too() {
+        assert_eq!(
+            text("```\nLast message from: user\nHello there\n```"),
+            "Hello there"
+        );
+    }
+
+    #[test]
+    fn the_sentinel_still_counts_after_the_lead_line() {
+        assert_eq!(
+            parse("Last message from: none\n[[NO_CONTEXT]]", false),
+            Parsed::NoContext
+        );
+    }
+
+    #[test]
+    fn a_lead_line_with_nothing_after_it_is_unusable() {
+        assert_eq!(parse("Last message from: user", false), Parsed::Unusable);
     }
 
     #[test]
