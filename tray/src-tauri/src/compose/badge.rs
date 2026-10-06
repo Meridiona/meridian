@@ -29,7 +29,7 @@ const POLL: Duration = Duration::from_millis(350);
 /// How often the on/off setting is re-read.
 const SETTINGS_POLL: Duration = Duration::from_secs(2);
 /// Edge of the square badge window, in points.
-const SIZE: f64 = 28.0;
+const SIZE: f64 = 32.0;
 /// Gap kept between the badge and the field's edge.
 const MARGIN: f64 = 4.0;
 /// Fields smaller than this are not worth marking (a tiny search or rename box).
@@ -70,6 +70,13 @@ pub fn start(app: tauri::AppHandle) {
     {
         tracing::warn!(error = %e, "compose: could not start the badge thread");
     }
+}
+
+/// Tauri command: the badge page reports what it saw, so a click that never arrives can be
+/// told apart from one that arrives and fails. The text is one of the page's own fixed notes.
+#[tauri::command]
+pub fn badge_log(detail: String) {
+    tracing::info!(detail = %detail.chars().take(120).collect::<String>(), "compose: badge page");
 }
 
 /// Tauri command: the badge was clicked. Same as tapping the writing key.
@@ -143,19 +150,19 @@ mod tests {
     #[test]
     fn a_tall_field_gets_the_badge_outside_its_left_edge_at_the_bottom() {
         let (x, y) = badge_position((100.0, 200.0, 400.0, 120.0));
-        assert_eq!((x, y), (100.0 - 28.0 - 4.0, 200.0 + 120.0 - 28.0));
+        assert_eq!((x, y), (100.0 - 32.0 - 4.0, 200.0 + 120.0 - 32.0));
     }
 
     #[test]
     fn a_one_line_field_gets_it_centred_beside_its_left_edge() {
         let (x, y) = badge_position((100.0, 200.0, 400.0, 32.0));
-        assert_eq!((x, y), (68.0, 202.0));
+        assert_eq!((x, y), (64.0, 200.0));
     }
 
     #[test]
     fn a_field_at_the_screen_edge_gets_it_above_the_corner() {
         let (x, y) = badge_position((10.0, 200.0, 400.0, 120.0));
-        assert_eq!((x, y), (10.0, 200.0 - 28.0 - 4.0));
+        assert_eq!((x, y), (10.0, 200.0 - 32.0 - 4.0));
     }
 
     #[test]

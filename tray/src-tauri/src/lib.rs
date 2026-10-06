@@ -1252,6 +1252,8 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             #[cfg(target_os = "macos")]
             compose::badge::badge_click,
+            #[cfg(target_os = "macos")]
+            compose::badge::badge_log,
             commands::repair::preview_repair,
             commands::repair::request_repair,
             // tray popover + daemon lifecycle

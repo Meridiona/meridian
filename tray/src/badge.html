@@ -7,10 +7,8 @@
   <style>
     html, body { margin: 0; width: 100%; height: 100%; background: transparent; overflow: hidden; }
     #badge {
-      width: 28px; height: 28px; box-sizing: border-box; padding: 1px;
-      border-radius: 50%; background: rgba(255, 255, 255, 0.92);
-      box-shadow: 0 1px 4px rgba(0, 0, 0, 0.28);
-      cursor: pointer; user-select: none; -webkit-user-select: none;
+      width: 32px; height: 32px; cursor: pointer; user-select: none; -webkit-user-select: none;
+      filter: drop-shadow(0 1px 2px rgba(0, 0, 0, 0.35));
       transition: transform 0.12s ease;
     }
     #badge:hover { transform: scale(1.1); }
@@ -20,11 +18,15 @@
 <body>
   <div id="badge" title="Write with Meridian"><img src="badge.png" alt="" draggable="false" /></div>
   <script>
+    const invoke = (cmd, args) => window.__TAURI__.core.invoke(cmd, args);
+    const note = (detail) => { try { invoke('compose_badge_log', { detail }); } catch (_) {} };
+    note('loaded');
     // Same as tapping the writing key. mousedown, not click, so the press lands before the
     // text box could lose anything.
     document.getElementById('badge').addEventListener('mousedown', (e) => {
       e.preventDefault();
-      window.__TAURI__.core.invoke('compose_badge_click');
+      note('mousedown');
+      invoke('compose_badge_click').catch((err) => note('click failed: ' + err));
     });
   </script>
 </body>
