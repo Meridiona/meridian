@@ -45,6 +45,7 @@ use serde_json::Value;
 use crate::coding_agent_session_ingest::summariser::prompts as sp;
 use crate::coding_agent_session_ingest::summariser::run_capture;
 
+use super::tuning::{self, Tuning};
 use super::{LlmBackend, LlmConfig, LlmError, LlmOutput, LlmProvider, PromptRequest};
 
 /// How long `claude auth status --json` may take — a local credential read, no network round
@@ -133,6 +134,16 @@ impl LlmBackend for ClaudeBackend {
     }
 
     async fn complete(&self, req: &PromptRequest) -> Result<LlmOutput, LlmError> {
+        tuning::complete_with_fallback(LlmProvider::Claude, |t| self.attempt(req, t)).await
+    }
+}
+
+impl ClaudeBackend {
+    async fn attempt(
+        &self,
+        req: &PromptRequest,
+        tuning: Option<Tuning>,
+    ) -> Result<LlmOutput, LlmError> {
         let t0 = std::time::Instant::now();
 
         // `-p` is a bare flag here - no positional value. See the module doc: a positional
@@ -162,9 +173,19 @@ impl LlmBackend for ClaudeBackend {
             args.push("--json-schema".into());
             args.push(schema.to_string());
         }
-        if !self.cfg.model.is_empty() {
+        // The user's own pin (per-request or in settings) always wins over our default.
+        let pinned = self.cfg.model.as_str();
+        let model = match (pinned.is_empty(), tuning) {
+            (true, Some(Tuning { model: Some(m), .. })) => m,
+            _ => pinned,
+        };
+        if !model.is_empty() {
             args.push("--model".into());
-            args.push(self.cfg.model.clone());
+            args.push(model.to_string());
+        }
+        if let Some(t) = tuning {
+            args.push("--effort".into());
+            args.push(t.effort.into());
         }
 
         let stdin_text = claude_stdin(req);

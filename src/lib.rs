@@ -12,6 +12,7 @@ static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
 
 pub mod cli_flags;
 pub mod coding_agent_session_ingest;
+pub mod compose;
 pub mod config;
 pub mod daily_plan;
 pub mod day_summary;

@@ -1,0 +1,1 @@
+The box is empty and there is a conversation or post above it. Write the message the user sends next, as the user, to the other person. Respond to what was actually said last; do not restate it, do not answer more points than the user plausibly would, and do not repeat the user's own earlier messages.

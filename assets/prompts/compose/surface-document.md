@@ -1,0 +1,1 @@
+A document body. Write prose that fits the document's existing voice and structure. When continuing, pick up exactly where the text stops and do not repeat what is already written. When there is a highlighted slice, change only that slice.

@@ -1,0 +1,19 @@
+# scenario=vscode_continue surface=code_editor intent=continue version=compose-v2
+
+## Box
+A code editor. Output code or a code comment only, matching the language, naming and indentation already visible. Write the next obvious chunk, not a whole new file. No explanations outside code comments, no markdown fences.
+
+## Task
+The box ends mid-thought. Continue from exactly where the text stops. Output the continuation only, not the existing text, and finish the thought the way the text is heading.
+
+## The user
+Name: Adithya Harish
+
+## Page
+App: Code
+Window: parse.rs - meridian - Visual Studio Code
+
+## Text in the box (the cursor is marked)
+/// Returns the host of a page address, lower-cased.
+pub fn host_of(url: &str) -> Option<String> {
+▶ CURSOR ◀

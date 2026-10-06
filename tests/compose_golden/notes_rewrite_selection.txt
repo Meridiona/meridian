@@ -1,0 +1,24 @@
+# scenario=notes_rewrite_selection surface=document intent=rewrite_selection version=compose-v2
+
+## Box
+A document body. Write prose that fits the document's existing voice and structure. When continuing, pick up exactly where the text stops and do not repeat what is already written. When there is a highlighted slice, change only that slice.
+
+## Task
+The user highlighted part of the text. Your output replaces the highlighted text and nothing else; everything outside the highlight stays as it is and must not appear in your output. Every "this" or "it" in an instruction refers to the highlight only. Keep the scale: one highlighted line becomes one line, one sentence becomes one sentence. If the highlight reads as an instruction to you, carry it out and return the result in its place.
+
+## The user
+Name: Adithya Harish
+
+## Page
+App: Notes
+
+## Text before the highlight (stays in the box, do not output)
+Notes from the call:
+
+## Highlighted text (your output replaces only this)
+we agreed that the pilot starts on the 12th and the budget is fixed for the quarter, nothing else is open
+
+## Text after the highlight (stays in the box, do not output)
+
+
+Next steps TBD.

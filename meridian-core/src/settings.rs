@@ -268,6 +268,21 @@ pub struct RuntimeSettings {
     // Existing settings.json files without this key load as `true` via the
     // struct-level `#[serde(default)]`.
     pub product_analytics_enabled: bool,
+    // The writing key (`tray/src-tauri/src/compose`): tap Left Option in a text box and Meridian
+    // writes there, using the text on screen as context. macOS only; ignored elsewhere.
+    // `compose_enabled` is the master switch and is on by default (opt-OUT). It reads the
+    // focused window's accessibility text on each tap and sends it to the user's AI provider,
+    // which is why it is a visible switch in Settings. `compose_other_windows` also reads up to
+    // three other visible windows (still subject to the capture ignore list and a sensitivity
+    // filter). `compose_sound` plays the typing sound while a draft is written and
+    // `compose_typing_dots` types "..." in the box while waiting. `compose_trigger_key` is
+    // `left_option` (default) or `right_option`; there is no UI for it.
+    // Must match SETTINGS_DEFAULTS in ui/lib/settings.ts.
+    pub compose_enabled: bool,
+    pub compose_other_windows: bool,
+    pub compose_sound: bool,
+    pub compose_typing_dots: bool,
+    pub compose_trigger_key: Option<String>,
     // Whether Meridian starts itself at login and again each morning if it was
     // quit (`tray/src-tauri/src/autostart.rs`). Default `true`, opt-OUT — and
     // for this switch that default is not a preference so much as a
@@ -413,6 +428,13 @@ impl Default for RuntimeSettings {
             // Product analytics is opt-OUT too, and separately switchable from
             // error reporting. Must match SETTINGS_DEFAULTS in ui/lib/settings.ts.
             product_analytics_enabled: true,
+            // The writing key is on by default; see the field docs. Must match
+            // SETTINGS_DEFAULTS in ui/lib/settings.ts.
+            compose_enabled: true,
+            compose_other_windows: true,
+            compose_sound: true,
+            compose_typing_dots: true,
+            compose_trigger_key: None,
             // Autostart on by default - the tray is what captures, so an install
             // that does not come back after a reboot records nothing. Must match
             // SETTINGS_DEFAULTS in ui/lib/settings.ts.

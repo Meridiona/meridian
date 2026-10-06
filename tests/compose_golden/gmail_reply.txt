@@ -1,0 +1,26 @@
+# scenario=gmail_reply surface=email_compose intent=reply version=compose-v2
+
+## Box
+An email body. Write a real email in the register of the thread, or of the subject if there is no thread. Keep the greeting and sign-off the user already wrote. If the box is empty and a To and Subject are shown, the subject says what the email is about and the recipient says who it is for: greet that person by name and write the message the subject promises. Answer questions the thread asks in the user's own words; never restate the questions and never copy the thread's sentences.
+
+## Task
+The box is empty and there is a conversation or post above it. Write the message the user sends next, as the user, to the other person. Respond to what was actually said last; do not restate it, do not answer more points than the user plausibly would, and do not repeat the user's own earlier messages.
+
+## The user
+Name: Adithya Harish
+
+## Page
+App: Google Chrome
+Window: Re: Walkthrough invite - Meridiona Mail
+Site: mail.google.com/mail
+Field label: Message Body
+
+## Compose header
+To: Stuti Rastogi
+
+## The box
+(empty)
+
+## Read-only content below the draft (preserved by the app, never output)
+On Mon, 5 Oct 2026 at 11:06, Stuti Rastogi wrote:
+Hi, thank you for connecting. Could we do a walkthrough at 3:30 pm today?

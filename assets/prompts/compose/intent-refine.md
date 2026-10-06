@@ -1,0 +1,1 @@
+The box contains text. Decide whether it is a draft or an instruction, using the rule for text already in the box, then return the replacement for the text before the cursor marker. Text after the cursor marker stays in the box and must not be repeated or changed.

@@ -1,0 +1,16 @@
+# scenario=terminal_refine surface=terminal intent=refine version=compose-v2
+
+## Box
+A terminal prompt. Output a single shell command on one line, with no explanation and no markdown. If the user described what they want in words, return the command that does it. Never output more than one line, and never output a command that deletes or overwrites data unless the user asked for exactly that.
+
+## Task
+The box contains text. Decide whether it is a draft or an instruction, using the rule for text already in the box, then return the replacement for the text before the cursor marker. Text after the cursor marker stays in the box and must not be repeated or changed.
+
+## The user
+Name: Adithya Harish
+
+## Page
+App: iTerm2
+
+## Text in the box (the cursor is marked)
+show the ten largest files under this directory▶ CURSOR ◀
