@@ -101,4 +101,4 @@ Thanks to all contributors:
 
 ## License
 
-Meridian is licensed under the MIT License.
+Meridian is source-available under the [PolyForm Strict License 1.0.0](LICENSE). You may read the code and use it for personal and other noncommercial purposes. You may not modify or redistribute it, and commercial use (including use inside a company) is not permitted without a separate license from Meridiona. Versions released before this change remain available under the MIT License.

@@ -1,6 +1,6 @@
 //ambient dev tool that watches what you do and updates your PM tickets automatically, boosting developer productivity
 /**
- * "Meridian is open source" card, pinned to the bottom of the dashboard home
+ * "Meridian is source available" card, pinned to the bottom of the dashboard home
  * ([`OverviewPanel`]).
  *
  * # Why it lives at the BOTTOM of the overview
@@ -75,8 +75,8 @@ export function OpenSourceCard() {
           <GithubMark />
         </span>
         <div className="flex-1 min-w-0">
-          <p className="mt-card-title" style={{ color: 'var(--t-title)' }}>Meridian is open source</p>
-          <p className="mt-body-sm mt-0.5" style={{ color: 'var(--t-faint)' }}>MIT licensed - the daemon, dashboard and tray</p>
+          <p className="mt-card-title" style={{ color: 'var(--t-title)' }}>Meridian is source available</p>
+          <p className="mt-body-sm mt-0.5" style={{ color: 'var(--t-faint)' }}>Source available - read the daemon, dashboard and tray</p>
         </div>
       </div>
 
