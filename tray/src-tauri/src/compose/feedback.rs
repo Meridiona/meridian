@@ -70,6 +70,31 @@ pub fn stopped(message: &str) {
     run_detached(osascript);
 }
 
+/// Nothing could be written, but there is a draft. Show it with a Copy button so the user can
+/// paste it where they want. The message and draft go in as arguments, never into the script
+/// text, so nothing in a draft can be read as AppleScript. Best-effort like the rest.
+pub fn stopped_with_draft(message: &str, draft: &str) {
+    play("Basso");
+    let mut osascript = Command::new("osascript");
+    osascript
+        .args([
+            "-e",
+            "on run argv",
+            "-e",
+            "set shown to (item 1 of argv) & return & return & (item 2 of argv)",
+            "-e",
+            "set picked to button returned of (display dialog shown with title \"Meridian\" buttons {\"Close\", \"Copy draft\"} default button \"Copy draft\")",
+            "-e",
+            "if picked is \"Copy draft\" then set the clipboard to (item 2 of argv)",
+            "-e",
+            "end run",
+            "--",
+        ])
+        .arg(message)
+        .arg(draft);
+    run_detached(osascript);
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
