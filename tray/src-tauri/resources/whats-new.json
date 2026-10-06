@@ -1,6 +1,20 @@
 {
   "releases": [
     {
+      "version": "1.95.0",
+      "date": "2026-10-06",
+      "items": [
+        {
+          "title": "Write anywhere with ⌥",
+          "body": "Tap the right ⌥ Option key in any text box and Meridian writes a reply, an opener or a polish in your voice."
+        },
+        {
+          "title": "You stay in control",
+          "body": "The draft lands in the box for you to edit and send. Turn it off any time in Settings."
+        }
+      ]
+    },
+    {
       "version": "1.91.0",
       "date": "2026-09-28",
       "items": [

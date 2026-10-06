@@ -150,7 +150,6 @@ fn worker(rx: mpsc::Receiver<()>, app: tauri::AppHandle) {
             // the tap was heard, and it keeps going until the draft is written or refused.
             let mut typing = config.sound.then(TypingSound::start);
             let _working = WorkingFlag::set();
-            let _busy = BusyTitle::show(&app);
             let ctx = read_context(&app, config);
             // A panic in one press must not kill the worker: that would leave the key dead
             // until the app restarts.
@@ -201,37 +200,6 @@ fn user_name() -> Option<String> {
         (!name.is_empty()).then_some(name)
     })
     .clone()
-}
-
-/// Shows "Writing..." next to the menu-bar icon for as long as a press is being handled,
-/// and removes it when dropped - including if the press ends early or panics.
-struct BusyTitle {
-    app: tauri::AppHandle,
-}
-
-impl BusyTitle {
-    fn show(app: &tauri::AppHandle) -> BusyTitle {
-        set_tray_title(app, Some("Writing..."));
-        BusyTitle { app: app.clone() }
-    }
-}
-
-impl Drop for BusyTitle {
-    fn drop(&mut self) {
-        set_tray_title(&self.app, None);
-    }
-}
-
-fn set_tray_title(app: &tauri::AppHandle, title: Option<&str>) {
-    use tauri::Manager;
-    let Some(state) = app.try_state::<std::sync::Arc<std::sync::Mutex<crate::state::AppState>>>()
-    else {
-        return;
-    };
-    let id = state.lock().ok().and_then(|s| s.tray_id.clone());
-    if let Some(tray) = id.and_then(|id| app.tray_by_id(&id)) {
-        let _ = tray.set_title(title);
-    }
 }
 
 /// True while a press is being handled, so the on-screen icon can spin until the draft lands.
