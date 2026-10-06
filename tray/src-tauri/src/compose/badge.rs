@@ -35,15 +35,23 @@ const MARGIN: f64 = 4.0;
 /// Fields smaller than this are not worth marking (a tiny search or rename box).
 const MIN_WIDTH: f64 = 120.0;
 const MIN_HEIGHT: f64 = 20.0;
-/// Where a field is bigger than any real text box (a whole-window editor surface).
+/// A field bigger than this is no real text box, whatever the window (a huge display).
 const MAX_AREA: f64 = 3_000_000.0;
+/// A field covering more than this share of its window is the window's editor surface
+/// (a document or code editor), not a box to write a message in.
+const MAX_WINDOW_SHARE: f64 = 0.6;
 
 /// A field's frame on screen: `(x, y, width, height)` in points, top-left origin.
 pub type Frame = (f64, f64, f64, f64);
 
 /// True when a field is a sensible place to show the badge.
-pub fn worth_marking((_, _, w, h): Frame) -> bool {
-    w >= MIN_WIDTH && h >= MIN_HEIGHT && w * h <= MAX_AREA
+///
+/// `window` is the frame of the window holding the field, when it could be read: a field that
+/// fills most of it is the editor surface itself and is not marked.
+pub fn worth_marking((_, _, w, h): Frame, window: Option<Frame>) -> bool {
+    let fills_window = window
+        .is_some_and(|(_, _, ww, wh)| ww > 0.0 && wh > 0.0 && w * h > ww * wh * MAX_WINDOW_SHARE);
+    w >= MIN_WIDTH && h >= MIN_HEIGHT && w * h <= MAX_AREA && !fills_window
 }
 
 /// Top-left of the badge for a field: just outside its left edge, level with the bottom line
@@ -110,7 +118,8 @@ fn target_for(own_pid: i32) -> Option<Frame> {
     if element.string("AXSubrole").as_deref() == Some("AXSecureTextField") {
         return None;
     }
-    element.frame().filter(|f| worth_marking(*f))
+    let window = app.element("AXFocusedWindow").and_then(|w| w.frame());
+    element.frame().filter(|f| worth_marking(*f, window))
 }
 
 /// Move and show the badge, or hide it. Runs on the main thread.
@@ -153,9 +162,19 @@ mod tests {
 
     #[test]
     fn tiny_and_enormous_fields_are_not_marked() {
-        assert!(!worth_marking((0.0, 0.0, 60.0, 24.0)));
-        assert!(!worth_marking((0.0, 0.0, 300.0, 10.0)));
-        assert!(!worth_marking((0.0, 0.0, 2500.0, 1400.0)));
-        assert!(worth_marking((0.0, 0.0, 600.0, 80.0)));
+        assert!(!worth_marking((0.0, 0.0, 60.0, 24.0), None));
+        assert!(!worth_marking((0.0, 0.0, 300.0, 10.0), None));
+        assert!(!worth_marking((0.0, 0.0, 2500.0, 1400.0), None));
+        assert!(worth_marking((0.0, 0.0, 600.0, 80.0), None));
+    }
+
+    #[test]
+    fn a_field_filling_its_window_is_not_marked() {
+        let window = Some((0.0, 0.0, 1440.0, 900.0));
+        // A 1440 x 900 editor is under the absolute cap but is the whole window.
+        assert!(!worth_marking((0.0, 0.0, 1440.0, 900.0), window));
+        assert!(!worth_marking((0.0, 40.0, 1200.0, 800.0), window));
+        // A message box in the same window is fine.
+        assert!(worth_marking((300.0, 800.0, 900.0, 60.0), window));
     }
 }

@@ -24,6 +24,8 @@
     // text box could lose anything.
     document.getElementById('badge').addEventListener('mousedown', (e) => {
       e.preventDefault();
+      // Only the primary button writes; a right or middle click does nothing.
+      if (e.button !== 0) return;
       note('mousedown');
       invoke('compose_badge_click').catch((err) => note('click failed: ' + err));
     });
