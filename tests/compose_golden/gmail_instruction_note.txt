@@ -1,4 +1,4 @@
-# scenario=gmail_instruction_note surface=email_compose intent=refine version=compose-v2
+# scenario=gmail_instruction_note surface=email_compose intent=refine version=compose-v3
 
 ## Box
 An email body. Write a real email in the register of the thread, or of the subject if there is no thread. Keep the greeting and sign-off the user already wrote. If the box is empty and a To and Subject are shown, the subject says what the email is about and the recipient says who it is for: greet that person by name and write the message the subject promises. Answer questions the thread asks in the user's own words; never restate the questions and never copy the thread's sentences.

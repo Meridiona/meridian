@@ -285,6 +285,25 @@ fn scenarios() -> Vec<Scenario> {
         request: r,
     });
 
+    // A chat the user spoke in last: Google Chat labels the user "You" and prints a sender label
+    // only when the sender changes, so the Meet link under "Today" is the user's own message.
+    let mut f = base(
+        "Google Chrome",
+        CHROME,
+        Some("https://chat.google.com/u/0/"),
+        true,
+    );
+    f.window_title = "Akarsh - Mail - Google Chrome".into();
+    f.nearby = nearby(
+        "Akarsh\ngoldfish has windows app also\nFri 15:29\nYesterday\nYou\nhttps://example.com/call-notes\nYesterday 14:06\nToday\nhttps://meet.google.com/abc-defg-hij\nJoin video meeting, Video call.\n11:41",
+    );
+    out.push(Scenario {
+        name: "google_chat_user_spoke_last",
+        surface: SurfaceKind::Generic,
+        intent: Intent::Reply,
+        request: req(f),
+    });
+
     let f = base("Unknown App", "com.example.unknown", None, true);
     out.push(Scenario {
         name: "generic_unknown_app",
@@ -375,4 +394,41 @@ fn no_scenario_prompt_leaks_an_unresolved_placeholder() {
         let text = render(&s);
         assert!(!text.contains("{{") && !text.contains("}}"), "{}", s.name);
     }
+}
+
+#[test]
+fn the_system_prompt_explains_who_said_what() {
+    use meridian::compose::prompt::builder::CORE;
+    for needle in [
+        "\"You\" or \"Me\"",
+        "only when the sender changes",
+        "date divider",
+    ] {
+        assert!(CORE.contains(needle), "core prompt lost: {needle}");
+    }
+}
+
+#[test]
+fn a_reply_task_covers_the_user_having_spoken_last() {
+    let plan = match classify(
+        &scenarios()
+            .iter()
+            .find(|s| s.name == "google_chat_user_spoke_last")
+            .unwrap()
+            .request
+            .field,
+    ) {
+        Classification::Ready(p) => p,
+        other => panic!("expected a plan, got {other:?}"),
+    };
+    let task = build(
+        &scenarios()
+            .iter()
+            .find(|s| s.name == "google_chat_user_spoke_last")
+            .unwrap()
+            .request,
+        &plan,
+    )
+    .user;
+    assert!(task.contains("the last message was the user's own"));
 }
