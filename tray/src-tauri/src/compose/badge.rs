@@ -5,7 +5,7 @@
 //! The icon lives in its own non-activating panel (the `compose-badge` window), so clicking
 //! it never takes focus from the text box: the box keeps its caret and the draft still has
 //! somewhere to land. A poller follows the focused field every [`POLL`], shows the icon at
-//! the field's bottom-right corner, and hides it again when focus is not in a text box, in a
+//! the field's left edge, and hides it again when focus is not in a text box, in a
 //! password field, in Meridian itself, or when the writing key is switched off.
 //!
 //! # Who calls this
@@ -46,14 +46,18 @@ pub fn worth_marking((_, _, w, h): Frame) -> bool {
     w >= MIN_WIDTH && h >= MIN_HEIGHT && w * h <= MAX_AREA
 }
 
-/// Top-left of the badge for a field: inside its bottom-right corner, or centred on its
-/// right edge when the field is only one line tall.
-pub fn badge_position((x, y, w, h): Frame) -> (f64, f64) {
-    let left = x + w - SIZE - MARGIN;
+/// Top-left of the badge for a field: just outside its left edge, level with the bottom line
+/// of the field (centred when the field is only one line tall). A field flush against the
+/// left edge of the screen has no room outside, so the badge goes above its top-left corner.
+pub fn badge_position((x, y, _w, h): Frame) -> (f64, f64) {
+    let left = x - SIZE - MARGIN;
+    if left < 0.0 {
+        return (x.max(0.0), (y - SIZE - MARGIN).max(0.0));
+    }
     let top = if h < SIZE * 2.0 {
         y + (h - SIZE) / 2.0
     } else {
-        y + h - SIZE - MARGIN
+        y + h - SIZE
     };
     (left, top)
 }
@@ -71,6 +75,7 @@ pub fn start(app: tauri::AppHandle) {
 /// Tauri command: the badge was clicked. Same as tapping the writing key.
 #[tauri::command]
 pub fn badge_click() {
+    tracing::info!("compose: badge clicked");
     super::controller::press();
 }
 
@@ -136,19 +141,21 @@ mod tests {
     use super::*;
 
     #[test]
-    fn a_tall_field_gets_the_badge_in_its_bottom_right_corner() {
+    fn a_tall_field_gets_the_badge_outside_its_left_edge_at_the_bottom() {
         let (x, y) = badge_position((100.0, 200.0, 400.0, 120.0));
-        assert_eq!(
-            (x, y),
-            (100.0 + 400.0 - 28.0 - 4.0, 200.0 + 120.0 - 28.0 - 4.0)
-        );
+        assert_eq!((x, y), (100.0 - 28.0 - 4.0, 200.0 + 120.0 - 28.0));
     }
 
     #[test]
-    fn a_one_line_field_gets_it_centred_on_the_right_edge() {
+    fn a_one_line_field_gets_it_centred_beside_its_left_edge() {
         let (x, y) = badge_position((100.0, 200.0, 400.0, 32.0));
-        assert_eq!(x, 468.0);
-        assert_eq!(y, 202.0);
+        assert_eq!((x, y), (68.0, 202.0));
+    }
+
+    #[test]
+    fn a_field_at_the_screen_edge_gets_it_above_the_corner() {
+        let (x, y) = badge_position((10.0, 200.0, 400.0, 120.0));
+        assert_eq!((x, y), (10.0, 200.0 - 28.0 - 4.0));
     }
 
     #[test]
