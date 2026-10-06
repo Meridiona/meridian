@@ -30,7 +30,6 @@ export interface RuntimeSettings {
   // text on screen as context. Mirrors the compose_* fields of RuntimeSettings in
   // meridian-core/src/settings.rs. All on by default (opt-OUT); macOS only.
   compose_enabled: boolean
-  compose_other_windows: boolean
   compose_sound: boolean
   compose_typing_dots: boolean
   // Whether Meridian starts itself at login and again each morning if it was
@@ -111,7 +110,6 @@ export const SETTINGS_DEFAULTS: RuntimeSettings = {
   // reporting. Must match RuntimeSettings::default() in meridian-core/src/settings.rs.
   product_analytics_enabled: true,
   compose_enabled: true,
-  compose_other_windows: true,
   compose_sound: true,
   compose_typing_dots: true,
   // Autostart is opt-OUT: on by default, because the tray is what captures.

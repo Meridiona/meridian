@@ -34,9 +34,6 @@ export function WritingKeyCard({ settings, patch, save }: {
       <FieldRow label="Write with the ⌥ Option key" description="Tap your writing key (the right ⌥ Option key by default) in any text box and Meridian writes there: a reply, an opener, or a polish of what you typed. Each tap reads the text in the window you are in and sends it, with your Mac account name, to your AI provider to write the draft. A repeat tap within three minutes also sends the previous draft. Nothing else is sent - no history, no stored activity. On by default; turn it off here any time. Needs Accessibility and Input Monitoring access.">
         <Switch checked={settings.compose_enabled} onCheckedChange={v => patch({ compose_enabled: v })} />
       </FieldRow>
-      <FieldRow label="Also read other open windows" description="Adds text from up to three other windows visible on screen, such as a document next to your chat, so a reply can use it. Password managers, banking and sign-in pages, private windows and anything on your capture ignore list are skipped.">
-        <Switch checked={settings.compose_other_windows} onCheckedChange={v => patch({ compose_other_windows: v })} />
-      </FieldRow>
       <FieldRow label="Typing dots" description="Types ... in the box while Meridian writes, like someone typing, and removes it before the draft appears.">
         <Switch checked={settings.compose_typing_dots} onCheckedChange={v => patch({ compose_typing_dots: v })} />
       </FieldRow>
@@ -47,7 +44,6 @@ export function WritingKeyCard({ settings, patch, save }: {
         status={status}
         onClick={() => save({
           compose_enabled: settings.compose_enabled,
-          compose_other_windows: settings.compose_other_windows,
           compose_typing_dots: settings.compose_typing_dots,
           compose_sound: settings.compose_sound,
         }, setStatus)}

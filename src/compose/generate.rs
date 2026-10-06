@@ -96,8 +96,6 @@ where
         below_chars = Empty,
         field_chars = Empty,
         rest_of_window_chars = Empty,
-        other_windows = Empty,
-        other_windows_chars = Empty,
     );
     async {
         let plan = match classify(&req.field) {
@@ -119,8 +117,6 @@ where
         span.record("below_chars", stats.below_chars);
         span.record("field_chars", stats.field_chars);
         span.record("rest_of_window_chars", stats.rest_of_window_chars);
-        span.record("other_windows", stats.other_windows);
-        span.record("other_windows_chars", stats.other_windows_chars);
 
         let request = PromptRequest::new(built.system, built.user, "compose-draft")
             .with_max_tokens(DRAFT_MAX_TOKENS)

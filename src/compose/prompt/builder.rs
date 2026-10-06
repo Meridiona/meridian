@@ -32,7 +32,7 @@ use crate::compose::classify::Plan;
 use crate::compose::types::{DraftRequest, Intent, SurfaceKind};
 
 /// Bump on any change to the prompt files or the layout. Stored with every draft.
-pub const PROMPT_VERSION: &str = "compose-v4";
+pub const PROMPT_VERSION: &str = "compose-v5";
 
 /// The static system prompt shared by every press.
 pub const CORE: &str = include_str!("../../../assets/prompts/compose/core.md");
@@ -45,12 +45,8 @@ pub const FIELD_BEFORE_CHARS: usize = 3_000;
 pub const FIELD_AFTER_CHARS: usize = 1_000;
 pub const SELECTION_CHARS: usize = 3_000;
 pub const BELOW_DRAFT_CHARS: usize = 1_500;
-/// The rest of the focused window, and how much of each other visible window.
+/// The rest of the focused window.
 pub const REST_OF_WINDOW_CHARS: usize = 2_500;
-pub const OTHER_WINDOW_CHARS: usize = 1_500;
-/// At most this many other windows, and this much text across all of them.
-pub const OTHER_WINDOWS_MAX: usize = 3;
-pub const OTHER_WINDOWS_TOTAL_CHARS: usize = 4_000;
 pub const PREVIOUS_CHARS: usize = 2_000;
 pub const HEADER_VALUE_CHARS: usize = 200;
 pub const TITLE_CHARS: usize = 200;
@@ -114,8 +110,6 @@ pub struct PromptStats {
     pub below_chars: usize,
     pub field_chars: usize,
     pub rest_of_window_chars: usize,
-    pub other_windows: usize,
-    pub other_windows_chars: usize,
 }
 
 /// A request ready for the LLM layer.
@@ -203,28 +197,6 @@ fn site_summary(page: &crate::compose::classify::Page) -> String {
     } else {
         format!("{}/{}", page.host, first)
     }
-}
-
-/// The "other windows on screen" section body: one block per window, each trimmed, the whole
-/// capped. Windows with no text after tidying are skipped.
-fn other_windows_body(req: &DraftRequest) -> (String, usize) {
-    let mut out = String::new();
-    let mut count = 0;
-    for w in req.field.other_windows.iter().take(OTHER_WINDOWS_MAX) {
-        let text = keep_head(&dedupe_nearby(&tidy(&w.text)), OTHER_WINDOW_CHARS);
-        if text.trim().is_empty() || out.chars().count() >= OTHER_WINDOWS_TOTAL_CHARS {
-            continue;
-        }
-        let title = clip(w.title.trim(), TITLE_CHARS);
-        let heading = if title.is_empty() {
-            clip(w.app.trim(), TITLE_CHARS)
-        } else {
-            format!("{} - {}", clip(w.app.trim(), TITLE_CHARS), title)
-        };
-        let _ = write!(out, "[{heading}]\n{text}\n\n");
-        count += 1;
-    }
-    (out, count)
 }
 
 fn page_lines(req: &DraftRequest, plan: &Plan) -> String {
@@ -359,12 +331,6 @@ pub fn build(req: &DraftRequest, plan: &Plan) -> BuiltPrompt {
         "Rest of this window (further from the box; use only if relevant)",
         &rest,
     );
-    let (others, other_count) = other_windows_body(req);
-    section(
-        &mut user,
-        "Other windows visible on screen (use only if they clearly relate)",
-        &others,
-    );
     section(
         &mut user,
         "Read-only content below the draft (preserved by the app, never output)",
@@ -385,8 +351,6 @@ pub fn build(req: &DraftRequest, plan: &Plan) -> BuiltPrompt {
         below_chars: below.chars().count(),
         field_chars,
         rest_of_window_chars: rest.chars().count(),
-        other_windows: other_count,
-        other_windows_chars: others.chars().count(),
     };
     BuiltPrompt {
         system: CORE,

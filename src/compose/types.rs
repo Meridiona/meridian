@@ -47,14 +47,6 @@ pub struct NearbyText {
     pub rest_of_window: String,
 }
 
-/// The text of another window that is visible on screen next to the focused one.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
-pub struct WindowText {
-    pub app: String,
-    pub title: String,
-    pub text: String,
-}
-
 /// Everything the tray read about the focused text field at the moment of the press.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub struct FieldSnapshot {
@@ -88,10 +80,6 @@ pub struct FieldSnapshot {
     pub below_draft: String,
     pub nearby: NearbyText,
     pub header: Vec<HeaderField>,
-    /// Other windows visible on screen right now (a doc beside a chat, a ticket beside an
-    /// editor), nearest the top of the window stack first.
-    #[serde(default)]
-    pub other_windows: Vec<WindowText>,
     /// The window is a private or incognito window.
     pub private_window: bool,
     /// The system reports secure keyboard input is active (a password prompt).

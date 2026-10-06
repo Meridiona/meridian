@@ -3,7 +3,7 @@
 
 use super::*;
 use crate::compose::classify::{classify, Classification};
-use crate::compose::types::{FieldSnapshot, HeaderField, NearbyText, PreviousAttempt, WindowText};
+use crate::compose::types::{FieldSnapshot, HeaderField, NearbyText, PreviousAttempt};
 
 fn plan_for(f: &FieldSnapshot) -> Plan {
     match classify(f) {
@@ -216,54 +216,16 @@ fn the_users_name_is_sent_when_known_and_omitted_otherwise() {
 }
 
 #[test]
-fn rest_of_window_and_other_windows_appear_only_when_present() {
+fn rest_of_window_appears_only_when_present() {
     let (r, p) = request(slack_reply());
     let u = build(&r, &p).user;
     assert!(!u.contains("Rest of this window"));
-    assert!(!u.contains("Other windows visible"));
 
     let mut f = slack_reply();
     f.nearby.rest_of_window = "Sidebar: #platform-eng  #random".into();
-    f.other_windows = vec![
-        WindowText {
-            app: "Notion".into(),
-            title: "Q3 rollout brief".into(),
-            text: "Pilot starts the 12th\nBudget fixed for the quarter".into(),
-        },
-        WindowText {
-            app: "Empty".into(),
-            title: String::new(),
-            text: "   ".into(),
-        },
-    ];
     let (r, p) = request(f);
     let b = build(&r, &p);
     assert!(b.user.contains("Sidebar: #platform-eng"));
-    assert!(b
-        .user
-        .contains("[Notion - Q3 rollout brief]\nPilot starts the 12th"));
-    assert!(
-        !b.user.contains("[Empty"),
-        "windows with no text are skipped"
-    );
-    assert_eq!(b.stats.other_windows, 1);
-}
-
-#[test]
-fn other_windows_are_capped_in_count_and_size() {
-    let mut f = slack_reply();
-    f.other_windows = (0..8)
-        .map(|i| WindowText {
-            app: format!("App{i}"),
-            title: "t".into(),
-            text: format!("line {}", "x".repeat(5_000)),
-        })
-        .collect();
-    let (r, p) = request(f);
-    let b = build(&r, &p);
-    assert!(b.stats.other_windows <= OTHER_WINDOWS_MAX);
-    assert!(b.stats.other_windows_chars <= OTHER_WINDOWS_TOTAL_CHARS + OTHER_WINDOW_CHARS);
-    assert!(!b.user.contains("App5"));
 }
 
 #[test]

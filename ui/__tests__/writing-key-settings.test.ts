@@ -9,7 +9,7 @@ import { readFileSync } from 'fs'
 const root = import.meta.dir + '/../..'
 const read = (rel: string) => readFileSync(root + '/' + rel, 'utf8')
 
-const KEYS = ['compose_enabled', 'compose_other_windows', 'compose_sound', 'compose_typing_dots'] as const
+const KEYS = ['compose_enabled', 'compose_sound', 'compose_typing_dots'] as const
 
 describe('writing key settings', () => {
   const ts = read('ui/lib/settings.ts')

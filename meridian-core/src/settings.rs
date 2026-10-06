@@ -272,14 +272,11 @@ pub struct RuntimeSettings {
     // writes there, using the text on screen as context. macOS only; ignored elsewhere.
     // `compose_enabled` is the master switch and is on by default (opt-OUT). It reads the
     // focused window's accessibility text on each tap and sends it to the user's AI provider,
-    // which is why it is a visible switch in Settings. `compose_other_windows` also reads up to
-    // three other visible windows (still subject to the capture ignore list and a sensitivity
-    // filter). `compose_sound` plays the typing sound while a draft is written and
+    // which is why it is a visible switch in Settings. `compose_sound` plays the typing sound while a draft is written and
     // `compose_typing_dots` types "..." in the box while waiting. `compose_trigger_key` is
     // `right_option` (default) or `left_option`; there is no UI for it.
     // Must match SETTINGS_DEFAULTS in ui/lib/settings.ts.
     pub compose_enabled: bool,
-    pub compose_other_windows: bool,
     pub compose_sound: bool,
     pub compose_typing_dots: bool,
     pub compose_trigger_key: Option<String>,
@@ -431,7 +428,6 @@ impl Default for RuntimeSettings {
             // The writing key is on by default; see the field docs. Must match
             // SETTINGS_DEFAULTS in ui/lib/settings.ts.
             compose_enabled: true,
-            compose_other_windows: true,
             compose_sound: true,
             compose_typing_dots: true,
             compose_trigger_key: None,
