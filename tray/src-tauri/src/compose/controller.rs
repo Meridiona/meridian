@@ -74,6 +74,16 @@ struct LastDraft {
 
 /// Set once [`start`] has run, so a second call does nothing.
 static STARTED: AtomicBool = AtomicBool::new(false);
+/// Sends a press to the worker, so the on-screen badge does exactly what the key does.
+static PRESS: OnceLock<mpsc::Sender<()>> = OnceLock::new();
+
+/// Ask for a draft as if the trigger key had been tapped. Ignored before [`start`].
+pub fn press() {
+    if let Some(tx) = PRESS.get() {
+        let _ = tx.send(());
+    }
+}
+
 /// How often the supervisor re-reads the settings to start or stop the key.
 const SETTINGS_POLL: Duration = Duration::from_secs(2);
 
@@ -85,6 +95,8 @@ pub fn start(app: tauri::AppHandle) {
         return;
     }
     let (tx, rx) = mpsc::channel::<()>();
+    let _ = PRESS.set(tx.clone());
+    super::badge::start(app.clone());
     if let Err(e) = std::thread::Builder::new()
         .name("compose-worker".into())
         .spawn(move || worker(rx, app))

@@ -113,7 +113,7 @@ pub fn secure_input_active() -> bool {
     unsafe { IsSecureEventInputEnabled() }
 }
 
-fn focused_element(pid: i32, app: &Element) -> Option<Element> {
+pub(super) fn focused_element(pid: i32, app: &Element) -> Option<Element> {
     if let Some(system) = Element::system_wide() {
         if let Some(el) = system.element("AXFocusedUIElement") {
             if el.pid() == Some(pid) {

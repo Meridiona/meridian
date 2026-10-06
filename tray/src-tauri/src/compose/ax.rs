@@ -32,6 +32,8 @@ pub const MESSAGING_TIMEOUT_S: f32 = 1.5;
 
 type AXError = i32;
 const AX_SUCCESS: AXError = 0;
+const AX_VALUE_TYPE_CGPOINT: u32 = 1;
+const AX_VALUE_TYPE_CGSIZE: u32 = 2;
 const AX_VALUE_TYPE_CFRANGE: u32 = 4;
 
 #[link(name = "ApplicationServices", kind = "framework")]
@@ -225,6 +227,32 @@ impl Element {
             location: range.location as usize,
             length: range.length as usize,
         })
+    }
+
+    /// Where the element sits on screen: `(x, y, width, height)` in points, origin at the
+    /// top left of the primary display (the same space window positions use).
+    pub fn frame(&self) -> Option<(f64, f64, f64, f64)> {
+        use core_graphics::geometry::{CGPoint, CGSize};
+        let pos = self.copy_attribute("AXPosition").ok()?;
+        let size = self.copy_attribute("AXSize").ok()?;
+        let mut point = CGPoint { x: 0.0, y: 0.0 };
+        let mut dims = CGSize {
+            width: 0.0,
+            height: 0.0,
+        };
+        // SAFETY: AXValueGetValue checks each value's type before writing to the out pointer.
+        let ok = unsafe {
+            AXValueGetValue(
+                pos.as_CFTypeRef(),
+                AX_VALUE_TYPE_CGPOINT,
+                &mut point as *mut CGPoint as *mut c_void,
+            ) && AXValueGetValue(
+                size.as_CFTypeRef(),
+                AX_VALUE_TYPE_CGSIZE,
+                &mut dims as *mut CGSize as *mut c_void,
+            )
+        };
+        ok.then_some((point.x, point.y, dims.width, dims.height))
     }
 
     /// The process that owns this element.
