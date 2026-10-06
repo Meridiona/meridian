@@ -365,12 +365,7 @@ pub fn read_focused_field(ctx: &ReadContext) -> Result<ReadField, ReadError> {
     span.record("rest_chars", snapshot.nearby.rest_of_window.chars().count());
     span.record("other_windows", snapshot.other_windows.len());
 
-    let identity = FieldIdentity {
-        pid,
-        role,
-        label,
-        window_title,
-    };
+    let identity = FieldIdentity { pid, role, label };
     Ok(ReadField {
         snapshot,
         handle: FieldHandle {
@@ -389,17 +384,10 @@ pub fn read_focused_field(ctx: &ReadContext) -> Result<ReadField, ReadError> {
 pub fn current_state(handle: &FieldHandle) -> super::delivery::Now {
     let alive = handle.element.is_alive();
     let value = alive.then(|| field_text::visible_value(&handle.element).unwrap_or_default());
-    let identity = alive.then(|| {
-        let window_title = Element::application(handle.pid)
-            .and_then(|app| app.element("AXFocusedWindow"))
-            .and_then(|w| w.string("AXTitle"))
-            .unwrap_or_default();
-        FieldIdentity {
-            pid: handle.pid,
-            role: handle.element.string("AXRole").unwrap_or_default(),
-            label: label_of(&handle.element),
-            window_title,
-        }
+    let identity = alive.then(|| FieldIdentity {
+        pid: handle.pid,
+        role: handle.element.string("AXRole").unwrap_or_default(),
+        label: label_of(&handle.element),
     });
     super::delivery::Now {
         frontmost_pid: frontmost_pid().unwrap_or(-1),

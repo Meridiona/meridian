@@ -86,16 +86,6 @@ pub struct FieldIdentity {
     pub pid: i32,
     pub role: String,
     pub label: String,
-    pub window_title: String,
-}
-
-impl FieldIdentity {
-    /// Same app, same kind of box, same label. The window title is deliberately left out: chat
-    /// and browser titles change while a draft is being written (unread counts, tab names), and
-    /// a changed title says nothing about the box.
-    pub fn is_same_field(&self, other: &FieldIdentity) -> bool {
-        self.pid == other.pid && self.role == other.role && self.label == other.label
-    }
 }
 
 /// What was true when the key was pressed.
@@ -160,7 +150,7 @@ pub fn guard(origin: &Origin, now: &Now, surface: SurfaceKind, text: &str) -> Re
         return Err(Refusal::FieldGone);
     }
     match &now.identity {
-        Some(id) if id.is_same_field(&origin.identity) => {}
+        Some(id) if id == &origin.identity => {}
         _ => return Err(Refusal::FieldChanged),
     }
     match &now.value {
@@ -223,7 +213,6 @@ mod tests {
             pid: 42,
             role: "AXTextArea".into(),
             label: "Message Body".into(),
-            window_title: "Compose".into(),
         }
     }
 
@@ -453,14 +442,5 @@ mod tests {
         assert!(landed("Hi there", Some("Hi\u{a0}there")));
         assert!(!landed("Hi there", Some("Hi there!")));
         assert!(!landed("Hi there", None));
-    }
-
-    #[test]
-    fn a_changed_window_title_alone_does_not_block_the_write() {
-        let mut moved = id();
-        moved.window_title = "(3) Compose".into();
-        assert!(moved.is_same_field(&id()));
-        moved.label = "Subject".into();
-        assert!(!moved.is_same_field(&id()));
     }
 }

@@ -48,9 +48,6 @@ pub enum DraftOutcome {
         text: String,
         surface: SurfaceKind,
         intent: Intent,
-        prompt_version: &'static str,
-        provider: String,
-        elapsed_s: f64,
     },
     /// The model had too little context to write something trustworthy.
     NoContext,
@@ -92,7 +89,15 @@ where
         intent = Empty,
         prompt_version = PROMPT_VERSION,
         outcome = Empty,
+        provider = Empty,
+        elapsed_s = Empty,
         user_chars = Empty,
+        above_chars = Empty,
+        below_chars = Empty,
+        field_chars = Empty,
+        rest_of_window_chars = Empty,
+        other_windows = Empty,
+        other_windows_chars = Empty,
     );
     async {
         let plan = match classify(&req.field) {
@@ -106,14 +111,28 @@ where
         tracing::Span::current().record("intent", plan.intent.as_str());
 
         let built = build(req, &plan);
-        tracing::Span::current().record("user_chars", built.stats.user_chars);
+        // Sizes only, never text: what the model was shown, for debugging a press.
+        let span = tracing::Span::current();
+        let stats = built.stats;
+        span.record("user_chars", stats.user_chars);
+        span.record("above_chars", stats.above_chars);
+        span.record("below_chars", stats.below_chars);
+        span.record("field_chars", stats.field_chars);
+        span.record("rest_of_window_chars", stats.rest_of_window_chars);
+        span.record("other_windows", stats.other_windows);
+        span.record("other_windows_chars", stats.other_windows_chars);
 
         let request = PromptRequest::new(built.system, built.user, "compose-draft")
             .with_max_tokens(DRAFT_MAX_TOKENS)
             .interactive();
 
-        let (out, provider) = match complete(request).await {
-            Ok(v) => v,
+        let out = match complete(request).await {
+            Ok((out, provider)) => {
+                let span = tracing::Span::current();
+                span.record("provider", provider.as_str());
+                span.record("elapsed_s", out.elapsed_s);
+                out
+            }
             Err(e) => {
                 tracing::warn!(error = %e, "compose: model call failed");
                 tracing::Span::current().record("outcome", "failed");
@@ -130,9 +149,6 @@ where
                     text,
                     surface: plan.surface,
                     intent: plan.intent,
-                    prompt_version: built.version,
-                    provider: provider.as_str().to_string(),
-                    elapsed_s: out.elapsed_s,
                 }
             }
             Parsed::NoContext => {
@@ -200,16 +216,10 @@ mod tests {
                 text,
                 surface,
                 intent,
-                prompt_version,
-                provider,
-                elapsed_s,
             } => {
                 assert_eq!(text, "Thursday works, plan is staged by size.");
                 assert_eq!(surface, SurfaceKind::DirectChat);
                 assert_eq!(intent, Intent::Reply);
-                assert_eq!(prompt_version, PROMPT_VERSION);
-                assert_eq!(provider, LlmProvider::Claude.as_str());
-                assert!((elapsed_s - 1.5).abs() < f64::EPSILON);
             }
             other => panic!("expected Text, got {other:?}"),
         }

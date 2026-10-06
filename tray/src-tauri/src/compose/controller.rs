@@ -335,7 +335,7 @@ fn outcome_name(outcome: &DraftOutcome) -> &'static str {
 /// A previous attempt, when this press is the user trying again on the same field.
 fn rerun_of(last: &Option<LastDraft>, read: &ReadField) -> Option<PreviousAttempt> {
     let last = last.as_ref()?;
-    let same_field = last.identity.is_same_field(&read.handle.identity);
+    let same_field = last.identity == read.handle.identity;
     let fresh = last.at.elapsed() <= RERUN_WINDOW;
     // The field still holds the draft: that is what makes this a re-run, not a new message.
     let still_there =
