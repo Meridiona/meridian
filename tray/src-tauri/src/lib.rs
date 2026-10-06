@@ -1040,7 +1040,7 @@ pub fn run() {
             // tauri-nspanel). The Tauri IPC bridge (WKWebView + __TAURI__) is
             // unaffected — it lives inside the view, not the window class.
             #[cfg(target_os = "macos")]
-            for label in ["main", "tray-tooltip"] {
+            for label in ["main", "tray-tooltip", "compose-badge"] {
                 if let Some(win) = app.get_webview_window(label) {
                     init_as_nspanel(&win);
                     make_visible_over_fullscreen(&win);
@@ -1250,6 +1250,8 @@ pub fn run() {
         // `commands.rs`, AND list it here — a missing entry fails the frontend
         // `invoke` at runtime ("command not found"), not at compile time.
         .invoke_handler(tauri::generate_handler![
+            commands::compose_badge::compose_badge_click,
+            commands::compose_badge::compose_badge_log,
             commands::repair::preview_repair,
             commands::repair::request_repair,
             // tray popover + daemon lifecycle

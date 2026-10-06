@@ -74,6 +74,16 @@ struct LastDraft {
 
 /// Set once [`start`] has run, so a second call does nothing.
 static STARTED: AtomicBool = AtomicBool::new(false);
+/// Sends a press to the worker, so the on-screen badge does exactly what the key does.
+static PRESS: OnceLock<mpsc::Sender<()>> = OnceLock::new();
+
+/// Ask for a draft as if the trigger key had been tapped. Ignored before [`start`].
+pub fn press() {
+    if let Some(tx) = PRESS.get() {
+        let _ = tx.send(());
+    }
+}
+
 /// How often the supervisor re-reads the settings to start or stop the key.
 const SETTINGS_POLL: Duration = Duration::from_secs(2);
 
@@ -85,6 +95,8 @@ pub fn start(app: tauri::AppHandle) {
         return;
     }
     let (tx, rx) = mpsc::channel::<()>();
+    let _ = PRESS.set(tx.clone());
+    super::badge::start(app.clone());
     if let Err(e) = std::thread::Builder::new()
         .name("compose-worker".into())
         .spawn(move || worker(rx, app))
@@ -137,6 +149,7 @@ fn worker(rx: mpsc::Receiver<()>, app: tauri::AppHandle) {
             // The typing sound starts before any slow work, so the user knows at once that
             // the tap was heard, and it keeps going until the draft is written or refused.
             let mut typing = config.sound.then(TypingSound::start);
+            let _working = WorkingFlag::set();
             let _busy = BusyTitle::show(&app);
             let ctx = read_context(&app, config);
             // A panic in one press must not kill the worker: that would leave the key dead
@@ -218,6 +231,31 @@ fn set_tray_title(app: &tauri::AppHandle, title: Option<&str>) {
     let id = state.lock().ok().and_then(|s| s.tray_id.clone());
     if let Some(tray) = id.and_then(|id| app.tray_by_id(&id)) {
         let _ = tray.set_title(title);
+    }
+}
+
+/// True while a press is being handled, so the on-screen icon can spin until the draft lands.
+static WORKING: AtomicBool = AtomicBool::new(false);
+
+/// Whether a press is in flight right now.
+pub fn is_working() -> bool {
+    WORKING.load(Ordering::SeqCst)
+}
+
+/// Marks a press as in flight for as long as it lives, including when the press ends early or
+/// panics.
+struct WorkingFlag;
+
+impl WorkingFlag {
+    fn set() -> WorkingFlag {
+        WORKING.store(true, Ordering::SeqCst);
+        WorkingFlag
+    }
+}
+
+impl Drop for WorkingFlag {
+    fn drop(&mut self) {
+        WORKING.store(false, Ordering::SeqCst);
     }
 }
 
