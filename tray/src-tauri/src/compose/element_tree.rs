@@ -62,7 +62,30 @@ thread_local! {
     static PANE: std::cell::Cell<Option<sides::Frame>> = const { std::cell::Cell::new(None) };
 }
 
-/// Remember the window frame for the reads that follow on this thread.
+/// The conversation's horizontal extent around `field`, read from its composer row.
+pub(super) fn conversation_pane_of(
+    field: &Element,
+    window: Option<sides::Frame>,
+) -> Option<sides::Frame> {
+    let Some(field_frame) = field.frame() else {
+        return window;
+    };
+    let mut ancestors = Vec::new();
+    let mut current = field.clone();
+    for _ in 0..6 {
+        let Some(parent) = current.element("AXParent") else {
+            break;
+        };
+        match parent.frame() {
+            Some(f) => ancestors.push(f),
+            None => break,
+        }
+        current = parent;
+    }
+    sides::conversation_pane(field_frame, &ancestors, window)
+}
+
+/// Remember the conversation frame for the reads that follow on this thread.
 pub(super) fn set_pane(frame: Option<sides::Frame>) {
     PANE.with(|p| p.set(frame));
 }

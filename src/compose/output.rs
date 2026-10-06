@@ -118,7 +118,9 @@ fn strip_lead_line(s: &str) -> &str {
 /// Parse a model answer. `single_line` is true for fields that must hold one line (a
 /// terminal, a structured field): extra lines are dropped rather than inserted.
 pub fn parse(raw: &str, single_line: bool) -> Parsed {
-    let trimmed = strip_lead_line(raw).trim();
+    // An answer wrapped in a fence may carry the lead line inside it, so look past the fence.
+    let unfenced = strip_fence(raw);
+    let trimmed = strip_lead_line(&unfenced).trim();
     if trimmed.is_empty() {
         return Parsed::Unusable;
     }
@@ -185,6 +187,14 @@ mod tests {
         assert_eq!(
             text("[Last message from: other]\nSee you then."),
             "See you then."
+        );
+    }
+
+    #[test]
+    fn a_lead_line_inside_a_fence_is_removed_too() {
+        assert_eq!(
+            text("```\nLast message from: user\nHello there\n```"),
+            "Hello there"
         );
     }
 

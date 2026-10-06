@@ -228,8 +228,11 @@ pub fn read_focused_field(ctx: &ReadContext) -> Result<ReadField, ReadError> {
     let placeholder = element.string("AXPlaceholderValue").unwrap_or_default();
     let url = page_url(&element);
 
-    // Where the window sits, so each line of the thread can be placed left or right in it.
-    element_tree::set_pane(app.element("AXFocusedWindow").and_then(|w| w.frame()));
+    // Where the conversation sits, so each line of the thread can be placed left or right in it.
+    element_tree::set_pane(element_tree::conversation_pane_of(
+        &element,
+        app.element("AXFocusedWindow").and_then(|w| w.frame()),
+    ));
     let around = walk::surrounding(&element, limits());
 
     // A tag the app pre-filled (replying to a comment) is not the user's draft: keep it, and

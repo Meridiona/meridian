@@ -31,7 +31,7 @@ export function WritingKeyCard({ settings, patch, save }: {
   return (
     <SectionCard>
       <SectionHeader>Writing key</SectionHeader>
-      <FieldRow label="Write with the ⌥ Option key" description="Tap the right ⌥ Option key in any text box and Meridian writes there: a reply, an opener, or a polish of what you typed. Each tap reads the text in the window you are in and sends it, with your Mac account name, to your AI provider to write the draft. A repeat tap within three minutes also sends the previous draft. Nothing else is sent - no history, no stored activity. On by default; turn it off here any time. Needs Accessibility and Input Monitoring access.">
+      <FieldRow label="Write with the ⌥ Option key" description="Tap your writing key (the right ⌥ Option key by default) in any text box and Meridian writes there: a reply, an opener, or a polish of what you typed. Each tap reads the text in the window you are in and sends it, with your Mac account name, to your AI provider to write the draft. A repeat tap within three minutes also sends the previous draft. Nothing else is sent - no history, no stored activity. On by default; turn it off here any time. Needs Accessibility and Input Monitoring access.">
         <Switch checked={settings.compose_enabled} onCheckedChange={v => patch({ compose_enabled: v })} />
       </FieldRow>
       <FieldRow label="Also read other open windows" description="Adds text from up to three other windows visible on screen, such as a document next to your chat, so a reply can use it. Password managers, banking and sign-in pages, private windows and anything on your capture ignore list are skipped.">

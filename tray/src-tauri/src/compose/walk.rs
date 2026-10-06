@@ -220,11 +220,7 @@ pub fn whole<N: Node>(root: &N, skip: Option<&N>, limits: Limits) -> Vec<String>
         focused: skip,
         header: Vec::new(),
     };
-    collector
-        .collect(root, Direction::Forward)
-        .into_iter()
-        .map(|l| l.text)
-        .collect()
+    sides::label(collector.collect(root, Direction::Forward))
 }
 
 /// The lines of `candidates` that are not already in `known`, in order. Used to give the
@@ -232,6 +228,11 @@ pub fn whole<N: Node>(root: &N, skip: Option<&N>, limits: Limits) -> Vec<String>
 /// case and runs of whitespace.
 pub fn lines_not_in(candidates: &[String], known: &[String]) -> Vec<String> {
     let canon = |l: &str| {
+        // A speaker mark added for the model is not part of the line being compared.
+        let l = l
+            .strip_prefix("You: ")
+            .or_else(|| l.strip_prefix("Them: "))
+            .unwrap_or(l);
         l.split_whitespace()
             .collect::<Vec<_>>()
             .join(" ")
@@ -465,6 +466,13 @@ mod tests {
         let known = vec!["hello world".to_string()];
         assert_eq!(lines_not_in(&candidates, &known), ["Sidebar", "Footer"]);
         assert_eq!(lines_not_in(&candidates, &[]), candidates);
+    }
+
+    #[test]
+    fn a_speaker_mark_does_not_hide_a_duplicate() {
+        let candidates = vec!["Hello".to_string(), "Other".to_string()];
+        let known = vec!["You: hello".to_string()];
+        assert_eq!(lines_not_in(&candidates, &known), ["Other"]);
     }
 
     #[test]

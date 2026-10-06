@@ -57,6 +57,33 @@ pub fn is_own_description(description: &str, text: &str) -> bool {
         && d.contains(text)
 }
 
+/// The horizontal extent of the conversation, taken from the composer row: the ancestors of
+/// the text box that are still only about one box tall (the row holding the box and its
+/// buttons). It spans the chat column even when that column is narrower than the window, or
+/// centred in it. Falls back to `window` when no wider row is found.
+pub fn conversation_pane(
+    field: Frame,
+    ancestors: &[Frame],
+    window: Option<Frame>,
+) -> Option<Frame> {
+    let (_, _, fw, fh) = field;
+    let mut best: Option<Frame> = None;
+    for &(x, y, w, h) in ancestors {
+        let wraps = x <= field.0 + 1.0 && x + w >= field.0 + fw - 1.0;
+        if wraps && h <= fh * 2.0 + 16.0 {
+            if best.is_none_or(|(_, _, bw, _)| w > bw) {
+                best = Some((x, y, w, h));
+            }
+        } else {
+            break;
+        }
+    }
+    match (best, window) {
+        (Some(row), _) if row.2 > fw * 1.1 => Some(row),
+        (_, window) => window,
+    }
+}
+
 /// A line of text and the side it sits on, if known.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Line {
@@ -137,6 +164,27 @@ mod tests {
             "Hey, how have you been doing?"
         ));
         assert!(!is_own_description("Yours truly, hi", "hi"));
+    }
+
+    #[test]
+    fn the_pane_is_the_composer_row_not_the_whole_window() {
+        // A chat column from 400 to 1200 in a 1920 wide window, with a one-line composer.
+        let field = (440.0, 900.0, 700.0, 30.0);
+        let row = (400.0, 895.0, 800.0, 40.0);
+        let window = (0.0, 30.0, 1920.0, 975.0);
+        assert_eq!(
+            conversation_pane(field, &[row, window], Some(window)),
+            Some(row)
+        );
+        // A bubble at the right end of that column is the user's.
+        assert_eq!(side_of((1000.0, 300.0, 190.0, 30.0), row), Some(Side::User));
+    }
+
+    #[test]
+    fn with_no_wider_row_the_window_is_used() {
+        let field = (440.0, 900.0, 700.0, 30.0);
+        let window = (0.0, 30.0, 1920.0, 975.0);
+        assert_eq!(conversation_pane(field, &[], Some(window)), Some(window));
     }
 
     #[test]
