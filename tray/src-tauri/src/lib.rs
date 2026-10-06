@@ -1250,10 +1250,8 @@ pub fn run() {
         // `commands.rs`, AND list it here — a missing entry fails the frontend
         // `invoke` at runtime ("command not found"), not at compile time.
         .invoke_handler(tauri::generate_handler![
-            #[cfg(target_os = "macos")]
-            compose::badge::badge_click,
-            #[cfg(target_os = "macos")]
-            compose::badge::badge_log,
+            commands::compose_badge::compose_badge_click,
+            commands::compose_badge::compose_badge_log,
             commands::repair::preview_repair,
             commands::repair::request_repair,
             // tray popover + daemon lifecycle

@@ -41,4 +41,4 @@ mod typing;
 mod walk;
 mod writer;
 
-pub(crate) use controller::start;
+pub(crate) use controller::{press, start};

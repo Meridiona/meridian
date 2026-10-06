@@ -9,8 +9,8 @@
 //! password field, in Meridian itself, or when the writing key is switched off.
 //!
 //! # Who calls this
-//! [`super::controller::start`] starts the poller; the badge's webview calls
-//! [`badge_click`] on mouse down.
+//! [`super::controller::start`] starts the poller; the badge's webview calls the commands in
+//! [`crate::commands::compose_badge`] on mouse down.
 //!
 //! # Related
 //! - [`super::controller::press`] - the shared entry point, identical to a key tap.
@@ -70,20 +70,6 @@ pub fn start(app: tauri::AppHandle) {
     {
         tracing::warn!(error = %e, "compose: could not start the badge thread");
     }
-}
-
-/// Tauri command: the badge page reports what it saw, so a click that never arrives can be
-/// told apart from one that arrives and fails. The text is one of the page's own fixed notes.
-#[tauri::command]
-pub fn badge_log(detail: String) {
-    tracing::info!(detail = %detail.chars().take(120).collect::<String>(), "compose: badge page");
-}
-
-/// Tauri command: the badge was clicked. Same as tapping the writing key.
-#[tauri::command]
-pub fn badge_click() {
-    tracing::info!("compose: badge clicked");
-    super::controller::press();
 }
 
 fn run(app: tauri::AppHandle) {
