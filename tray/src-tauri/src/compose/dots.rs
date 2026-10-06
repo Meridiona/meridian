@@ -36,7 +36,7 @@
 //! - [`super::typing`] - the sound that plays alongside.
 
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
@@ -98,14 +98,56 @@ pub(crate) fn typed_between(value: &str, original: &str, caret: usize) -> Option
     Some(Typed { chars, stops })
 }
 
+/// What the box is compared against: its text at the press and the caret then.
+struct Baseline {
+    original: String,
+    caret: usize,
+    /// What the box reports when it is empty, once that was found to be a placeholder.
+    empty_view: String,
+}
+
+/// Longest run of typed full stops that can stand in for "the box was only a placeholder".
+const PLACEHOLDER_STOPS_MAX: usize = 6;
+
+/// Placeholders are short prompts that trail off: "Add a comment...", "Write a message\u{2026}".
+fn looks_like_placeholder(text: &str) -> bool {
+    const MAX_CHARS: usize = 80;
+    let text = canonical_blanks(text);
+    let text = text.trim();
+    text.chars().count() <= MAX_CHARS && (text.ends_with("...") || text.ends_with('\u{2026}'))
+}
+
+/// Some editors (LinkedIn's comment box) report their placeholder as the box's value and
+/// expose no hint that names it. Typing the first character makes the placeholder vanish, so
+/// the box then holds nothing but our full stops, so the "text" we recorded was never the
+/// user's and the real baseline is an empty box.
+///
+/// Both signs are required, because real text replaced by a lone "." must stay the user's:
+/// the box is now only full stops, and what it held before ends the way placeholders do
+/// ("Add a comment...", "Write a message\u{2026}") and is short.
+fn adopt_empty_baseline_if_placeholder(value: &str, base: &mut Baseline) {
+    if typed_between(value, &base.original, base.caret).is_some() {
+        return;
+    }
+    let value = canonical_blanks(value);
+    let value = value.trim();
+    let only_stops = !value.is_empty()
+        && value.chars().count() <= PLACEHOLDER_STOPS_MAX
+        && value.chars().all(|c| c == '.' || c == '\u{2026}');
+    if only_stops && looks_like_placeholder(&base.original) {
+        tracing::info!("compose: the box held only a placeholder; treating it as empty");
+        base.empty_view = std::mem::take(&mut base.original);
+        base.caret = 0;
+    }
+}
+
 /// A running animation. Call [`TypedDots::finish`] to stop it and clean up; dropping it does the
 /// same, without reporting the result.
 pub struct TypedDots {
     stop: Arc<AtomicBool>,
     thread: Option<JoinHandle<()>>,
     element: Element,
-    original: String,
-    caret: usize,
+    base: Arc<Mutex<Baseline>>,
     pid: i32,
 }
 
@@ -127,13 +169,38 @@ fn value_of(element: &Element) -> Option<String> {
 
 /// True when the box holds only full stops beyond `original` and the caret sits right after
 /// them. Returns what was typed. Anything else means the box is no longer ours to touch.
-fn typed_and_caret_ok(
-    element: &Element,
-    original: &str,
-    caret: usize,
-) -> Result<Typed, &'static str> {
+fn typed_and_caret_ok(element: &Element, base: &Mutex<Baseline>) -> Result<Typed, &'static str> {
     let value = value_of(element).ok_or("the box stopped reporting its text")?;
-    let typed = typed_between(&value, original, caret).ok_or("the box changed in another way")?;
+    let (original, caret) = {
+        let mut b = base.lock().unwrap_or_else(|e| e.into_inner());
+        adopt_empty_baseline_if_placeholder(&value, &mut b);
+        // Every dot erased: the placeholder is showing again, which is the empty box.
+        if !b.empty_view.is_empty() && same_text(&value, &b.empty_view) {
+            return Ok(Typed { chars: 0, stops: 0 });
+        }
+        (b.original.clone(), b.caret)
+    };
+    let (original, caret) = (original.as_str(), caret);
+    let typed = typed_between(&value, original, caret).ok_or_else(|| {
+        // Shape only, never text: lengths, and where the reading first departs from what was
+        // read at the press.
+        let (a, b) = (canonical_blanks(original), canonical_blanks(&value));
+        let at = a.chars().zip(b.chars()).take_while(|(x, y)| x == y).count();
+        tracing::info!(
+            original_chars = a.chars().count(),
+            now_chars = b.chars().count(),
+            caret,
+            first_difference = at,
+            raw_now_chars = element.string("AXValue").map(|v| v.chars().count()),
+            hint_placeholder_chars = element
+                .string("AXPlaceholderValue")
+                .map(|v| v.chars().count()),
+            hint_description_chars = element.string("AXDescription").map(|v| v.chars().count()),
+            hint_title_chars = element.string("AXTitle").map(|v| v.chars().count()),
+            "compose: box no longer matches"
+        );
+        "the box changed in another way"
+    })?;
     let expected = Utf16Range {
         location: caret + typed.chars,
         length: 0,
@@ -144,14 +211,14 @@ fn typed_and_caret_ok(
     Ok(typed)
 }
 
-fn run(stop: Arc<AtomicBool>, element: Element, original: String, caret: usize, pid: i32) {
+fn run(stop: Arc<AtomicBool>, element: Element, base: Arc<Mutex<Baseline>>, pid: i32) {
     let mut erasing = false;
     while !sleep_unless_stopped(&stop, if erasing { ERASE_STEP } else { STEP }) {
         // Keys go to whatever has focus; never send them anywhere but the field itself.
         if reader::frontmost_pid() != Some(pid) || !reader::is_focused(&element, pid) {
             return;
         }
-        let typed = match typed_and_caret_ok(&element, &original, caret) {
+        let typed = match typed_and_caret_ok(&element, &base) {
             Ok(t) => t,
             Err(reason) => {
                 tracing::info!(reason, "compose: typing dots stopped");
@@ -191,21 +258,24 @@ impl TypedDots {
             return None;
         }
         let stop = Arc::new(AtomicBool::new(false));
+        let base = Arc::new(Mutex::new(Baseline {
+            original: handle.value.clone(),
+            caret: handle.selection.location,
+            empty_view: String::new(),
+        }));
         let thread = {
-            let (stop, element, original) =
-                (stop.clone(), handle.element.clone(), handle.value.clone());
-            let (caret, pid) = (handle.selection.location, handle.pid);
+            let (stop, element, base) = (stop.clone(), handle.element.clone(), base.clone());
+            let pid = handle.pid;
             std::thread::Builder::new()
                 .name("compose-typing-dots".into())
-                .spawn(move || run(stop, element, original, caret, pid))
+                .spawn(move || run(stop, element, base, pid))
                 .ok()?
         };
         Some(TypedDots {
             stop,
             thread: Some(thread),
             element: handle.element.clone(),
-            original: handle.value.clone(),
-            caret: handle.selection.location,
+            base,
             pid: handle.pid,
         })
     }
@@ -225,13 +295,11 @@ impl TypedDots {
         };
         let _ = thread.join();
         for _ in 0..CLEANUP_STEPS {
-            let typed = match typed_and_caret_ok(&self.element, &self.original, self.caret) {
+            let typed = match typed_and_caret_ok(&self.element, &self.base) {
                 Ok(t) => t,
                 Err(reason) => {
                     // A box that already equals the original needs nothing, whatever the caret.
-                    let clean = value_of(&self.element)
-                        .and_then(|v| typed_between(&v, &self.original, self.caret))
-                        .is_some_and(|t| t.chars == 0);
+                    let clean = self.is_clean();
                     if !clean {
                         tracing::warn!(reason, "compose: cannot clear the typing dots");
                     }
@@ -249,9 +317,16 @@ impl TypedDots {
             }
             std::thread::sleep(APPLY);
         }
-        value_of(&self.element)
-            .and_then(|v| typed_between(&v, &self.original, self.caret))
-            .is_some_and(|t| t.chars == 0)
+        self.is_clean()
+    }
+
+    /// True when the box shows exactly what it showed before any dot was typed.
+    fn is_clean(&self) -> bool {
+        let base = self.base.lock().unwrap_or_else(|e| e.into_inner());
+        value_of(&self.element).is_some_and(|v| {
+            typed_between(&v, &base.original, base.caret).is_some_and(|t| t.chars == 0)
+                || (!base.empty_view.is_empty() && same_text(&v, &base.empty_view))
+        })
     }
 }
 
@@ -279,6 +354,64 @@ mod tests {
             typed_between("hello.. world", "hello world", 5),
             Some(Typed { chars: 2, stops: 2 })
         );
+    }
+
+    #[test]
+    fn a_placeholder_that_vanishes_becomes_an_empty_baseline() {
+        let mut base = Baseline {
+            original: "Add a comment...".into(),
+            caret: 16,
+            empty_view: String::new(),
+        };
+        adopt_empty_baseline_if_placeholder("Add a comment...", &mut base);
+        assert_eq!(
+            base.original, "Add a comment...",
+            "unchanged box is untouched"
+        );
+        adopt_empty_baseline_if_placeholder(".", &mut base);
+        assert_eq!((base.original.as_str(), base.caret), ("", 0));
+        assert_eq!(base.empty_view, "Add a comment...");
+        assert_eq!(
+            typed_between(".", &base.original, base.caret),
+            Some(Typed { chars: 1, stops: 1 })
+        );
+    }
+
+    #[test]
+    fn real_text_replaced_by_a_lone_full_stop_is_the_users_not_a_placeholder() {
+        for original in [
+            "hello",
+            "see you at 5",
+            "this is a long unfinished sentence that",
+        ] {
+            let mut base = Baseline {
+                original: original.into(),
+                caret: original.len(),
+                empty_view: String::new(),
+            };
+            adopt_empty_baseline_if_placeholder(".", &mut base);
+            assert_eq!(base.original, original, "{original}");
+            assert!(base.empty_view.is_empty());
+        }
+    }
+
+    #[test]
+    fn only_short_trailing_off_text_counts_as_placeholder_shaped() {
+        assert!(looks_like_placeholder("Add a comment..."));
+        assert!(looks_like_placeholder(" Write a message\u{2026} "));
+        assert!(!looks_like_placeholder("hello"));
+        assert!(!looks_like_placeholder(&format!("{}...", "x".repeat(100))));
+    }
+
+    #[test]
+    fn real_text_replaced_by_other_text_is_never_adopted_as_a_placeholder() {
+        let mut base = Baseline {
+            original: "hello there".into(),
+            caret: 11,
+            empty_view: String::new(),
+        };
+        adopt_empty_baseline_if_placeholder("something else", &mut base);
+        assert_eq!(base.original, "hello there");
     }
 
     #[test]

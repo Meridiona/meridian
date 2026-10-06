@@ -32,7 +32,7 @@ use crate::compose::classify::Plan;
 use crate::compose::types::{DraftRequest, Intent, SurfaceKind};
 
 /// Bump on any change to the prompt files or the layout. Stored with every draft.
-pub const PROMPT_VERSION: &str = "compose-v2";
+pub const PROMPT_VERSION: &str = "compose-v3";
 
 /// The static system prompt shared by every press.
 pub const CORE: &str = include_str!("../../../assets/prompts/compose/core.md");

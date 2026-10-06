@@ -52,11 +52,31 @@ fn looks_like_name(text: &str) -> bool {
     })
 }
 
+/// True when a line of the surrounding text is the name, or is the name followed by header
+/// decoration ("Name  \u{2022}  2nd", "Name, Title"), never by another word: a draft "Ann"
+/// must not match a line that begins "Ann Smith", nor "Great" a line "Great work".
 fn appears_on_its_own_line(context: &str, name: &str) -> bool {
     let name = name.to_lowercase();
-    context
-        .lines()
-        .any(|l| l.trim_matches(is_blank).to_lowercase() == name)
+    context.lines().any(|l| {
+        let line = l.trim_matches(is_blank).to_lowercase();
+        line.strip_prefix(name.as_str()).is_some_and(|rest| {
+            rest.trim_start()
+                .chars()
+                .next()
+                .is_none_or(|c| !c.is_alphanumeric())
+        })
+    })
+}
+
+/// Why the shape-based match did or did not fire, as three yes/no answers (for diagnostics):
+/// the value looks like a name, the context holds it anywhere, the context holds it as a line.
+pub fn name_checks(value: &str, context: &str) -> (bool, bool, bool) {
+    let t = value.trim_matches(is_blank);
+    (
+        looks_like_name(t),
+        !t.is_empty() && context.to_lowercase().contains(&t.to_lowercase()),
+        !t.is_empty() && appears_on_its_own_line(context, t),
+    )
 }
 
 /// Length in UTF-16 units of the leading part of `value` that the user did not write, or 0.
@@ -121,6 +141,29 @@ mod tests {
         let ctx = "View Jurgen P\u{eb}rgega's profile\nJurgen P\u{eb}rgega\nAuthor";
         let v = "Jurgen P\u{eb}rgega\u{200b}";
         assert_eq!(protected_prefix(v, &[], ctx), utf16_len(v));
+    }
+
+    #[test]
+    fn a_name_at_the_start_of_a_comment_header_line_is_the_tag() {
+        let ctx = "Hyunji J.  \u{2022} 2nd\nStaff Engineer\nGlad it landed.";
+        assert_eq!(
+            protected_prefix("Hyunji J. ", &[], ctx),
+            utf16_len("Hyunji J. ")
+        );
+    }
+
+    #[test]
+    fn a_name_that_only_starts_a_longer_word_is_not_a_header_match() {
+        assert_eq!(protected_prefix("Ann", &[], "Annabelle writes"), 0);
+    }
+
+    #[test]
+    fn a_draft_that_starts_a_line_of_ordinary_words_is_not_a_tag() {
+        assert_eq!(protected_prefix("Ann", &[], "Ann Smith\nSomething"), 0);
+        assert_eq!(
+            protected_prefix("Great", &[], "Great work on the launch"),
+            0
+        );
     }
 
     #[test]

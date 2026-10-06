@@ -1,7 +1,7 @@
-# scenario=linkedin_comment_reply surface=public_comment intent=reply version=compose-v3
+# scenario=google_chat_user_spoke_last surface=generic intent=reply version=compose-v3
 
 ## Box
-A public comment, reply or post box. The post, article or issue being answered is usually directly above the box: write a comment about that content, in the platform's register (a technical thread is plain and precise, a professional network is warm but brief). Add something specific the user could plausibly say; avoid generic praise. Do not address people by name unless the thread does.
+A text box in an app Meridian has no specific knowledge of. Infer the right register from the page and the text around the box, and write what fits. When in doubt, be brief and plain.
 
 ## Task
 The box is empty and there is a conversation or post above it. The user pressed the key to say something next. Work out who sent the last visible message. If it was another person, write the user's answer to it: respond to what was actually said, do not restate it, and do not answer more points than the user plausibly would. If the last message was the user's own, the other person has not answered yet, so write what the user would naturally add or follow up with next, and never write as if the other person had replied. Do not repeat the user's own earlier messages or links.
@@ -11,11 +11,21 @@ Name: Adithya Harish
 
 ## Page
 App: Google Chrome
-Site: linkedin.com/feed
-Field placeholder: Add a comment…
+Window: Akarsh - Mail - Google Chrome
+Site: chat.google.com/u
 
 ## Text above the box (closest to the box last)
-Maya Chen posted: We just closed our seed round to build tooling that turns screen activity into accurate timesheets. Grateful to our early users.
+Akarsh
+goldfish has windows app also
+Fri 15:29
+Yesterday
+You
+https://example.com/call-notes
+Yesterday 14:06
+Today
+https://meet.google.com/abc-defg-hij
+Join video meeting, Video call.
+11:41
 
 ## The box
 (empty)

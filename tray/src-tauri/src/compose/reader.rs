@@ -232,10 +232,22 @@ pub fn read_focused_field(ctx: &ReadContext) -> Result<ReadField, ReadError> {
 
     // A tag the app pre-filled (replying to a comment) is not the user's draft: keep it, and
     // treat what follows it as the box.
-    let mut protected_prefix = mention::protected_prefix(
-        &value,
-        &field_text::link_titles(&element),
-        &around.above.join("\n"),
+    let links = field_text::link_titles(&element);
+    let context = around.above.join("\n");
+    let mut protected_prefix = mention::protected_prefix(&value, &links, &context);
+    let (name_like, in_context, as_line) = mention::name_checks(&value, &context);
+    // Sizes only, never text: why a pre-filled tag was or was not found.
+    tracing::debug!(
+        value_chars = value.chars().count(),
+        link_titles = links.len(),
+        link_title_chars = ?links.iter().map(|t| t.chars().count()).collect::<Vec<_>>(),
+        protected_prefix,
+        name_like,
+        in_context,
+        as_line,
+        context_lines = context.lines().count(),
+        children = element.elements("AXChildren").len(),
+        "compose: tag detection"
     );
     let mut kept_prefix = String::new();
     if protected_prefix > 0 {
