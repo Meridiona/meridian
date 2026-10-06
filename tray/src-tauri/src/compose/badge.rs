@@ -31,7 +31,10 @@ const SETTINGS_POLL: Duration = Duration::from_secs(2);
 /// Edge of the square badge window, in points.
 const SIZE: f64 = 22.0;
 /// Gap kept between the badge and the field's edge.
-const MARGIN: f64 = 10.0;
+const MARGIN: f64 = 6.0;
+/// How far left of the field an ancestor may start and still count as its visible border.
+/// Further out is a neighbouring control or a whole pane, not padding around the field.
+const MAX_BORDER_LEFT: f64 = 24.0;
 /// Fields smaller than this are not worth marking (a tiny search or rename box).
 const MIN_WIDTH: f64 = 120.0;
 const MIN_HEIGHT: f64 = 20.0;
@@ -64,7 +67,7 @@ pub fn visible_box(field: Frame, ancestors: &[Frame]) -> Frame {
     for &(x, y, w, h) in ancestors {
         let contains =
             x <= fx + 1.0 && y <= fy + 1.0 && x + w >= fx + fw - 1.0 && y + h >= fy + fh - 1.0;
-        if contains && h <= fh * 2.0 + 16.0 && w <= fw * 1.8 + 120.0 {
+        if contains && fx - x <= MAX_BORDER_LEFT && h <= fh * 2.0 + 16.0 && w <= fw * 1.8 + 120.0 {
             best = (x, y, w, h);
         } else {
             break;
@@ -186,12 +189,12 @@ mod tests {
         // A one-line box: centred on its height.
         assert_eq!(
             badge_position((100.0, 200.0, 400.0, 32.0)),
-            (100.0 - 22.0 - 10.0, 205.0)
+            (100.0 - 22.0 - 6.0, 205.0)
         );
         // A tall box: level with the first line.
         assert_eq!(
             badge_position((100.0, 200.0, 400.0, 120.0)),
-            (100.0 - 22.0 - 10.0, 204.0)
+            (100.0 - 22.0 - 6.0, 204.0)
         );
     }
 
@@ -199,23 +202,26 @@ mod tests {
     fn a_box_at_the_screen_edge_gets_the_badge_above_its_corner() {
         assert_eq!(
             badge_position((10.0, 200.0, 400.0, 32.0)),
-            (10.0, 200.0 - 22.0 - 10.0)
+            (10.0, 200.0 - 22.0 - 6.0)
         );
         assert_eq!(badge_position((-5.0, 10.0, 400.0, 32.0)), (0.0, 0.0));
     }
 
     #[test]
     fn the_badge_goes_around_the_visible_box_not_the_inner_input() {
-        // Messages: the input sits inside a wider row holding the + and emoji buttons.
-        let field = (386.0, 963.0, 1447.0, 31.0);
-        let row = (328.0, 963.0, 1592.0, 42.0);
-        assert_eq!(visible_box(field, &[row]), row);
+        // A rounded border drawn a few points outside the input.
+        let field = (386.0, 963.0, 700.0, 31.0);
+        let border = (372.0, 958.0, 728.0, 42.0);
+        assert_eq!(visible_box(field, &[border]), border);
+        // A whole row holding a + button far to the left is not the box's border.
+        let row = (328.0, 963.0, 800.0, 42.0);
+        assert_eq!(visible_box(field, &[row]), field);
     }
 
     #[test]
     fn the_walk_up_stops_at_an_ancestor_that_is_much_bigger() {
         let field = (386.0, 963.0, 600.0, 31.0);
-        let row = (360.0, 955.0, 700.0, 44.0);
+        let row = (372.0, 955.0, 640.0, 44.0);
         let pane = (0.0, 30.0, 1920.0, 975.0);
         assert_eq!(visible_box(field, &[row, pane]), row);
         assert_eq!(visible_box(field, &[pane]), field);
