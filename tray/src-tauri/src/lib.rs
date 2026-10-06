@@ -1039,6 +1039,11 @@ pub fn run() {
             // object_setClass between them is safe (the same technique used by
             // tauri-nspanel). The Tauri IPC bridge (WKWebView + __TAURI__) is
             // unaffected — it lives inside the view, not the window class.
+            // The writing key's icon window is built here (macOS only) rather than declared in
+            // tauri.conf.json, which Windows shares.
+            #[cfg(target_os = "macos")]
+            compose::badge::create_window(app.handle());
+
             #[cfg(target_os = "macos")]
             for label in ["main", "tray-tooltip", "compose-badge"] {
                 if let Some(win) = app.get_webview_window(label) {
