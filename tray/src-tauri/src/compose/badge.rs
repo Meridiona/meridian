@@ -73,22 +73,12 @@ pub fn visible_box(field: Frame, ancestors: &[Frame]) -> Frame {
     best
 }
 
-/// Top-left of the badge for a field: just outside its left edge, level with the first line
-/// (centred when the field is only one line tall). A big field such as a mail body can run
-/// past the bottom of the screen, so a tall field is marked at its top, beside where the
-/// caret starts. A field flush against the left edge of the screen has no room outside, so the
-/// badge goes above its top-left corner.
-pub fn badge_position((x, y, _w, h): Frame) -> (f64, f64) {
-    let left = x - SIZE - MARGIN;
-    if left < 0.0 {
-        return (x.max(0.0), (y - SIZE - MARGIN).max(0.0));
-    }
-    let top = if h < SIZE * 2.0 {
-        y + (h - SIZE) / 2.0
-    } else {
-        y + MARGIN
-    };
-    (left, top)
+/// Top-left of the badge for a box: just above its top-left corner, in the free space over
+/// the box. Beside the box it would land on a sidebar divider, an attach button or the text
+/// next to a form field, and for a tall field such as a mail body the bottom can be off
+/// screen; the strip above the corner is clear in all of them.
+pub fn badge_position((x, y, _w, _h): Frame) -> (f64, f64) {
+    (x.max(0.0), (y - SIZE - MARGIN).max(0.0))
 }
 
 /// Start following the focused field. Does nothing until the writing key is switched on.
@@ -184,21 +174,20 @@ mod tests {
     use super::*;
 
     #[test]
-    fn a_tall_field_gets_the_badge_outside_its_left_edge_at_the_top() {
-        let (x, y) = badge_position((100.0, 200.0, 400.0, 120.0));
-        assert_eq!((x, y), (100.0 - 22.0 - 6.0, 200.0 + 6.0));
+    fn the_badge_sits_above_the_boxs_top_left_corner() {
+        assert_eq!(
+            badge_position((100.0, 200.0, 400.0, 120.0)),
+            (100.0, 200.0 - 22.0 - 6.0)
+        );
+        assert_eq!(
+            badge_position((100.0, 200.0, 400.0, 32.0)),
+            (100.0, 200.0 - 22.0 - 6.0)
+        );
     }
 
     #[test]
-    fn a_one_line_field_gets_it_centred_beside_its_left_edge() {
-        let (x, y) = badge_position((100.0, 200.0, 400.0, 32.0));
-        assert_eq!((x, y), (72.0, 205.0));
-    }
-
-    #[test]
-    fn a_field_at_the_screen_edge_gets_it_above_the_corner() {
-        let (x, y) = badge_position((10.0, 200.0, 400.0, 120.0));
-        assert_eq!((x, y), (10.0, 200.0 - 22.0 - 6.0));
+    fn the_badge_never_leaves_the_screen() {
+        assert_eq!(badge_position((-5.0, 10.0, 400.0, 32.0)), (0.0, 0.0));
     }
 
     #[test]
