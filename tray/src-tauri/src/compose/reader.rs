@@ -153,23 +153,12 @@ fn looks_private(title: &str) -> bool {
         || t.contains("private window")
 }
 
-/// Decides whether an app or page is on the user's capture ignore list.
-pub type IgnoreFn = std::sync::Arc<dyn Fn(&str, Option<&str>) -> bool + Send + Sync>;
-
-/// What the reader needs to know about the user's settings.
-pub struct ReadContext {
-    /// Also read the other windows visible on screen.
-    pub other_windows: bool,
-    /// The user's capture ignore list: `(app name, page address)` -> skip it.
-    pub is_ignored: IgnoreFn,
-}
-
 /// Read the focused text field of the frontmost app.
 #[tracing::instrument(
     skip_all,
-    fields(app, role, value_chars, above_chars, broad, rest_chars, other_windows)
+    fields(app, role, value_chars, above_chars, broad, rest_chars)
 )]
-pub fn read_focused_field(ctx: &ReadContext) -> Result<ReadField, ReadError> {
+pub fn read_focused_field() -> Result<ReadField, ReadError> {
     if !ax::is_trusted() {
         return Err(ReadError::AccessibilityDenied);
     }
@@ -316,12 +305,6 @@ pub fn read_focused_field(ctx: &ReadContext) -> Result<ReadField, ReadError> {
         )
     };
 
-    let other_windows = if ctx.other_windows {
-        super::screen::read_other_windows(pid, &*ctx.is_ignored)
-    } else {
-        Vec::new()
-    };
-
     let multiline = role == "AXTextArea" || value.contains('\n');
     let snapshot = FieldSnapshot {
         app_name: app_name.clone(),
@@ -345,7 +328,6 @@ pub fn read_focused_field(ctx: &ReadContext) -> Result<ReadField, ReadError> {
             rest_of_window,
         },
         header,
-        other_windows,
         private_window: looks_private(&window_title),
         secure_input: secure_input_active(),
     };
@@ -357,7 +339,6 @@ pub fn read_focused_field(ctx: &ReadContext) -> Result<ReadField, ReadError> {
     span.record("above_chars", snapshot.nearby.above.chars().count());
     span.record("broad", broad);
     span.record("rest_chars", snapshot.nearby.rest_of_window.chars().count());
-    span.record("other_windows", snapshot.other_windows.len());
 
     let identity = FieldIdentity { pid, role, label };
     Ok(ReadField {

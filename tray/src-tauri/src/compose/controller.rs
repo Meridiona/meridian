@@ -48,8 +48,6 @@ struct Config {
     key: TriggerKey,
     /// Play the typing sound while a draft is being written. On unless switched off.
     sound: bool,
-    /// Also read other windows visible on screen. On unless switched off.
-    other_windows: bool,
     /// Type "..." into the box while waiting, like someone typing. On unless switched off.
     dots: bool,
 }
@@ -60,7 +58,6 @@ fn read_config() -> Config {
         enabled: settings.compose_enabled,
         key: TriggerKey::from_setting(settings.compose_trigger_key.as_deref()),
         sound: settings.compose_sound,
-        other_windows: settings.compose_other_windows,
         dots: settings.compose_typing_dots,
     }
 }
@@ -96,10 +93,10 @@ pub fn start(app: tauri::AppHandle) {
     }
     let (tx, rx) = mpsc::channel::<()>();
     let _ = PRESS.set(tx.clone());
-    super::badge::start(app.clone());
+    super::badge::start(app);
     if let Err(e) = std::thread::Builder::new()
         .name("compose-worker".into())
-        .spawn(move || worker(rx, app))
+        .spawn(move || worker(rx))
     {
         tracing::error!(error = %e, "compose: could not start the worker thread");
         return;
@@ -141,7 +138,7 @@ fn supervise(tx: mpsc::Sender<()>) {
     }
 }
 
-fn worker(rx: mpsc::Receiver<()>, app: tauri::AppHandle) {
+fn worker(rx: mpsc::Receiver<()>) {
     let mut last: Option<LastDraft> = None;
     while rx.recv().is_ok() {
         let config = read_config();
@@ -150,11 +147,10 @@ fn worker(rx: mpsc::Receiver<()>, app: tauri::AppHandle) {
             // the tap was heard, and it keeps going until the draft is written or refused.
             let mut typing = config.sound.then(TypingSound::start);
             let _working = WorkingFlag::set();
-            let ctx = read_context(&app, config);
             // A panic in one press must not kill the worker: that would leave the key dead
             // until the app restarts.
             let ran = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                handle_press(&mut last, &mut typing, &ctx, config.dots)
+                handle_press(&mut last, &mut typing, config.dots)
             }));
             if ran.is_err() {
                 tracing::error!("compose: a press panicked; the key keeps working");
@@ -167,24 +163,6 @@ fn worker(rx: mpsc::Receiver<()>, app: tauri::AppHandle) {
 }
 
 /// What the reader needs from settings and the user's capture ignore list.
-fn read_context(app: &tauri::AppHandle, config: Config) -> reader::ReadContext {
-    use tauri::Manager;
-    let ignore = app
-        .try_state::<std::sync::Arc<std::sync::Mutex<crate::state::AppState>>>()
-        .and_then(|state| state.lock().ok().map(|s| s.capture_ignore.clone()));
-    reader::ReadContext {
-        other_windows: config.other_windows,
-        is_ignored: std::sync::Arc::new(move |app_name, url| {
-            // With no ignore list available, err towards skipping.
-            ignore.as_ref().is_none_or(|list| {
-                list.lock()
-                    .map(|l| l.should_drop_frame(Some(app_name), url))
-                    .unwrap_or(true)
-            })
-        }),
-    }
-}
-
 /// End the typing sound. Called just before the final sound so the two never overlap.
 fn hush(typing: &mut Option<TypingSound>) {
     typing.take();
@@ -228,13 +206,8 @@ impl Drop for WorkingFlag {
 }
 
 #[tracing::instrument(skip_all, fields(outcome))]
-fn handle_press(
-    last: &mut Option<LastDraft>,
-    typing: &mut Option<TypingSound>,
-    ctx: &reader::ReadContext,
-    dots: bool,
-) {
-    let read = match reader::read_focused_field(ctx) {
+fn handle_press(last: &mut Option<LastDraft>, typing: &mut Option<TypingSound>, dots: bool) {
+    let read = match reader::read_focused_field() {
         Ok(r) => r,
         Err(e) => {
             tracing::info!(reason = e.as_str(), "compose: no field to write into");
