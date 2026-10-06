@@ -92,6 +92,36 @@ pub fn badge_position((x, y, _w, h): Frame) -> (f64, f64) {
     (left, top)
 }
 
+/// Create the badge's window, hidden. It is built here, not declared in `tauri.conf.json`,
+/// because the config is shared with Windows and the icon exists only where the writing key
+/// does. Must run before the window is turned into a non-activating panel.
+pub fn create_window(app: &tauri::AppHandle) {
+    use tauri::{WebviewUrl, WebviewWindowBuilder};
+    let built = WebviewWindowBuilder::new(
+        app,
+        "compose-badge",
+        WebviewUrl::App("popover/badge.html".into()),
+    )
+    .title("Meridian")
+    .inner_size(SIZE, SIZE)
+    .decorations(false)
+    .transparent(true)
+    .visible(false)
+    .always_on_top(true)
+    .skip_taskbar(true)
+    .resizable(false)
+    .maximizable(false)
+    .minimizable(false)
+    .closable(false)
+    .shadow(false)
+    .focused(false)
+    .accept_first_mouse(true)
+    .build();
+    if let Err(e) = built {
+        tracing::warn!(error = %e, "compose: could not create the badge window");
+    }
+}
+
 /// Start following the focused field. Does nothing until the writing key is switched on.
 pub fn start(app: tauri::AppHandle) {
     if let Err(e) = std::thread::Builder::new()

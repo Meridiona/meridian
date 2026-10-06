@@ -59,25 +59,6 @@
         "shadow": false,
         "focus": false,
         "zoomHotkeysEnabled": true
-      },
-      {
-        "label": "compose-badge",
-        "title": "Meridian",
-        "url": "popover/badge.html",
-        "width": 22,
-        "height": 22,
-        "decorations": false,
-        "transparent": true,
-        "visible": false,
-        "alwaysOnTop": true,
-        "skipTaskbar": true,
-        "resizable": false,
-        "maximizable": false,
-        "minimizable": false,
-        "closable": false,
-        "shadow": false,
-        "focus": false,
-        "acceptFirstMouse": true
       }
     ]
   },
