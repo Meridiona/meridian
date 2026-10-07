@@ -153,7 +153,18 @@ fn looks_like_time(text: &str) -> bool {
     let has_clock = t.as_bytes().windows(4).any(|w| {
         w[0].is_ascii_digit() && w[1] == b':' && w[2].is_ascii_digit() && w[3].is_ascii_digit()
     });
-    let words = t
+    // A relative age in brackets ("Wed, Oct 30, 19:09 (17 hours ago)") is not part of the time.
+    let mut bare = String::with_capacity(t.len());
+    let mut depth = 0u32;
+    for c in t.chars() {
+        match c {
+            '(' | '\u{ff08}' => depth += 1,
+            ')' | '\u{ff09}' => depth = depth.saturating_sub(1),
+            c if depth == 0 => bare.push(c),
+            _ => {}
+        }
+    }
+    let words = bare
         .split_whitespace()
         .filter(|w| w.chars().any(char::is_alphabetic) && !w.chars().any(|c| c.is_ascii_digit()))
         .count();
@@ -168,22 +179,23 @@ fn resolve_candidates(lines: Vec<Line>) -> Vec<Line> {
         .iter()
         .map(|l| !l.candidate && looks_like_time(&l.text))
         .collect();
-    lines
-        .into_iter()
-        .enumerate()
-        .filter_map(|(i, l)| {
-            if !l.candidate {
-                Some(l)
-            } else if is_time.get(i + 1).copied().unwrap_or(false) {
-                Some(Line {
-                    candidate: false,
-                    ..l
-                })
-            } else {
-                None
-            }
-        })
-        .collect()
+    let mut out: Vec<Line> = Vec::with_capacity(lines.len());
+    for (i, l) in lines.into_iter().enumerate() {
+        if !l.candidate {
+            out.push(l);
+        } else if is_time.get(i + 1).copied().unwrap_or(false)
+            // The same name just printed as text is not repeated.
+            && !out
+                .last()
+                .is_some_and(|p| p.text.trim().eq_ignore_ascii_case(l.text.trim()))
+        {
+            out.push(Line {
+                candidate: false,
+                ..l
+            });
+        }
+    }
+    out
 }
 
 /// The lines as plain text, with "You: " and "Them: " added where the speaker changes - but
@@ -366,6 +378,8 @@ mod tests {
         assert!(looks_like_time("3:09 PM"));
         assert!(looks_like_time("Today at 14:32"));
         assert!(looks_like_time("Gestern um 15:09"));
+        assert!(looks_like_time("Wed, Oct 30, 19:09 (17 hours ago)"));
+        assert!(!looks_like_time("Call at 10:00 - bring the slides to it"));
         assert!(!looks_like_time("Sure, 3:30 works for me"));
         assert!(!looks_like_time("Yesterday"));
     }
@@ -425,5 +439,16 @@ mod tests {
     fn nothing_is_dropped_when_it_would_leave_next_to_nothing() {
         let lines = vec![outside("Mum"), outside("Daddy"), line("ok", None)];
         assert_eq!(label(lines), vec!["Mum", "Daddy", "ok"]);
+    }
+
+    #[test]
+    fn a_name_already_printed_just_before_is_not_repeated() {
+        let lines = vec![
+            line("Akarsh Hegde", None),
+            candidate("Akarsh Hegde"),
+            line("3:15 PM", None),
+            line("hello", None),
+        ];
+        assert_eq!(label(lines), vec!["Akarsh Hegde", "3:15 PM", "hello"]);
     }
 }
