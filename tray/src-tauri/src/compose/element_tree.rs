@@ -129,6 +129,18 @@ impl Node for Element {
         text_of(self, role)
     }
 
+    fn label_text(&self, role: &str) -> Option<String> {
+        if TEXT_ROLES.contains(&role) {
+            return None;
+        }
+        let raw = self
+            .string("AXTitle")
+            .or_else(|| self.string("AXDescription"))?;
+        let t = raw.trim();
+        (!t.is_empty() && t.len() <= 60 && !t.contains('\n') && t.split_whitespace().count() <= 5)
+            .then(|| t.to_string())
+    }
+
     fn header(&self, role: &str) -> Option<HeaderField> {
         if !TEXT_ROLES.contains(&role) {
             return None;

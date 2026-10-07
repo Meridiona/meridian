@@ -36,6 +36,11 @@ pub trait Node: Clone {
     fn own_text(&self, role: &str) -> Option<String>;
     /// A compose-header field (`To`, `Subject`) this element represents, if it is one.
     fn header(&self, role: &str) -> Option<HeaderField>;
+    /// A short label this element carries although it is not a text element (a sender's name
+    /// in a button). The walk keeps it only if a timestamp follows.
+    fn label_text(&self, _role: &str) -> Option<String> {
+        None
+    }
     fn children(&self) -> Vec<Self>;
     fn parent(&self) -> Option<Self>;
     fn same_as(&self, other: &Self) -> bool;
@@ -113,13 +118,24 @@ impl<N: Node> Collector<'_, N> {
                     self.header.push(h);
                 }
             }
+            let children = node.children();
             if let Some(text) = node.own_text(&role) {
                 lines.push(Line {
                     text,
                     side: node.side(),
+                    candidate: false,
                 });
+            } else if children.is_empty() {
+                // A leaf that is not text may still carry a label (a name in a button). It is
+                // kept later only if a timestamp follows it.
+                if let Some(text) = node.label_text(&role) {
+                    lines.push(Line {
+                        text,
+                        side: None,
+                        candidate: true,
+                    });
+                }
             }
-            let children = node.children();
             match direction {
                 // Pushed in reverse so the stack pops the first child first.
                 Direction::Forward => stack.extend(children.into_iter().rev()),
@@ -193,7 +209,7 @@ pub fn surrounding<N: Node>(field: &N, limits: Limits) -> Surround {
                 }
                 let lines = collector.collect(sibling, Direction::Forward);
                 below_bytes += bytes(&lines);
-                level_below.extend(lines.into_iter().map(|l| l.text));
+                level_below.extend(lines.into_iter().filter(|l| !l.candidate).map(|l| l.text));
             }
             below_levels.push(level_below);
         }
