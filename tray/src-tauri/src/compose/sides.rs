@@ -89,11 +89,97 @@ pub fn conversation_pane(
 pub struct Line {
     pub text: String,
     pub side: Option<Side>,
+    /// A short label from an element that is not text (a button, a group). Kept only when a
+    /// timestamp follows it, which is how a message header (sender, then time) reads.
+    pub candidate: bool,
+}
+
+/// Words that may appear in a timestamp besides the clock itself.
+const TIME_WORDS: &[&str] = &[
+    "am",
+    "pm",
+    "at",
+    "on",
+    "today",
+    "yesterday",
+    "mon",
+    "tue",
+    "wed",
+    "thu",
+    "fri",
+    "sat",
+    "sun",
+    "monday",
+    "tuesday",
+    "wednesday",
+    "thursday",
+    "friday",
+    "saturday",
+    "sunday",
+    "jan",
+    "feb",
+    "mar",
+    "apr",
+    "may",
+    "jun",
+    "jul",
+    "aug",
+    "sep",
+    "sept",
+    "oct",
+    "nov",
+    "dec",
+];
+
+/// True for a short line made only of a clock time and date words ("3:09 PM", "Yesterday at
+/// 3:09:04 PM", "Oct 6 at 14:32"). A message that merely mentions a time ("Sure, 3:30 works")
+/// is not one, because it holds words that are not time words.
+fn looks_like_time(text: &str) -> bool {
+    let t = text.trim();
+    if t.len() > 40 {
+        return false;
+    }
+    let has_clock = t.as_bytes().windows(4).any(|w| {
+        w[0].is_ascii_digit() && w[1] == b':' && w[2].is_ascii_digit() && w[3].is_ascii_digit()
+    });
+    has_clock
+        && t.split_whitespace().all(|word| {
+            let w = word.trim_matches(|c: char| !c.is_alphanumeric() && c != ':');
+            w.chars().any(|c| c.is_ascii_digit())
+                || TIME_WORDS.contains(&w.to_ascii_lowercase().as_str())
+        })
+}
+
+/// Keep a candidate label only when the very next line is a timestamp. Chat apps put the
+/// sender's name in a button or link and print the time right after it; every other button on
+/// the page ("Reply", "Add reaction", "Send now") is dropped.
+fn resolve_candidates(lines: Vec<Line>) -> Vec<Line> {
+    let is_time: Vec<bool> = lines
+        .iter()
+        .map(|l| !l.candidate && looks_like_time(&l.text))
+        .collect();
+    lines
+        .into_iter()
+        .enumerate()
+        .filter_map(|(i, l)| {
+            if !l.candidate {
+                Some(l)
+            } else if is_time.get(i + 1).copied().unwrap_or(false) {
+                Some(Line {
+                    candidate: false,
+                    ..l
+                })
+            } else {
+                None
+            }
+        })
+        .collect()
 }
 
 /// The lines as plain text, with "You: " and "Them: " added where the speaker changes - but
 /// only if at least one line is the user's, so a layout that shows no sides is left alone.
 pub fn label(lines: Vec<Line>) -> Vec<String> {
+    let lines = resolve_candidates(lines);
     if !lines.iter().any(|l| l.side == Some(Side::User)) {
         return lines.into_iter().map(|l| l.text).collect();
     }
@@ -121,6 +207,7 @@ mod tests {
         Line {
             text: text.into(),
             side,
+            candidate: false,
         }
     }
 
@@ -215,5 +302,60 @@ mod tests {
             line("hello", Some(Side::Other)),
         ]);
         assert_eq!(out, ["Akarsh", "hello"]);
+    }
+
+    fn candidate(text: &str) -> Line {
+        Line {
+            text: text.into(),
+            side: None,
+            candidate: true,
+        }
+    }
+
+    #[test]
+    fn a_button_label_followed_by_a_time_is_a_sender() {
+        let lines = vec![
+            candidate("Adithya Harish"),
+            line("Yesterday at 3:09:04 PM", None),
+            line("joined Slack", None),
+            candidate("Akarsh Hegde"),
+            line("3:15 PM", None),
+            line("Can you look at the plan?", None),
+        ];
+        assert_eq!(
+            label(lines),
+            vec![
+                "Adithya Harish",
+                "Yesterday at 3:09:04 PM",
+                "joined Slack",
+                "Akarsh Hegde",
+                "3:15 PM",
+                "Can you look at the plan?"
+            ]
+        );
+    }
+
+    #[test]
+    fn other_buttons_are_dropped() {
+        let lines = vec![
+            candidate("Add reaction"),
+            line("Sure, 3:30 works for me", None),
+            candidate("Send now"),
+            line("Reply in thread", None),
+        ];
+        assert_eq!(
+            label(lines),
+            vec!["Sure, 3:30 works for me", "Reply in thread"]
+        );
+    }
+
+    #[test]
+    fn a_long_line_that_mentions_a_time_is_not_a_timestamp() {
+        assert!(looks_like_time("3:09 PM"));
+        assert!(looks_like_time("Today at 14:32"));
+        assert!(!looks_like_time(
+            "Let us meet at 3:30 PM tomorrow to go over the plan together"
+        ));
+        assert!(!looks_like_time("Yesterday"));
     }
 }
