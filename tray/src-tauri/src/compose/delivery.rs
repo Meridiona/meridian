@@ -211,6 +211,20 @@ pub fn landed(expected: &str, observed: Option<&str>) -> bool {
     })
 }
 
+/// Where two readings of a field first differ, without revealing the text: the position (in
+/// characters) and the code point on each side. For a log line that explains a refused write.
+pub fn first_difference(expected: &str, observed: &str) -> (usize, Option<u32>, Option<u32>) {
+    let mut e = expected.chars();
+    let mut o = observed.chars();
+    let mut at = 0;
+    loop {
+        match (e.next(), o.next()) {
+            (Some(a), Some(b)) if a == b => at += 1,
+            (a, b) => return (at, a.map(u32::from), b.map(u32::from)),
+        }
+    }
+}
+
 /// Apps with "smart punctuation" (Messages, Notes, Mail) rewrite what lands: a straight
 /// apostrophe becomes a curly one, "--" a dash, "..." an ellipsis. That is the same text, so
 /// the landing check folds both sides to the plain forms before comparing. Used only for
