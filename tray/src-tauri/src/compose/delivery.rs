@@ -206,6 +206,13 @@ pub fn landed(expected: &str, observed: Option<&str>) -> bool {
     observed.is_some_and(|o| same_text(o.trim(), expected.trim()))
 }
 
+/// True when a field still holds what it held at the press. A field that reports no value at
+/// all (Messages' empty composer) was recorded as empty text at the press, so reading nothing
+/// back means it is still empty, not that it changed.
+pub fn value_unchanged(before: &str, after: Option<&str>) -> bool {
+    same_text(after.unwrap_or(""), before)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -380,6 +387,16 @@ mod tests {
             Some("Hello there".into())
         );
         assert_eq!(expected_value("abc", r(9, 0), "x"), None);
+    }
+
+    #[test]
+    fn a_field_with_no_value_is_unchanged_when_it_started_empty() {
+        // Messages: an empty composer reports no AXValue, recorded as "" at the press.
+        assert!(value_unchanged("", None));
+        assert!(value_unchanged("", Some("")));
+        assert!(!value_unchanged("", Some("Hi")));
+        assert!(!value_unchanged("Hi", None));
+        assert!(value_unchanged("Hi", Some("Hi")));
     }
 
     #[test]

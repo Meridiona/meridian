@@ -33,7 +33,7 @@
 use std::time::{Duration, Instant};
 
 use super::clipboard;
-use super::delivery::{expected_value, landed};
+use super::delivery::{expected_value, landed, value_unchanged};
 use super::keys::{self, KEY_A, KEY_V};
 use super::ranges::Utf16Range;
 use super::reader::{self, FieldHandle};
@@ -173,7 +173,10 @@ pub fn write(
         }
         // Do NOT fall through if the value moved at all: a late write plus a paste would
         // insert twice.
-        if reader::visible_value(&handle.element).as_deref() != Some(handle.value.as_str()) {
+        if !value_unchanged(
+            &handle.value,
+            reader::visible_value(&handle.element).as_deref(),
+        ) {
             tracing::warn!(
                 "compose: selected-text write changed the field but not as expected; stopping"
             );

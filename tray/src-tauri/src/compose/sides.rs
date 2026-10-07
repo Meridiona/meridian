@@ -84,16 +84,118 @@ pub fn conversation_pane(
     }
 }
 
+/// Where one element sits relative to the conversation: its side, and whether it lies wholly
+/// outside the conversation column (a sidebar, a list of other chats).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct Placement {
+    pub side: Option<Side>,
+    pub outside: bool,
+}
+
+/// The conversation column must be at least this wide to be trusted as a filter.
+const MIN_PANE_WIDTH: f64 = 240.0;
+/// A line counts as outside only if it ends this far before the column starts, or starts this
+/// far after it ends. A line that overlaps the column even slightly stays.
+const OUTSIDE_SLACK: f64 = 4.0;
+
+/// True when `text` lies wholly to the left or right of the conversation column `pane`. An
+/// element with no size, or a pane too narrow to be a real column, is never outside.
+pub fn is_outside(text: Frame, pane: Frame) -> bool {
+    let (tx, _, tw, th) = text;
+    let (px, _, pw, _) = pane;
+    if tw <= 0.0 || th <= 0.0 || pw < MIN_PANE_WIDTH {
+        return false;
+    }
+    tx + tw <= px + OUTSIDE_SLACK || tx >= px + pw - OUTSIDE_SLACK
+}
+
+/// Drop the lines that lie wholly outside the conversation column. There is no fallback to
+/// "keep everything": a short or new chat next to a list of other chats is exactly when the
+/// list would otherwise leak into the prompt. The column itself is only trusted when it is a
+/// real column (see `is_outside`), so a misjudged pane drops nothing.
+fn keep_in_pane(lines: Vec<Line>) -> Vec<Line> {
+    lines.into_iter().filter(|l| !l.outside).collect()
+}
+
 /// A line of text and the side it sits on, if known.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Line {
     pub text: String,
     pub side: Option<Side>,
+    /// A short label from an element that is not text (a button, a group). Kept only when a
+    /// timestamp follows it, which is how a message header (sender, then time) reads.
+    pub candidate: bool,
+    /// True when the line lies wholly outside the conversation column.
+    pub outside: bool,
+}
+
+/// True for a short line that is a clock time with at most a few words around it ("3:09 PM",
+/// "Yesterday at 3:09:04 PM", "14:32 Oct 6"). The test is structural, so it holds in any
+/// language: a clock, and almost no words. A message that mentions a time ("Sure, 3:30 works
+/// for me") has too many words to count.
+fn looks_like_time(text: &str) -> bool {
+    let t = text.trim();
+    if t.len() > 40 {
+        return false;
+    }
+    let has_clock = t.as_bytes().windows(4).any(|w| {
+        w[0].is_ascii_digit() && w[1] == b':' && w[2].is_ascii_digit() && w[3].is_ascii_digit()
+    });
+    // A relative age in brackets ("Wed, Oct 30, 19:09 (17 hours ago)") is not part of the time.
+    let mut bare = String::with_capacity(t.len());
+    let mut depth = 0u32;
+    for c in t.chars() {
+        match c {
+            '(' | '\u{ff08}' => depth += 1,
+            ')' | '\u{ff09}' => depth = depth.saturating_sub(1),
+            c if depth == 0 => bare.push(c),
+            _ => {}
+        }
+    }
+    let words = bare
+        .split_whitespace()
+        .filter(|w| w.chars().any(char::is_alphabetic) && !w.chars().any(|c| c.is_ascii_digit()))
+        .count();
+    // A date beside the clock ("Tuesday, October 6th at 3:09:04 PM") earns a few more words.
+    let numbers = bare
+        .split_whitespace()
+        .filter(|w| w.chars().any(|c| c.is_ascii_digit()))
+        .count();
+    has_clock && (words <= 3 || (words <= 5 && numbers >= 2))
+}
+
+/// Keep a candidate label only when the very next line is a timestamp. Chat apps put the
+/// sender's name in a button or link and print the time right after it; every other button on
+/// the page ("Reply", "Add reaction", "Send now") is dropped.
+fn resolve_candidates(lines: Vec<Line>) -> Vec<Line> {
+    let is_time: Vec<bool> = lines.iter().map(|l| looks_like_time(&l.text)).collect();
+    let mut out: Vec<Line> = Vec::with_capacity(lines.len());
+    for (i, l) in lines.into_iter().enumerate() {
+        if !l.candidate || is_time[i] {
+            // A timestamp is kept even when the app prints it in a button or link.
+            out.push(Line {
+                candidate: false,
+                ..l
+            });
+        } else if is_time.get(i + 1).copied().unwrap_or(false)
+            // The same name just printed as text is not repeated.
+            && !out
+                .last()
+                .is_some_and(|p| p.text.trim().eq_ignore_ascii_case(l.text.trim()))
+        {
+            out.push(Line {
+                candidate: false,
+                ..l
+            });
+        }
+    }
+    out
 }
 
 /// The lines as plain text, with "You: " and "Them: " added where the speaker changes - but
 /// only if at least one line is the user's, so a layout that shows no sides is left alone.
 pub fn label(lines: Vec<Line>) -> Vec<String> {
+    let lines = resolve_candidates(keep_in_pane(lines));
     if !lines.iter().any(|l| l.side == Some(Side::User)) {
         return lines.into_iter().map(|l| l.text).collect();
     }
@@ -121,6 +223,8 @@ mod tests {
         Line {
             text: text.into(),
             side,
+            candidate: false,
+            outside: false,
         }
     }
 
@@ -215,5 +319,149 @@ mod tests {
             line("hello", Some(Side::Other)),
         ]);
         assert_eq!(out, ["Akarsh", "hello"]);
+    }
+
+    fn candidate(text: &str) -> Line {
+        Line {
+            text: text.into(),
+            side: None,
+            candidate: true,
+            outside: false,
+        }
+    }
+
+    #[test]
+    fn a_button_label_followed_by_a_time_is_a_sender() {
+        let lines = vec![
+            candidate("Adithya Harish"),
+            line("Yesterday at 3:09:04 PM", None),
+            line("joined Slack", None),
+            candidate("Akarsh Hegde"),
+            line("3:15 PM", None),
+            line("Can you look at the plan?", None),
+        ];
+        assert_eq!(
+            label(lines),
+            vec![
+                "Adithya Harish",
+                "Yesterday at 3:09:04 PM",
+                "joined Slack",
+                "Akarsh Hegde",
+                "3:15 PM",
+                "Can you look at the plan?"
+            ]
+        );
+    }
+
+    #[test]
+    fn other_buttons_are_dropped() {
+        let lines = vec![
+            candidate("Add reaction"),
+            line("Sure, 3:30 works for me", None),
+            candidate("Send now"),
+            line("Reply in thread", None),
+        ];
+        assert_eq!(
+            label(lines),
+            vec!["Sure, 3:30 works for me", "Reply in thread"]
+        );
+    }
+
+    #[test]
+    fn a_long_line_that_mentions_a_time_is_not_a_timestamp() {
+        assert!(looks_like_time("3:09 PM"));
+        assert!(looks_like_time("Today at 14:32"));
+        assert!(looks_like_time("Gestern um 15:09"));
+        assert!(looks_like_time("Wed, Oct 30, 19:09 (17 hours ago)"));
+        assert!(!looks_like_time("Call at 10:00 - bring the slides to it"));
+        assert!(!looks_like_time("Sure, 3:30 works for me"));
+        assert!(!looks_like_time("Yesterday"));
+    }
+
+    fn outside(text: &str) -> Line {
+        Line {
+            outside: true,
+            ..line(text, None)
+        }
+    }
+
+    const COLUMN: Frame = (400.0, 0.0, 800.0, 900.0);
+
+    #[test]
+    fn a_line_wholly_left_of_the_column_is_outside() {
+        // A sidebar chat row: x 0..380 against a column starting at 400.
+        assert!(is_outside((0.0, 100.0, 380.0, 20.0), COLUMN));
+        assert!(is_outside((1210.0, 100.0, 150.0, 20.0), COLUMN));
+    }
+
+    #[test]
+    fn a_line_that_overlaps_the_column_stays() {
+        assert!(!is_outside((350.0, 100.0, 120.0, 20.0), COLUMN));
+        assert!(!is_outside((500.0, 100.0, 300.0, 20.0), COLUMN));
+        assert!(!is_outside((0.0, 0.0, 0.0, 0.0), COLUMN));
+    }
+
+    #[test]
+    fn a_narrow_pane_is_never_trusted_as_a_filter() {
+        assert!(!is_outside(
+            (0.0, 0.0, 50.0, 20.0),
+            (400.0, 0.0, 120.0, 900.0)
+        ));
+    }
+
+    #[test]
+    fn sidebar_lines_are_dropped_and_the_conversation_kept() {
+        let lines = vec![
+            outside("Mum"),
+            outside("Yesterday"),
+            line(
+                "Are we still on for Thursday evening at the usual place?",
+                None,
+            ),
+            line("11:50 am", None),
+        ];
+        assert_eq!(
+            label(lines),
+            vec![
+                "Are we still on for Thursday evening at the usual place?",
+                "11:50 am"
+            ]
+        );
+    }
+
+    #[test]
+    fn sidebar_text_is_dropped_even_when_the_chat_is_short() {
+        let lines = vec![outside("Mum"), outside("Daddy"), line("ok", None)];
+        assert_eq!(label(lines), vec!["ok"]);
+    }
+
+    #[test]
+    fn a_time_printed_in_a_button_still_validates_the_name_before_it() {
+        let lines = vec![
+            candidate("Akarsh Hegde"),
+            candidate("3:15 PM"),
+            line("Can you look at the plan?", None),
+        ];
+        assert_eq!(
+            label(lines),
+            vec!["Akarsh Hegde", "3:15 PM", "Can you look at the plan?"]
+        );
+    }
+
+    #[test]
+    fn slacks_long_date_and_time_counts_as_a_timestamp() {
+        assert!(looks_like_time("Tuesday, October 6th at 3:09:04 PM"));
+        assert!(!looks_like_time("Sure, 3:30 works for me"));
+    }
+
+    #[test]
+    fn a_name_already_printed_just_before_is_not_repeated() {
+        let lines = vec![
+            line("Akarsh Hegde", None),
+            candidate("Akarsh Hegde"),
+            line("3:15 PM", None),
+            line("hello", None),
+        ];
+        assert_eq!(label(lines), vec!["Akarsh Hegde", "3:15 PM", "hello"]);
     }
 }
