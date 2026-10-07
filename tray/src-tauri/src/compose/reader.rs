@@ -366,6 +366,22 @@ pub(super) fn is_focused(element: &Element, pid: i32) -> bool {
         .is_some_and(|focused| focused.same_as(element))
 }
 
+/// The field's visible text, read back after a write. Some apps replace their text view as
+/// text lands (a chat composer), which leaves the element held from before the press with no
+/// readable value. When the held element reads as nothing, ask for the box that has focus now
+/// in the same app and use it if it is the same kind of field.
+pub(super) fn readback(handle: &FieldHandle) -> Option<String> {
+    if let Some(v) = field_text::visible_value(&handle.element) {
+        return Some(v);
+    }
+    let app = Element::application(handle.pid)?;
+    let fresh = focused_element(handle.pid, &app)?;
+    if fresh.string("AXRole").as_deref() != Some(handle.identity.role.as_str()) {
+        return None;
+    }
+    field_text::visible_value(&fresh)
+}
+
 /// Re-read the pieces the write guard compares, for the field a press came from.
 pub fn current_state(handle: &FieldHandle) -> super::delivery::Now {
     let alive = handle.element.is_alive();

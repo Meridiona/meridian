@@ -117,7 +117,7 @@ fn wait_for_landing(handle: &FieldHandle, expected: &str) -> bool {
 fn wait_for_landing_within(handle: &FieldHandle, expected: &str, window: Duration) -> bool {
     let deadline = Instant::now() + window;
     loop {
-        let observed = reader::visible_value(&handle.element);
+        let observed = reader::readback(handle);
         if landed(expected, observed.as_deref()) {
             return true;
         }
@@ -173,8 +173,8 @@ pub fn write(
         }
         // Do NOT fall through if the value moved at all: a late write plus a paste would
         // insert twice.
-        if reader::visible_value(&handle.element).as_deref() != Some(handle.value.as_str()) {
-            let observed = reader::visible_value(&handle.element).unwrap_or_default();
+        if reader::readback(handle).as_deref() != Some(handle.value.as_str()) {
+            let observed = reader::readback(handle).unwrap_or_default();
             let (diff_at, expected_cp, observed_cp) = first_difference(&expected, &observed);
             tracing::warn!(
                 expected_chars = expected.chars().count(),
@@ -183,6 +183,7 @@ pub fn write(
                 expected_cp,
                 observed_cp,
                 value_type = handle.element.value_type("AXValue"),
+                held_element_alive = handle.element.is_alive(),
                 "compose: selected-text write changed the field but not as expected; stopping"
             );
             return Err(WriteError::NotConfirmed);
