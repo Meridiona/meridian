@@ -26,7 +26,7 @@ use std::time::Instant;
 
 use meridian::compose::types::HeaderField;
 
-use super::sides::{self, Line, Side};
+use super::sides::{self, Line, Placement};
 
 /// What the walk needs to know about an element, independent of how it is stored.
 pub trait Node: Clone {
@@ -44,9 +44,10 @@ pub trait Node: Clone {
     fn children(&self) -> Vec<Self>;
     fn parent(&self) -> Option<Self>;
     fn same_as(&self, other: &Self) -> bool;
-    /// Which side of a chat this node's text sits on, when the screen shows it.
-    fn side(&self) -> Option<Side> {
-        None
+    /// Where this node sits relative to the conversation: its side, and whether it lies wholly
+    /// outside the conversation column.
+    fn placement(&self) -> Placement {
+        Placement::default()
     }
 }
 
@@ -120,10 +121,12 @@ impl<N: Node> Collector<'_, N> {
             }
             let children = node.children();
             if let Some(text) = node.own_text(&role) {
+                let placed = node.placement();
                 lines.push(Line {
                     text,
-                    side: node.side(),
+                    side: placed.side,
                     candidate: false,
+                    outside: placed.outside,
                 });
             } else if children.is_empty() {
                 // A leaf that is not text may still carry a label (a name in a button). It is
@@ -133,6 +136,7 @@ impl<N: Node> Collector<'_, N> {
                         text,
                         side: None,
                         candidate: true,
+                        outside: node.placement().outside,
                     });
                 }
             }
@@ -209,7 +213,12 @@ pub fn surrounding<N: Node>(field: &N, limits: Limits) -> Surround {
                 }
                 let lines = collector.collect(sibling, Direction::Forward);
                 below_bytes += bytes(&lines);
-                level_below.extend(lines.into_iter().filter(|l| !l.candidate).map(|l| l.text));
+                level_below.extend(
+                    lines
+                        .into_iter()
+                        .filter(|l| !l.candidate && !l.outside)
+                        .map(|l| l.text),
+                );
             }
             below_levels.push(level_below);
         }

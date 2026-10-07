@@ -159,19 +159,24 @@ impl Node for Element {
         Some(HeaderField { label, value })
     }
 
-    fn side(&self) -> Option<sides::Side> {
+    fn placement(&self) -> sides::Placement {
         // Without a conversation frame nothing is marked, so skip the Accessibility reads.
-        let pane = PANE.with(|p| p.get())?;
-        let by_position = sides::side_of(self.frame()?, pane);
-        if by_position == Some(sides::Side::User) {
-            return by_position;
-        }
+        let Some(pane) = PANE.with(|p| p.get()) else {
+            return sides::Placement::default();
+        };
+        let Some(frame) = self.frame() else {
+            return sides::Placement::default();
+        };
+        let outside = sides::is_outside(frame, pane);
+        let by_position = sides::side_of(frame, pane);
         // The bubble's own description names the sender when the app provides one
         // ("Your iMessage, <text>, <time>"); that catches a user bubble the position missed.
-        if self.is_described_as_own() {
-            return Some(sides::Side::User);
-        }
-        by_position
+        let side = if by_position != Some(sides::Side::User) && self.is_described_as_own() {
+            Some(sides::Side::User)
+        } else {
+            by_position
+        };
+        sides::Placement { side, outside }
     }
 
     fn children(&self) -> Vec<Element> {

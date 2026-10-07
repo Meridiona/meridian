@@ -84,6 +84,51 @@ pub fn conversation_pane(
     }
 }
 
+/// Where one element sits relative to the conversation: its side, and whether it lies wholly
+/// outside the conversation column (a sidebar, a list of other chats).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct Placement {
+    pub side: Option<Side>,
+    pub outside: bool,
+}
+
+/// The conversation column must be at least this wide to be trusted as a filter.
+const MIN_PANE_WIDTH: f64 = 240.0;
+/// A line counts as outside only if it ends this far before the column starts, or starts this
+/// far after it ends. A line that overlaps the column even slightly stays.
+const OUTSIDE_SLACK: f64 = 4.0;
+
+/// True when `text` lies wholly to the left or right of the conversation column `pane`. An
+/// element with no size, or a pane too narrow to be a real column, is never outside.
+pub fn is_outside(text: Frame, pane: Frame) -> bool {
+    let (tx, _, tw, th) = text;
+    let (px, _, pw, _) = pane;
+    if tw <= 0.0 || th <= 0.0 || pw < MIN_PANE_WIDTH {
+        return false;
+    }
+    tx + tw <= px + OUTSIDE_SLACK || tx >= px + pw - OUTSIDE_SLACK
+}
+
+/// At least this much text must be left after dropping what lies outside the column;
+/// otherwise the column was probably misjudged and nothing is dropped.
+const MIN_KEPT_CHARS: usize = 40;
+
+/// Drop the lines that lie wholly outside the conversation column. Falls back to every line
+/// when dropping them would leave next to nothing, so a wrongly found column cannot empty the
+/// context.
+fn keep_in_pane(lines: Vec<Line>) -> Vec<Line> {
+    let kept: usize = lines
+        .iter()
+        .filter(|l| !l.outside)
+        .map(|l| l.text.len())
+        .sum();
+    if kept >= MIN_KEPT_CHARS || !lines.iter().any(|l| l.outside) {
+        lines.into_iter().filter(|l| !l.outside).collect()
+    } else {
+        lines
+    }
+}
+
 /// A line of text and the side it sits on, if known.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Line {
@@ -92,6 +137,8 @@ pub struct Line {
     /// A short label from an element that is not text (a button, a group). Kept only when a
     /// timestamp follows it, which is how a message header (sender, then time) reads.
     pub candidate: bool,
+    /// True when the line lies wholly outside the conversation column.
+    pub outside: bool,
 }
 
 /// True for a short line that is a clock time with at most a few words around it ("3:09 PM",
@@ -142,7 +189,7 @@ fn resolve_candidates(lines: Vec<Line>) -> Vec<Line> {
 /// The lines as plain text, with "You: " and "Them: " added where the speaker changes - but
 /// only if at least one line is the user's, so a layout that shows no sides is left alone.
 pub fn label(lines: Vec<Line>) -> Vec<String> {
-    let lines = resolve_candidates(lines);
+    let lines = resolve_candidates(keep_in_pane(lines));
     if !lines.iter().any(|l| l.side == Some(Side::User)) {
         return lines.into_iter().map(|l| l.text).collect();
     }
@@ -171,6 +218,7 @@ mod tests {
             text: text.into(),
             side,
             candidate: false,
+            outside: false,
         }
     }
 
@@ -272,6 +320,7 @@ mod tests {
             text: text.into(),
             side: None,
             candidate: true,
+            outside: false,
         }
     }
 
@@ -319,5 +368,62 @@ mod tests {
         assert!(looks_like_time("Gestern um 15:09"));
         assert!(!looks_like_time("Sure, 3:30 works for me"));
         assert!(!looks_like_time("Yesterday"));
+    }
+
+    fn outside(text: &str) -> Line {
+        Line {
+            outside: true,
+            ..line(text, None)
+        }
+    }
+
+    const COLUMN: Frame = (400.0, 0.0, 800.0, 900.0);
+
+    #[test]
+    fn a_line_wholly_left_of_the_column_is_outside() {
+        // A sidebar chat row: x 0..380 against a column starting at 400.
+        assert!(is_outside((0.0, 100.0, 380.0, 20.0), COLUMN));
+        assert!(is_outside((1210.0, 100.0, 150.0, 20.0), COLUMN));
+    }
+
+    #[test]
+    fn a_line_that_overlaps_the_column_stays() {
+        assert!(!is_outside((350.0, 100.0, 120.0, 20.0), COLUMN));
+        assert!(!is_outside((500.0, 100.0, 300.0, 20.0), COLUMN));
+        assert!(!is_outside((0.0, 0.0, 0.0, 0.0), COLUMN));
+    }
+
+    #[test]
+    fn a_narrow_pane_is_never_trusted_as_a_filter() {
+        assert!(!is_outside(
+            (0.0, 0.0, 50.0, 20.0),
+            (400.0, 0.0, 120.0, 900.0)
+        ));
+    }
+
+    #[test]
+    fn sidebar_lines_are_dropped_and_the_conversation_kept() {
+        let lines = vec![
+            outside("Mum"),
+            outside("Yesterday"),
+            line(
+                "Are we still on for Thursday evening at the usual place?",
+                None,
+            ),
+            line("11:50 am", None),
+        ];
+        assert_eq!(
+            label(lines),
+            vec![
+                "Are we still on for Thursday evening at the usual place?",
+                "11:50 am"
+            ]
+        );
+    }
+
+    #[test]
+    fn nothing_is_dropped_when_it_would_leave_next_to_nothing() {
+        let lines = vec![outside("Mum"), outside("Daddy"), line("ok", None)];
+        assert_eq!(label(lines), vec!["Mum", "Daddy", "ok"]);
     }
 }
