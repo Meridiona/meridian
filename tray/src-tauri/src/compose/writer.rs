@@ -182,6 +182,7 @@ pub fn write(
                 diff_at,
                 expected_cp,
                 observed_cp,
+                value_type = handle.element.value_type("AXValue"),
                 "compose: selected-text write changed the field but not as expected; stopping"
             );
             return Err(WriteError::NotConfirmed);
