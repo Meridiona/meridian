@@ -118,6 +118,7 @@ where
         span.record("field_chars", stats.field_chars);
         span.record("rest_of_window_chars", stats.rest_of_window_chars);
 
+        let shown = debug_dump_enabled().then(|| built.user.clone());
         let request = PromptRequest::new(built.system, built.user, "compose-draft")
             .with_max_tokens(DRAFT_MAX_TOKENS)
             .interactive();
@@ -127,6 +128,9 @@ where
                 let span = tracing::Span::current();
                 span.record("provider", provider.as_str());
                 span.record("elapsed_s", out.elapsed_s);
+                if let Some(shown) = &shown {
+                    write_debug_dump(shown, &out.text, provider.as_str());
+                }
                 out
             }
             Err(e) => {
@@ -160,6 +164,28 @@ where
     }
     .instrument(span)
     .await
+}
+
+/// Developer switch: `MERIDIAN_COMPOSE_DEBUG=1` keeps the last press's prompt and answer in
+/// a local file, so a wrong draft can be replayed exactly. Off unless set. The text stays on
+/// this machine (it is the same screen text the local capture already stores) and is never
+/// logged, because log bodies can leave the machine.
+fn debug_dump_enabled() -> bool {
+    std::env::var_os("MERIDIAN_COMPOSE_DEBUG").is_some_and(|v| !v.is_empty())
+}
+
+/// Overwrite `~/.meridian/compose-debug/last-press.txt`. Best effort; a failure is ignored.
+fn write_debug_dump(user_prompt: &str, answer: &str, provider: &str) {
+    let Some(dir) = meridian_core::paths::meridian_dir().map(|d| d.join("compose-debug")) else {
+        return;
+    };
+    if std::fs::create_dir_all(&dir).is_err() {
+        return;
+    }
+    let body = format!(
+        "prompt_version: {PROMPT_VERSION}\nprovider: {provider}\n\n===== USER PROMPT =====\n{user_prompt}\n\n===== MODEL ANSWER =====\n{answer}\n"
+    );
+    let _ = std::fs::write(dir.join("last-press.txt"), body);
 }
 
 /// Run the pipeline against the user's configured provider.
