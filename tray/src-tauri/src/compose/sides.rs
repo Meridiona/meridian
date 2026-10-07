@@ -109,24 +109,12 @@ pub fn is_outside(text: Frame, pane: Frame) -> bool {
     tx + tw <= px + OUTSIDE_SLACK || tx >= px + pw - OUTSIDE_SLACK
 }
 
-/// At least this much text must be left after dropping what lies outside the column;
-/// otherwise the column was probably misjudged and nothing is dropped.
-const MIN_KEPT_CHARS: usize = 40;
-
-/// Drop the lines that lie wholly outside the conversation column. Falls back to every line
-/// when dropping them would leave next to nothing, so a wrongly found column cannot empty the
-/// context.
+/// Drop the lines that lie wholly outside the conversation column. There is no fallback to
+/// "keep everything": a short or new chat next to a list of other chats is exactly when the
+/// list would otherwise leak into the prompt. The column itself is only trusted when it is a
+/// real column (see `is_outside`), so a misjudged pane drops nothing.
 fn keep_in_pane(lines: Vec<Line>) -> Vec<Line> {
-    let kept: usize = lines
-        .iter()
-        .filter(|l| !l.outside)
-        .map(|l| l.text.len())
-        .sum();
-    if kept >= MIN_KEPT_CHARS || !lines.iter().any(|l| l.outside) {
-        lines.into_iter().filter(|l| !l.outside).collect()
-    } else {
-        lines
-    }
+    lines.into_iter().filter(|l| !l.outside).collect()
 }
 
 /// A line of text and the side it sits on, if known.
@@ -168,21 +156,27 @@ fn looks_like_time(text: &str) -> bool {
         .split_whitespace()
         .filter(|w| w.chars().any(char::is_alphabetic) && !w.chars().any(|c| c.is_ascii_digit()))
         .count();
-    has_clock && words <= 3
+    // A date beside the clock ("Tuesday, October 6th at 3:09:04 PM") earns a few more words.
+    let numbers = bare
+        .split_whitespace()
+        .filter(|w| w.chars().any(|c| c.is_ascii_digit()))
+        .count();
+    has_clock && (words <= 3 || (words <= 5 && numbers >= 2))
 }
 
 /// Keep a candidate label only when the very next line is a timestamp. Chat apps put the
 /// sender's name in a button or link and print the time right after it; every other button on
 /// the page ("Reply", "Add reaction", "Send now") is dropped.
 fn resolve_candidates(lines: Vec<Line>) -> Vec<Line> {
-    let is_time: Vec<bool> = lines
-        .iter()
-        .map(|l| !l.candidate && looks_like_time(&l.text))
-        .collect();
+    let is_time: Vec<bool> = lines.iter().map(|l| looks_like_time(&l.text)).collect();
     let mut out: Vec<Line> = Vec::with_capacity(lines.len());
     for (i, l) in lines.into_iter().enumerate() {
-        if !l.candidate {
-            out.push(l);
+        if !l.candidate || is_time[i] {
+            // A timestamp is kept even when the app prints it in a button or link.
+            out.push(Line {
+                candidate: false,
+                ..l
+            });
         } else if is_time.get(i + 1).copied().unwrap_or(false)
             // The same name just printed as text is not repeated.
             && !out
@@ -436,9 +430,28 @@ mod tests {
     }
 
     #[test]
-    fn nothing_is_dropped_when_it_would_leave_next_to_nothing() {
+    fn sidebar_text_is_dropped_even_when_the_chat_is_short() {
         let lines = vec![outside("Mum"), outside("Daddy"), line("ok", None)];
-        assert_eq!(label(lines), vec!["Mum", "Daddy", "ok"]);
+        assert_eq!(label(lines), vec!["ok"]);
+    }
+
+    #[test]
+    fn a_time_printed_in_a_button_still_validates_the_name_before_it() {
+        let lines = vec![
+            candidate("Akarsh Hegde"),
+            candidate("3:15 PM"),
+            line("Can you look at the plan?", None),
+        ];
+        assert_eq!(
+            label(lines),
+            vec!["Akarsh Hegde", "3:15 PM", "Can you look at the plan?"]
+        );
+    }
+
+    #[test]
+    fn slacks_long_date_and_time_counts_as_a_timestamp() {
+        assert!(looks_like_time("Tuesday, October 6th at 3:09:04 PM"));
+        assert!(!looks_like_time("Sure, 3:30 works for me"));
     }
 
     #[test]
