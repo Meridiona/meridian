@@ -203,7 +203,32 @@ pub fn same_text(a: &str, b: &str) -> bool {
 /// True when the value read back is the value we expected. Whitespace at the very ends is
 /// ignored because some apps trim or normalise it, but nothing in the middle is.
 pub fn landed(expected: &str, observed: Option<&str>) -> bool {
-    observed.is_some_and(|o| same_text(o.trim(), expected.trim()))
+    observed.is_some_and(|o| {
+        same_text(
+            &fold_typography(o.trim()),
+            &fold_typography(expected.trim()),
+        )
+    })
+}
+
+/// Apps with "smart punctuation" (Messages, Notes, Mail) rewrite what lands: a straight
+/// apostrophe becomes a curly one, "--" a dash, "..." an ellipsis. That is the same text, so
+/// the landing check folds both sides to the plain forms before comparing. Used only for
+/// confirming a write, never to change what is inserted.
+fn fold_typography(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    for c in s.chars() {
+        match c {
+            '\u{2018}' | '\u{2019}' | '\u{201a}' | '\u{201b}' | '\u{2032}' | '\u{02bc}' => {
+                out.push('\'')
+            }
+            '\u{201c}' | '\u{201d}' | '\u{201e}' | '\u{201f}' | '\u{2033}' => out.push('"'),
+            '\u{2013}' | '\u{2014}' | '\u{2212}' => out.push('-'),
+            '\u{2026}' => out.push_str("..."),
+            c => out.push(c),
+        }
+    }
+    out
 }
 
 #[cfg(test)]
@@ -380,6 +405,19 @@ mod tests {
             Some("Hello there".into())
         );
         assert_eq!(expected_value("abc", r(9, 0), "x"), None);
+    }
+
+    #[test]
+    fn landed_accepts_smart_punctuation_the_app_substituted() {
+        assert!(landed(
+            "I've been good, thanks... talk soon - A",
+            Some("I\u{2019}ve been good, thanks\u{2026} talk soon \u{2013} A")
+        ));
+        assert!(landed(
+            "She said \"hi\"",
+            Some("She said \u{201c}hi\u{201d}")
+        ));
+        assert!(!landed("I've been good", Some("I\u{2019}ve been bad")));
     }
 
     #[test]
