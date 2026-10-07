@@ -18,10 +18,8 @@
 
 use std::ffi::c_void;
 
-use core_foundation::attributed_string::{CFAttributedString, CFAttributedStringGetString};
 use core_foundation::base::{
-    CFCopyTypeIDDescription, CFEqual, CFGetTypeID, CFRange, CFRelease, CFRetain, CFType, CFTypeRef,
-    TCFType,
+    CFEqual, CFGetTypeID, CFRange, CFRelease, CFRetain, CFType, CFTypeRef, TCFType,
 };
 use core_foundation::boolean::CFBoolean;
 use core_foundation::string::{CFString, CFStringRef};
@@ -154,38 +152,12 @@ impl Element {
         Ok(unsafe { CFType::wrap_under_create_rule(out) })
     }
 
-    /// A string attribute, or `None` when absent or not a string. Rich-text fields (a chat
-    /// composer holding formatted text) report an attributed string, whose plain text is
-    /// returned here too.
+    /// A string attribute, or `None` when absent or not a string.
     pub fn string(&self, name: &str) -> Option<String> {
-        let value = self.copy_attribute(name).ok()?;
-        if let Some(s) = value.downcast::<CFString>() {
-            return Some(s.to_string());
-        }
-        let attributed = value.downcast::<CFAttributedString>()?;
-        // SAFETY: the attributed string is live; Get functions return a borrowed reference,
-        // which wrap_under_get_rule retains for the CFString's own lifetime.
-        let plain = unsafe {
-            CFString::wrap_under_get_rule(CFAttributedStringGetString(
-                attributed.as_concrete_TypeRef(),
-            ))
-        };
-        Some(plain.to_string())
-    }
-
-    /// The type of an attribute's value, as a short name ("CFString", "CFAttributedString").
-    /// For a log line that explains why a value could not be read as text.
-    pub fn value_type(&self, name: &str) -> Option<String> {
-        let value = self.copy_attribute(name).ok()?;
-        // SAFETY: the type id comes from a live value; the description is a +1 string.
-        let desc = unsafe {
-            let d = CFCopyTypeIDDescription(CFGetTypeID(value.as_CFTypeRef()));
-            if d.is_null() {
-                return None;
-            }
-            CFString::wrap_under_create_rule(d)
-        };
-        Some(desc.to_string())
+        self.copy_attribute(name)
+            .ok()?
+            .downcast::<CFString>()
+            .map(|s| s.to_string())
     }
 
     /// An attribute holding another element (`AXFocusedUIElement`, `AXParent`, ...).

@@ -203,46 +203,14 @@ pub fn same_text(a: &str, b: &str) -> bool {
 /// True when the value read back is the value we expected. Whitespace at the very ends is
 /// ignored because some apps trim or normalise it, but nothing in the middle is.
 pub fn landed(expected: &str, observed: Option<&str>) -> bool {
-    observed.is_some_and(|o| {
-        same_text(
-            &fold_typography(o.trim()),
-            &fold_typography(expected.trim()),
-        )
-    })
+    observed.is_some_and(|o| same_text(o.trim(), expected.trim()))
 }
 
-/// Where two readings of a field first differ, without revealing the text: the position (in
-/// characters) and the code point on each side. For a log line that explains a refused write.
-pub fn first_difference(expected: &str, observed: &str) -> (usize, Option<u32>, Option<u32>) {
-    let mut e = expected.chars();
-    let mut o = observed.chars();
-    let mut at = 0;
-    loop {
-        match (e.next(), o.next()) {
-            (Some(a), Some(b)) if a == b => at += 1,
-            (a, b) => return (at, a.map(u32::from), b.map(u32::from)),
-        }
-    }
-}
-
-/// Apps with "smart punctuation" (Messages, Notes, Mail) rewrite what lands: a straight
-/// apostrophe becomes a curly one, "--" a dash, "..." an ellipsis. That is the same text, so
-/// the landing check folds both sides to the plain forms before comparing. Used only for
-/// confirming a write, never to change what is inserted.
-fn fold_typography(s: &str) -> String {
-    let mut out = String::with_capacity(s.len());
-    for c in s.chars() {
-        match c {
-            '\u{2018}' | '\u{2019}' | '\u{201a}' | '\u{201b}' | '\u{2032}' | '\u{02bc}' => {
-                out.push('\'')
-            }
-            '\u{201c}' | '\u{201d}' | '\u{201e}' | '\u{201f}' | '\u{2033}' => out.push('"'),
-            '\u{2013}' | '\u{2014}' | '\u{2212}' => out.push('-'),
-            '\u{2026}' => out.push_str("..."),
-            c => out.push(c),
-        }
-    }
-    out
+/// True when a field still holds what it held at the press. A field that reports no value at
+/// all (Messages' empty composer) was recorded as empty text at the press, so reading nothing
+/// back means it is still empty, not that it changed.
+pub fn value_unchanged(before: &str, after: Option<&str>) -> bool {
+    same_text(after.unwrap_or(""), before)
 }
 
 #[cfg(test)]
@@ -422,16 +390,13 @@ mod tests {
     }
 
     #[test]
-    fn landed_accepts_smart_punctuation_the_app_substituted() {
-        assert!(landed(
-            "I've been good, thanks... talk soon - A",
-            Some("I\u{2019}ve been good, thanks\u{2026} talk soon \u{2013} A")
-        ));
-        assert!(landed(
-            "She said \"hi\"",
-            Some("She said \u{201c}hi\u{201d}")
-        ));
-        assert!(!landed("I've been good", Some("I\u{2019}ve been bad")));
+    fn a_field_with_no_value_is_unchanged_when_it_started_empty() {
+        // Messages: an empty composer reports no AXValue, recorded as "" at the press.
+        assert!(value_unchanged("", None));
+        assert!(value_unchanged("", Some("")));
+        assert!(!value_unchanged("", Some("Hi")));
+        assert!(!value_unchanged("Hi", None));
+        assert!(value_unchanged("Hi", Some("Hi")));
     }
 
     #[test]
