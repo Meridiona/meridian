@@ -94,46 +94,10 @@ pub struct Line {
     pub candidate: bool,
 }
 
-/// Words that may appear in a timestamp besides the clock itself.
-const TIME_WORDS: &[&str] = &[
-    "am",
-    "pm",
-    "at",
-    "on",
-    "today",
-    "yesterday",
-    "mon",
-    "tue",
-    "wed",
-    "thu",
-    "fri",
-    "sat",
-    "sun",
-    "monday",
-    "tuesday",
-    "wednesday",
-    "thursday",
-    "friday",
-    "saturday",
-    "sunday",
-    "jan",
-    "feb",
-    "mar",
-    "apr",
-    "may",
-    "jun",
-    "jul",
-    "aug",
-    "sep",
-    "sept",
-    "oct",
-    "nov",
-    "dec",
-];
-
-/// True for a short line made only of a clock time and date words ("3:09 PM", "Yesterday at
-/// 3:09:04 PM", "Oct 6 at 14:32"). A message that merely mentions a time ("Sure, 3:30 works")
-/// is not one, because it holds words that are not time words.
+/// True for a short line that is a clock time with at most a few words around it ("3:09 PM",
+/// "Yesterday at 3:09:04 PM", "14:32 Oct 6"). The test is structural, so it holds in any
+/// language: a clock, and almost no words. A message that mentions a time ("Sure, 3:30 works
+/// for me") has too many words to count.
 fn looks_like_time(text: &str) -> bool {
     let t = text.trim();
     if t.len() > 40 {
@@ -142,12 +106,11 @@ fn looks_like_time(text: &str) -> bool {
     let has_clock = t.as_bytes().windows(4).any(|w| {
         w[0].is_ascii_digit() && w[1] == b':' && w[2].is_ascii_digit() && w[3].is_ascii_digit()
     });
-    has_clock
-        && t.split_whitespace().all(|word| {
-            let w = word.trim_matches(|c: char| !c.is_alphanumeric() && c != ':');
-            w.chars().any(|c| c.is_ascii_digit())
-                || TIME_WORDS.contains(&w.to_ascii_lowercase().as_str())
-        })
+    let words = t
+        .split_whitespace()
+        .filter(|w| w.chars().any(char::is_alphabetic) && !w.chars().any(|c| c.is_ascii_digit()))
+        .count();
+    has_clock && words <= 3
 }
 
 /// Keep a candidate label only when the very next line is a timestamp. Chat apps put the
@@ -353,9 +316,8 @@ mod tests {
     fn a_long_line_that_mentions_a_time_is_not_a_timestamp() {
         assert!(looks_like_time("3:09 PM"));
         assert!(looks_like_time("Today at 14:32"));
-        assert!(!looks_like_time(
-            "Let us meet at 3:30 PM tomorrow to go over the plan together"
-        ));
+        assert!(looks_like_time("Gestern um 15:09"));
+        assert!(!looks_like_time("Sure, 3:30 works for me"));
         assert!(!looks_like_time("Yesterday"));
     }
 }

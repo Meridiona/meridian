@@ -118,20 +118,24 @@ impl<N: Node> Collector<'_, N> {
                     self.header.push(h);
                 }
             }
+            let children = node.children();
             if let Some(text) = node.own_text(&role) {
                 lines.push(Line {
                     text,
                     side: node.side(),
                     candidate: false,
                 });
-            } else if let Some(text) = node.label_text(&role) {
-                lines.push(Line {
-                    text,
-                    side: None,
-                    candidate: true,
-                });
+            } else if children.is_empty() {
+                // A leaf that is not text may still carry a label (a name in a button). It is
+                // kept later only if a timestamp follows it.
+                if let Some(text) = node.label_text(&role) {
+                    lines.push(Line {
+                        text,
+                        side: None,
+                        candidate: true,
+                    });
+                }
             }
-            let children = node.children();
             match direction {
                 // Pushed in reverse so the stack pops the first child first.
                 Direction::Forward => stack.extend(children.into_iter().rev()),

@@ -130,7 +130,7 @@ impl Node for Element {
     }
 
     fn label_text(&self, role: &str) -> Option<String> {
-        if !matches!(role, "AXButton" | "AXMenuButton" | "AXGroup") {
+        if TEXT_ROLES.contains(&role) {
             return None;
         }
         let raw = self
