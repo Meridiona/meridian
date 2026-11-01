@@ -180,7 +180,7 @@ sha2 = "0.10"
 base64 = "0.22"
 
 [target.'cfg(target_os = "macos")'.dependencies]
-candle-core = { version = "0.10", features = ["accelerate"] }
+candle-core = { version = "0.11", features = ["accelerate"] }
 candle-nn = { version = "0.10", features = ["accelerate"] }
 candle-transformers = { version = "0.10", features = ["accelerate"] }
 
