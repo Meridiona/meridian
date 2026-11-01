@@ -100,7 +100,7 @@ chrono = { version = "0.4.31", features = ["serde"] }
 tracing = "0.1.40"
 tracing-subscriber = { version = "0.3.19", features = ["env-filter", "chrono", "json", "registry"] }
 tracing-opentelemetry = "0.28"
-opentelemetry = "0.27"
+opentelemetry = "0.33"
 opentelemetry_sdk = { version = "0.27", features = ["rt-tokio", "logs"] }
 # NB: `reqwest-rustls`, NOT `reqwest-client`. The latter routes through
 # `opentelemetry-http/reqwest`, which enables reqwest with its DEFAULT features —
